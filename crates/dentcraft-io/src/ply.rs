@@ -143,6 +143,9 @@ fn parse_header(header: &str) -> Result<(Encoding, Vec<Element>), String> {
                     kind: Kind::Scalar(Ty::parse(ty)?),
                 });
             }
+            ["element", ..] => return Err(format!("bad element line '{line}'")),
+            ["property", ..] => return Err(format!("bad property line '{line}'")),
+            // `comment`, `obj_info` and blank lines.
             _ => {}
         }
     }
@@ -227,6 +230,26 @@ impl Body<'_> {
     }
 }
 
+/// Elements worth reserving room for: no more than the rest of the body can hold, so a header
+/// cannot make a small file allocate a huge buffer.
+fn reserve_count(body: &Body, element: &Element) -> usize {
+    let min_record: usize = element
+        .props
+        .iter()
+        .map(|p| match (body.encoding, &p.kind) {
+            // A digit and a separator.
+            (Encoding::Ascii, _) => 2,
+            (_, Kind::Scalar(ty)) => ty.size(),
+            (_, Kind::List { count, .. }) => count.size(),
+        })
+        .sum();
+    let remaining = body.data.len() - body.pos;
+    element
+        .count
+        .min(remaining / min_record.max(1))
+        .min(1 << 20)
+}
+
 fn skip_element(body: &mut Body, element: &Element) -> Result<(), String> {
     if element.props.is_empty() {
         return Ok(());
@@ -248,7 +271,7 @@ fn read_vertices(body: &mut Body, element: &Element, mesh: &mut TriMesh) -> Resu
             .ok_or_else(|| format!("vertex element has no '{axis}' property"))
     };
     let slots = [slot("x")?, slot("y")?, slot("z")?];
-    mesh.positions.reserve(element.count.min(body.data.len()));
+    mesh.positions.reserve(reserve_count(body, element));
     for i in 0..element.count {
         let mut xyz = [0.0; 3];
         for (p, prop) in element.props.iter().enumerate() {
@@ -271,7 +294,10 @@ fn read_vertices(body: &mut Body, element: &Element, mesh: &mut TriMesh) -> Resu
 }
 
 fn read_faces(body: &mut Body, element: &Element, mesh: &mut TriMesh) -> Result<(), String> {
-    mesh.triangles.reserve(element.count.min(body.data.len()));
+    if element.props.is_empty() {
+        return Ok(());
+    }
+    mesh.triangles.reserve(reserve_count(body, element));
     let mut polygon: Vec<u32> = Vec::new();
     for i in 0..element.count {
         for prop in &element.props {
@@ -432,5 +458,85 @@ mod tests {
         let empty = "ply\nformat ascii 1.0\nelement junk 4000000000\nend_header\n";
         let mesh = read_ply(empty.as_bytes()).unwrap();
         assert!(mesh.positions.is_empty());
+    }
+
+    #[test]
+    fn huge_vertex_count_reserves_no_more_than_the_body_holds() {
+        let head = "ply
+format binary_little_endian 1.0
+element vertex 4000000000
+            property uchar x
+property uchar y
+property uchar z
+end_header
+";
+        let mut bytes = head.as_bytes().to_vec();
+        let remaining = 1 << 20;
+        bytes.resize(head.len() + remaining, 7);
+        assert!(read_ply(&bytes).is_err());
+        let (encoding, elements) = parse_header(head).unwrap();
+        let body = Body {
+            encoding,
+            data: &bytes[head.len()..],
+            pos: 0,
+        };
+        let reserve = reserve_count(&body, &elements[0]);
+        assert!(reserve > 0 && reserve <= remaining / 3, "{reserve}");
+    }
+
+    #[test]
+    fn face_element_without_properties_returns_promptly() {
+        // Looping over the count would not finish; give up on the reader after five seconds.
+        let text = "ply
+format ascii 1.0
+element face 18446744073709551615
+end_header
+";
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || sender.send(read_ply(text.as_bytes())));
+        let result = receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("read_ply did not return");
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn malformed_element_and_property_lines_are_errors() {
+        let ok = "ply
+format ascii 1.0
+comment c
+obj_info o
+element vertex 1
+            property float x
+property float y
+property float z
+end_header
+0 0 0
+";
+        assert_eq!(read_ply(ok.as_bytes()).unwrap().vertex_count(), 1);
+        for (good, bad) in [
+            (
+                "property float y
+",
+                "property float
+",
+            ),
+            (
+                "element vertex 1
+",
+                "element vertex 1 x
+",
+            ),
+            (
+                "property float z
+",
+                "property list uchar int
+",
+            ),
+        ] {
+            let text = ok.replace(good, bad);
+            let err = read_ply(text.as_bytes()).unwrap_err();
+            assert!(err.contains(bad.trim()), "{err}");
+        }
     }
 }
