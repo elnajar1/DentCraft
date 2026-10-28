@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+message: "If you use DentCraft in research, teaching or a publication, please cite it as below."
+title: "DentCraft: open-source dental CAD"
+type: software
+authors:
+  - given-names: Mahmoud
+    family-names: ElNajar
+    affiliation: "4K Dental Models"
+repository-code: "https://github.com/elnajar1/DentCraft"
+url: "https://github.com/elnajar1/DentCraft"
+license:
+  - MIT
+  - Apache-2.0
+version: 0.1.0
+keywords:
+  - dental CAD
+  - CAD/CAM
+  - dentistry
+  - dental technology
+  - crown design
+  - computational geometry
+  - Rust

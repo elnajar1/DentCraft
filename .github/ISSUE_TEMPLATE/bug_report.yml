@@ -1,0 +1,45 @@
+name: Bug report
+description: Something does not work as expected.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. **Do not attach patient scans or any personal data.**
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Import an upper jaw scan (STL)
+        2. Set tooth 36 to crown
+        3. ...
+    validations:
+      required: true
+  - type: dropdown
+    id: restoration
+    attributes:
+      label: Restoration type
+      options: [Not related to a restoration, Crown, Coping, Inlay, Onlay, Veneer, Bridge / pontic]
+  - type: input
+    id: version
+    attributes:
+      label: DentCraft version or commit
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system and graphics card
+      placeholder: Windows 11, NVIDIA RTX 2060
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log output or screenshots
