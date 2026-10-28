@@ -6,7 +6,7 @@ members = ["crates/*"]
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/dentcraft/dentcraft"
+repository = "https://github.com/elnajar1/DentCraft"
 authors = ["DentCraft contributors"]
 rust-version = "1.85"
 
