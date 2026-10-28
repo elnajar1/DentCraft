@@ -99,7 +99,7 @@ impl RenderOptions {
             background_top: [0.205, 0.225, 0.255],
             background_bottom: [0.085, 0.092, 0.105],
             vignette: 0.5,
-            backface: [0.62, 0.36, 0.38],
+            backface: [0.40, 0.45, 0.53],
             backface_strength: 0.7,
         }
     }
@@ -109,7 +109,7 @@ impl RenderOptions {
             background_top: [0.96, 0.97, 0.98],
             background_bottom: [0.78, 0.81, 0.85],
             vignette: 0.25,
-            backface: [0.72, 0.42, 0.44],
+            backface: [0.56, 0.61, 0.69],
             backface_strength: 0.7,
         }
     }

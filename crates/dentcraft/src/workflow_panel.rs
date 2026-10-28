@@ -7,8 +7,8 @@ use eframe::egui::{
     Sense, Shape, Stroke, Ui, Vec2, vec2,
 };
 
-use crate::chart::kind_color;
-use crate::theme::{Palette, RADIUS_PANEL, SIZE_SMALL};
+use crate::chart::{ON_FILL, kind_color};
+use crate::theme::{Palette, RADIUS_LG, RADIUS_SM, SIZE_SMALL};
 use crate::widgets::{self, Icon, Pill, paint_icon, pill, section_label};
 
 /// Shown on every step whose design tools are not built yet.
@@ -53,7 +53,7 @@ impl WorkflowView<'_> {
                 ui.label(
                     RichText::new(format!("{done} of {total} steps"))
                         .size(SIZE_SMALL)
-                        .color(p.muted),
+                        .color(p.text_dim),
                 );
             });
         });
@@ -83,9 +83,9 @@ impl WorkflowView<'_> {
         ui.add_space(10.0);
 
         let card = egui::Frame::new()
-            .fill(p.raised)
-            .stroke(Stroke::new(1.0, p.line))
-            .corner_radius(CornerRadius::same(RADIUS_PANEL))
+            .fill(p.panel_header)
+            .stroke(Stroke::new(1.0, p.border))
+            .corner_radius(CornerRadius::same(RADIUS_LG))
             .inner_margin(Margin::same(14))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
@@ -108,11 +108,11 @@ impl WorkflowView<'_> {
 fn progress_bar(ui: &mut Ui, fraction: f32, p: &Palette) {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 6.0), Sense::hover());
     let radius = CornerRadius::same(3);
-    ui.painter().rect_filled(rect, radius, p.line);
+    ui.painter().rect_filled(rect, radius, p.border);
     if fraction > 0.0 {
         let mut fill = rect;
         fill.set_width((rect.width() * fraction.clamp(0.0, 1.0)).max(6.0));
-        ui.painter().rect_filled(fill, radius, p.gold);
+        ui.painter().rect_filled(fill, radius, p.accent);
     }
 }
 
@@ -134,9 +134,9 @@ fn step_row(
             ui.set_width(ui.available_width());
             let title = RichText::new(id.title());
             let title = match status {
-                StepStatus::Active => title.color(p.ink).strong(),
-                StepStatus::Done => title.color(p.ink),
-                StepStatus::Skipped | StepStatus::Pending => title.color(p.muted),
+                StepStatus::Active => title.color(p.text).strong(),
+                StepStatus::Done => title.color(p.text),
+                StepStatus::Skipped | StepStatus::Pending => title.color(p.text_dim),
             };
             // Chips sit beside the title when they fit, and on their own line otherwise.
             let title_width = egui::WidgetText::from(title.clone())
@@ -161,7 +161,7 @@ fn step_row(
                         _ => None,
                     };
                     if let Some(tag) = tag {
-                        ui.label(RichText::new(tag).size(SIZE_SMALL - 1.0).color(p.muted));
+                        ui.label(RichText::new(tag).size(SIZE_SMALL - 1.0).color(p.text_dim));
                     }
                     if inline {
                         ui.spacing_mut().item_spacing.x = 4.0;
@@ -189,9 +189,9 @@ fn step_row(
     };
     let response = ui.interact(rect, ui.scope_id().with(("step", index)), sense);
     let fill = if status == StepStatus::Active {
-        p.raised
+        p.panel_header
     } else if reopenable && response.hovered() {
-        p.raised_hover
+        p.hover
     } else {
         Color32::TRANSPARENT
     };
@@ -215,28 +215,28 @@ fn status_icon(ui: &mut Ui, index: usize, status: StepStatus, p: &Palette) {
     let painter = ui.painter();
     match status {
         StepStatus::Done => {
-            painter.circle_filled(c, 10.0, p.gold.gamma_multiply(0.22));
-            paint_icon(painter, Icon::Check, rect.shrink(5.0), p.gold, *p);
+            painter.circle_filled(c, 10.0, p.accent.gamma_multiply(0.22));
+            paint_icon(painter, Icon::Check, rect.shrink(5.0), p.accent, *p);
         }
         StepStatus::Skipped => {
-            painter.circle_stroke(c, 9.5, Stroke::new(1.0, p.line));
+            painter.circle_stroke(c, 9.5, Stroke::new(1.0, p.border));
             painter.line_segment(
                 [c + vec2(-4.0, 0.0), c + vec2(4.0, 0.0)],
-                Stroke::new(1.6, p.muted),
+                Stroke::new(1.6, p.text_dim),
             );
         }
         StepStatus::Active => {
-            painter.circle_stroke(c, 9.0, Stroke::new(1.5, p.gold));
-            painter.circle_filled(c, 4.5, p.gold);
+            painter.circle_stroke(c, 9.0, Stroke::new(1.5, p.accent));
+            painter.circle_filled(c, 4.5, p.accent);
         }
         StepStatus::Pending => {
-            painter.circle_stroke(c, 9.5, Stroke::new(1.0, p.line));
+            painter.circle_stroke(c, 9.5, Stroke::new(1.0, p.border));
             painter.text(
                 c,
                 Align2::CENTER_CENTER,
                 (index + 1).to_string(),
                 FontId::proportional(SIZE_SMALL - 1.0),
-                p.muted,
+                p.text_dim,
             );
         }
     }
@@ -255,18 +255,19 @@ fn chip_width(ui: &Ui, tooth: Fdi) -> f32 {
 
 /// A small chip with a tooth number, tinted with its restoration colour.
 fn tooth_chip(ui: &mut Ui, tooth: Fdi, case: &Case, p: &Palette) {
+    // Solid restoration fills with dark numbers read at 4.5:1 or better in both themes.
+    let (tint, ink) = case
+        .unit(tooth)
+        .map_or((p.panel_header, p.text), |u| (kind_color(u.kind), ON_FILL));
     let galley = ui
         .painter()
-        .layout_no_wrap(tooth.to_string(), chip_font(), p.ink);
-    let size = vec2(galley.size().x + 12.0, 17.0);
+        .layout_no_wrap(tooth.to_string(), chip_font(), ink);
+    let size = vec2(galley.size().x + 10.0, 16.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
-    let tint = case
-        .unit(tooth)
-        .map_or(p.line, |u| kind_color(u.kind).gamma_multiply(0.45));
     ui.painter()
-        .rect_filled(rect, CornerRadius::same(255), tint);
+        .rect_filled(rect, CornerRadius::same(RADIUS_SM), tint);
     ui.painter()
-        .galley(rect.center() - galley.size() * 0.5, galley, p.ink);
+        .galley(rect.center() - galley.size() * 0.5, galley, ink);
     if let Some(unit) = case.unit(tooth) {
         response.on_hover_text(format!("{tooth} · {}", unit.kind.label()));
     }
@@ -287,23 +288,23 @@ fn active_card(
         ui.label(
             RichText::new(format!("STEP {} OF {total}", index + 1))
                 .size(SIZE_SMALL)
-                .color(p.gold)
+                .color(p.accent)
                 .extra_letter_spacing(1.2)
                 .strong(),
         );
         if id.is_optional() {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.label(RichText::new("Optional").size(SIZE_SMALL).color(p.muted));
+                ui.label(RichText::new("Optional").size(SIZE_SMALL).color(p.text_dim));
             });
         }
     });
-    ui.label(RichText::new(id.title()).heading().color(p.ink));
-    ui.label(RichText::new(id.summary()).color(p.muted));
+    ui.label(RichText::new(id.title()).heading().color(p.text));
+    ui.label(RichText::new(id.summary()).color(p.text_dim));
     if !teeth.is_empty() {
         ui.add_space(2.0);
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
-            ui.label(RichText::new("Teeth").size(SIZE_SMALL).color(p.muted));
+            ui.label(RichText::new("Teeth").size(SIZE_SMALL).color(p.text_dim));
             ui.add_space(2.0);
             for &tooth in teeth {
                 tooth_chip(ui, tooth, view.case, p);
@@ -326,7 +327,7 @@ fn active_card(
         ui.label(
             RichText::new(error)
                 .size(SIZE_SMALL)
-                .color(p.muted)
+                .color(p.text_dim)
                 .italics(),
         );
     }
@@ -360,33 +361,33 @@ fn active_card(
 
 fn note_box(ui: &mut Ui, text: &str, p: &Palette) {
     egui::Frame::new()
-        .fill(p.surface)
+        .fill(p.panel)
         .corner_radius(CornerRadius::same(8))
         .inner_margin(Margin::symmetric(10, 7))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(RichText::new(text).size(SIZE_SMALL).color(p.muted));
+            ui.label(RichText::new(text).size(SIZE_SMALL).color(p.text_dim));
         });
 }
 
 fn finished_card(ui: &mut Ui, total: usize, p: &Palette) {
     ui.horizontal(|ui| {
         let (rect, _) = ui.allocate_exact_size(Vec2::splat(28.0), Sense::hover());
-        ui.painter().circle_filled(rect.center(), 14.0, p.gold);
+        ui.painter().circle_filled(rect.center(), 14.0, p.accent);
         paint_icon(
             ui.painter(),
             Icon::Check,
             Rect::from_center_size(rect.center(), Vec2::splat(14.0)),
-            Color32::from_rgb(0x12, 0x12, 0x12),
+            p.on_primary,
             *p,
         );
-        ui.label(RichText::new("Design complete").heading().color(p.ink));
+        ui.label(RichText::new("Design complete").heading().color(p.text));
     });
     ui.label(
         RichText::new(format!(
             "All {total} steps are done or skipped. Click a step to revisit it."
         ))
-        .color(p.muted),
+        .color(p.text_dim),
     );
 }
 

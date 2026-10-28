@@ -154,17 +154,19 @@ impl ChartLayout {
 /// Fill colour of a restoration kind on the chart, in the legend and on step chips.
 pub fn kind_color(kind: RestorationKind) -> Color32 {
     match kind {
-        RestorationKind::Crown => Color32::from_rgb(0xcb, 0xa3, 0x60),
-        RestorationKind::Coping => Color32::from_rgb(0xa8, 0x9e, 0x90),
-        RestorationKind::Inlay => Color32::from_rgb(0x9a, 0xb5, 0x93),
-        RestorationKind::Onlay => Color32::from_rgb(0x72, 0xa0, 0x95),
-        RestorationKind::Veneer => Color32::from_rgb(0x93, 0xac, 0xcc),
-        RestorationKind::Pontic => Color32::from_rgb(0xcf, 0x96, 0x96),
+        // Mid-light hues that stay apart from each other and from the blue accent, which marks
+        // selection and bridge connectors, on the blue-grey chrome of both themes.
+        RestorationKind::Crown => Color32::from_rgb(0x5c, 0xc6, 0xa9),
+        RestorationKind::Coping => Color32::from_rgb(0xa9, 0xb2, 0xc0),
+        RestorationKind::Inlay => Color32::from_rgb(0xb4, 0xd0, 0x6e),
+        RestorationKind::Onlay => Color32::from_rgb(0xec, 0x9c, 0x68),
+        RestorationKind::Veneer => Color32::from_rgb(0xb5, 0x9c, 0xe6),
+        RestorationKind::Pontic => Color32::from_rgb(0xe8, 0x8c, 0xa8),
     }
 }
 
 /// Ink for text drawn on a restoration fill.
-const ON_FILL: Color32 = Color32::from_rgb(0x1d, 0x1c, 0x1a);
+pub const ON_FILL: Color32 = Color32::from_rgb(0x1a, 0x1e, 0x25);
 
 /// A change the user asked for on the chart.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -243,7 +245,7 @@ pub fn tooth_chart(ui: &mut Ui, case: &Case) -> Option<ChartEdit> {
 
     // Midline, and which side is the patient's right.
     let mid = origin.x + layout.midline_x;
-    let dash = Stroke::new(1.0, p.line);
+    let dash = Stroke::new(1.0, p.border);
     painter.extend(Shape::dashed_line(
         &[pos2(mid, rect.top() + 1.0), pos2(mid, rect.bottom() - 1.0)],
         dash,
@@ -257,14 +259,14 @@ pub fn tooth_chart(ui: &mut Ui, case: &Case) -> Option<ChartEdit> {
         Align2::CENTER_CENTER,
         "R",
         side_font.clone(),
-        p.muted,
+        p.text_dim,
     );
     painter.text(
         pos2(mid + 9.0, band_y),
         Align2::CENTER_CENTER,
         "L",
         side_font,
-        p.muted,
+        p.text_dim,
     );
 
     let number_font = FontId::proportional((layout.slot(fdi(11)).size.x * 0.78).clamp(8.5, 11.0));
@@ -299,9 +301,9 @@ pub fn tooth_chart(ui: &mut Ui, case: &Case) -> Option<ChartEdit> {
                 )
             }
             None => (
-                if hovered { p.raised_hover } else { p.raised },
-                Stroke::new(1.0, if hovered { p.muted } else { p.line }),
-                if hovered { p.ink } else { p.muted },
+                if hovered { p.hover } else { p.panel_header },
+                Stroke::new(1.0, if hovered { p.text_dim } else { p.border }),
+                if hovered { p.text } else { p.text_dim },
             ),
         };
         if selected {
@@ -313,7 +315,7 @@ pub fn tooth_chart(ui: &mut Ui, case: &Case) -> Option<ChartEdit> {
                 &halo,
                 origin,
                 Color32::TRANSPARENT,
-                Stroke::new(1.5, p.ink),
+                Stroke::new(1.5, p.text),
             ));
         }
         painter.add(tooth_shape(slot, origin, fill, stroke));
@@ -351,9 +353,9 @@ pub fn tooth_chart(ui: &mut Ui, case: &Case) -> Option<ChartEdit> {
             let hovered = response.hovered();
             if connected {
                 let color = if hovered {
-                    p.gold.lerp_to_gamma(Color32::WHITE, 0.25)
+                    p.accent.lerp_to_gamma(Color32::WHITE, 0.25)
                 } else {
-                    p.gold
+                    p.accent
                 };
                 painter.line_segment([pa, pb], Stroke::new(3.5, color));
                 painter.circle_filled(pa, 2.6, color);
@@ -361,9 +363,9 @@ pub fn tooth_chart(ui: &mut Ui, case: &Case) -> Option<ChartEdit> {
             } else {
                 let pill = Rect::from_center_size(centre, vec2(11.0, 6.0));
                 let (fill, stroke) = if hovered {
-                    (p.gold.gamma_multiply(0.3), Stroke::new(1.2, p.gold))
+                    (p.accent.gamma_multiply(0.3), Stroke::new(1.2, p.accent))
                 } else {
-                    (Color32::TRANSPARENT, Stroke::new(1.2, p.muted))
+                    (Color32::TRANSPARENT, Stroke::new(1.2, p.text_dim))
                 };
                 painter.rect(
                     pill,
@@ -401,12 +403,12 @@ fn tooth_menu(
     ui.label(
         RichText::new(format!("Tooth {tooth}"))
             .strong()
-            .color(p.ink),
+            .color(p.text),
     );
     ui.label(
         RichText::new(describe(tooth))
             .size(SIZE_SMALL)
-            .color(p.muted),
+            .color(p.text_dim),
     );
     ui.add_space(4.0);
     let mut edit = None;
@@ -443,26 +445,26 @@ fn menu_row(
     let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click());
     let painter = ui.painter();
     if response.hovered() {
-        painter.rect_filled(rect, CornerRadius::same(6), p.raised_hover);
+        painter.rect_filled(rect, CornerRadius::same(6), p.hover);
     }
     let dot = pos2(rect.left() + 14.0, rect.center().y);
     match swatch {
         Some(color) => painter.circle_filled(dot, 5.0, color),
-        None => painter.circle_stroke(dot, 4.5, Stroke::new(1.2, p.muted)),
+        None => painter.circle_stroke(dot, 4.5, Stroke::new(1.2, p.text_dim)),
     };
     painter.text(
         pos2(rect.left() + 28.0, rect.center().y),
         Align2::LEFT_CENTER,
         label,
         FontId::proportional(13.0),
-        p.ink,
+        p.text,
     );
     if checked {
         let r = Rect::from_center_size(
             pos2(rect.right() - 14.0, rect.center().y),
             Vec2::splat(12.0),
         );
-        paint_icon(painter, Icon::Check, r, p.gold, *p);
+        paint_icon(painter, Icon::Check, r, p.accent, *p);
     }
     response.on_hover_cursor(CursorIcon::PointingHand)
 }
@@ -481,7 +483,7 @@ pub fn legend(ui: &mut Ui) {
             let y = r.center().y;
             painter.line_segment(
                 [pos2(r.left() - 2.0, y), pos2(r.right() + 2.0, y)],
-                Stroke::new(3.0, p.gold),
+                Stroke::new(3.0, p.accent),
             );
         });
     });
@@ -495,13 +497,30 @@ fn legend_item(ui: &mut Ui, label: &str, p: &Palette, swatch: impl FnOnce(&egui:
             ui.painter(),
             Rect::from_center_size(r.center(), Vec2::splat(9.0)),
         );
-        ui.label(RichText::new(label).size(SIZE_SMALL - 1.0).color(p.muted));
+        ui.label(
+            RichText::new(label)
+                .size(SIZE_SMALL - 1.0)
+                .color(p.text_dim),
+        );
     });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn restoration_colours_are_not_gold_and_carry_dark_numbers() {
+        use crate::theme::{Palette, contrast};
+        for kind in RestorationKind::ALL {
+            let c = kind_color(kind);
+            assert_ne!(c, Color32::from_rgb(0xcb, 0xa3, 0x60), "{kind:?}");
+            assert!(contrast(ON_FILL, c) >= 4.5, "{kind:?}");
+            for p in [Palette::DARK, Palette::LIGHT] {
+                assert_ne!(c, p.accent, "{kind:?}");
+            }
+        }
+    }
 
     fn mirror(tooth: Fdi) -> Fdi {
         // 1x ↔ 2x and 4x ↔ 3x.

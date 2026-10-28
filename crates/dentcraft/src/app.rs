@@ -17,7 +17,7 @@ use crate::chart::{self, ChartEdit};
 use crate::document::{self, Document};
 use crate::loader::Loader;
 use crate::objects::{self, ObjectState, SceneObject};
-use crate::theme::{self, Palette, RADIUS_PANEL, SIZE_SMALL, ThemeKind};
+use crate::theme::{self, Palette, RADIUS_LG, SIZE_SMALL, ThemeKind};
 use crate::viewport::Viewport;
 use crate::widgets::{self, Icon, Pill, icon_button, paint_icon, pill, section_label};
 use crate::workflow_panel::{self, StepAction, WorkflowView};
@@ -394,9 +394,9 @@ impl DentCraftApp {
         let modal = egui::Modal::new(egui::Id::unique("discard_changes"))
             .frame(
                 egui::Frame::new()
-                    .fill(p.surface)
-                    .stroke(Stroke::new(1.0, p.line))
-                    .corner_radius(CornerRadius::same(RADIUS_PANEL))
+                    .fill(p.panel)
+                    .stroke(Stroke::new(1.0, p.border))
+                    .corner_radius(CornerRadius::same(RADIUS_LG))
                     .inner_margin(Margin::same(20)),
             )
             .show(ctx, |ui| {
@@ -404,14 +404,14 @@ impl DentCraftApp {
                 ui.label(
                     RichText::new("Discard unsaved changes?")
                         .heading()
-                        .color(p.ink),
+                        .color(p.text),
                 );
                 ui.label(
                     RichText::new(format!(
                         "\u{201c}{name}\u{201d} has changes that are not saved. \
                          They will be lost by {action}."
                     ))
-                    .color(p.muted),
+                    .color(p.text_dim),
                 );
                 ui.add_space(12.0);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -488,16 +488,16 @@ impl DentCraftApp {
             ui.add(
                 egui::Image::new(egui::load::SizedTexture::new(
                     self.logo_small.id(),
-                    [30.0, 30.0],
+                    [22.0, 22.0],
                 ))
-                .corner_radius(CornerRadius::same(7)),
+                .corner_radius(CornerRadius::same(5)),
             );
-            ui.label(RichText::new("DentCraft").size(17.0).strong().color(p.ink));
+            ui.label(RichText::new("DentCraft").size(13.0).strong().color(p.text));
             ui.add_space(12.0);
             ui.add(egui::Separator::default().vertical().spacing(8.0));
             ui.add_space(8.0);
             ui.add(
-                egui::Label::new(RichText::new(document::display_name(&self.case)).color(p.ink))
+                egui::Label::new(RichText::new(document::display_name(&self.case)).color(p.text))
                     .truncate(),
             )
             .on_hover_text(match self.doc.path() {
@@ -506,8 +506,8 @@ impl DentCraftApp {
             });
             if self.is_dirty() {
                 let (dot, _) = ui.allocate_exact_size(vec2(8.0, 16.0), egui::Sense::hover());
-                ui.painter().circle_filled(dot.center(), 3.5, p.gold);
-                ui.label(RichText::new("Unsaved").size(SIZE_SMALL).color(p.muted));
+                ui.painter().circle_filled(dot.center(), 3.5, p.accent);
+                ui.label(RichText::new("Unsaved").size(SIZE_SMALL).color(p.text_dim));
             }
             ui.add_space(8.0);
             ui.add(egui::Separator::default().vertical().spacing(8.0));
@@ -550,14 +550,14 @@ impl DentCraftApp {
                     ThemeKind::Dark => Icon::Sun,
                     ThemeKind::Light => Icon::Moon,
                 };
-                if icon_button(ui, icon, 32.0)
+                if icon_button(ui, icon, 26.0)
                     .on_hover_text("Switch between dark and light theme")
                     .clicked()
                 {
                     self.theme = self.theme.toggled();
                     ui.ctx().set_theme(self.theme.egui_theme());
                 }
-                if icon_button(ui, Icon::Fit, 32.0)
+                if icon_button(ui, Icon::Fit, 26.0)
                     .on_hover_text("Fit the scene in view  (F, or double-click)")
                     .clicked()
                 {
@@ -597,7 +597,7 @@ impl DentCraftApp {
                 ui.label(
                     RichText::new(format!("{n} unit{}", if n == 1 { "" } else { "s" }))
                         .size(SIZE_SMALL)
-                        .color(p.muted),
+                        .color(p.text_dim),
                 );
             }
         });
@@ -609,7 +609,7 @@ impl DentCraftApp {
             ui.label(
                 RichText::new("Click a tooth to add a restoration.")
                     .size(SIZE_SMALL)
-                    .color(p.muted),
+                    .color(p.text_dim),
             );
         }
         ui.add_space(14.0);
@@ -629,7 +629,7 @@ impl DentCraftApp {
                 ui.label(
                     RichText::new(self.objects.len().to_string())
                         .size(SIZE_SMALL)
-                        .color(p.muted),
+                        .color(p.text_dim),
                 );
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -646,7 +646,7 @@ impl DentCraftApp {
             ui.label(
                 RichText::new("No scans yet. Import or drop STL, PLY or OBJ files.")
                     .size(SIZE_SMALL)
-                    .color(p.muted),
+                    .color(p.text_dim),
             );
             return;
         }
@@ -656,7 +656,7 @@ impl DentCraftApp {
         for (index, obj) in self.objects.iter_mut().enumerate() {
             let is_hovered = self.hovered_row == Some(obj.id);
             let frame = egui::Frame::new()
-                .fill(if is_hovered { p.raised_hover } else { p.raised })
+                .fill(if is_hovered { p.hover } else { p.panel_header })
                 .corner_radius(CornerRadius::same(10))
                 .inner_margin(Margin::symmetric(10, 8))
                 .show(ui, |ui| {
@@ -727,7 +727,7 @@ impl DentCraftApp {
                 ui.spacing_mut().item_spacing.x = 6.0;
                 for (label, value) in row {
                     egui::Frame::new()
-                        .fill(p.raised)
+                        .fill(p.panel_header)
                         .corner_radius(CornerRadius::same(8))
                         .inner_margin(Margin::symmetric(10, 6))
                         .show(ui, |ui| {
@@ -735,9 +735,11 @@ impl DentCraftApp {
                             ui.vertical(|ui| {
                                 ui.spacing_mut().item_spacing.y = 1.0;
                                 ui.label(
-                                    RichText::new(*label).size(SIZE_SMALL - 1.0).color(p.muted),
+                                    RichText::new(*label)
+                                        .size(SIZE_SMALL - 1.0)
+                                        .color(p.text_dim),
                                 );
-                                ui.label(RichText::new(value).color(p.ink).strong());
+                                ui.label(RichText::new(value).color(p.text).strong());
                             });
                         });
                 }
@@ -748,7 +750,7 @@ impl DentCraftApp {
 
     fn status_bar(&self, ui: &mut egui::Ui, frame: &eframe::Frame) {
         let p = self.palette();
-        let small = |t: String| RichText::new(t).size(SIZE_SMALL).color(p.muted);
+        let small = |t: String| RichText::new(t).size(SIZE_SMALL).color(p.text_dim);
         ui.horizontal_centered(|ui| {
             match self.viewport.hover {
                 Some(v) => ui.label(
@@ -757,7 +759,7 @@ impl DentCraftApp {
                         v.x, v.y, v.z
                     ))
                     .monospace()
-                    .color(p.ink),
+                    .color(p.text),
                 ),
                 None => ui.label(small("Hover a scan to measure its position".to_owned())),
             };
@@ -804,11 +806,11 @@ impl DentCraftApp {
                     ui.label(
                         RichText::new("Drop STL, PLY or OBJ scans here")
                             .heading()
-                            .color(p.ink),
+                            .color(p.text),
                     );
                     ui.label(
                         RichText::new("Upper and lower jaws, bite registrations and pre-op scans")
-                            .color(p.muted),
+                            .color(p.text_dim),
                     );
                     ui.add_space(12.0);
                     clicked = pill(ui, "Import scans…", Pill::Primary, true).clicked();
@@ -822,9 +824,9 @@ impl DentCraftApp {
             let painter = ui.painter_at(rect);
             painter.rect(
                 rect.shrink(12.0),
-                CornerRadius::same(RADIUS_PANEL),
-                p.gold.gamma_multiply(0.08),
-                Stroke::new(2.0, p.gold),
+                CornerRadius::same(RADIUS_LG),
+                p.accent.gamma_multiply(0.08),
+                Stroke::new(2.0, p.accent),
                 egui::StrokeKind::Inside,
             );
             painter.text(
@@ -832,7 +834,7 @@ impl DentCraftApp {
                 Align2::CENTER_CENTER,
                 "Release to import",
                 egui::FontId::proportional(16.0),
-                p.ink,
+                p.text,
             );
         }
         self.show_toasts(ui, rect);
@@ -849,7 +851,7 @@ impl DentCraftApp {
         ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
             for (index, toast) in self.toasts.iter().enumerate() {
                 egui::Frame::new()
-                    .fill(p.raised)
+                    .fill(p.panel_header)
                     .stroke(Stroke::new(1.0, p.danger.gamma_multiply(0.7)))
                     .corner_radius(CornerRadius::same(10))
                     .inner_margin(Margin::symmetric(14, 10))
@@ -870,7 +872,7 @@ impl DentCraftApp {
                                 ui.with_layout(
                                     Layout::left_to_right(Align::TOP).with_main_wrap(true),
                                     |ui| {
-                                        ui.label(RichText::new(&toast.message).color(p.ink));
+                                        ui.label(RichText::new(&toast.message).color(p.text));
                                     },
                                 );
                             });
@@ -942,7 +944,7 @@ fn object_row(ui: &mut egui::Ui, obj: &mut SceneObject, hovered: bool, p: &Palet
     let loading = obj.loaded().is_none();
     ui.horizontal(|ui| {
         if loading {
-            ui.add(egui::Spinner::new().size(18.0).color(p.gold));
+            ui.add(egui::Spinner::new().size(18.0).color(p.accent));
         } else {
             egui::color_picker::color_edit_button_srgb(ui, &mut obj.color).on_hover_text("Colour");
         }
@@ -961,7 +963,8 @@ fn object_row(ui: &mut egui::Ui, obj: &mut SceneObject, hovered: bool, p: &Palet
                     obj.visible = !obj.visible;
                 }
             }
-            let name = RichText::new(&obj.name).color(if obj.visible { p.ink } else { p.muted });
+            let name =
+                RichText::new(&obj.name).color(if obj.visible { p.text } else { p.text_dim });
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                 ui.add(egui::Label::new(name).truncate())
                     .on_hover_text(obj.path.display().to_string());
@@ -969,7 +972,7 @@ fn object_row(ui: &mut egui::Ui, obj: &mut SceneObject, hovered: bool, p: &Palet
         });
     });
     if loading {
-        ui.label(RichText::new("Loading…").size(SIZE_SMALL).color(p.muted));
+        ui.label(RichText::new("Loading…").size(SIZE_SMALL).color(p.text_dim));
         return remove;
     }
     ui.horizontal(|ui| {
@@ -987,7 +990,7 @@ fn object_row(ui: &mut egui::Ui, obj: &mut SceneObject, hovered: bool, p: &Palet
         ui.label(
             RichText::new(format!("{:.0}%", obj.opacity * 100.0))
                 .size(SIZE_SMALL)
-                .color(p.muted),
+                .color(p.text_dim),
         );
     });
     ui.label(
@@ -996,7 +999,7 @@ fn object_row(ui: &mut egui::Ui, obj: &mut SceneObject, hovered: bool, p: &Palet
             group_thousands(obj.triangle_count())
         ))
         .size(SIZE_SMALL)
-        .color(p.muted),
+        .color(p.text_dim),
     );
     remove
 }
@@ -1026,7 +1029,7 @@ fn issues_box(ui: &mut egui::Ui, issues: &[dentcraft_case::CaseIssue], p: &Palet
                         egui::Label::new(
                             RichText::new(capitalize(&issue.to_string()))
                                 .size(SIZE_SMALL)
-                                .color(p.ink),
+                                .color(p.text),
                         )
                         .wrap(),
                     );
@@ -1086,18 +1089,18 @@ impl eframe::App for DentCraftApp {
         self.receive_loads();
         self.handle_input(&ctx);
         let p = self.palette();
-        let bar = |m: Margin| egui::Frame::new().fill(p.surface).inner_margin(m);
+        let bar = |m: Margin| egui::Frame::new().fill(p.panel).inner_margin(m);
 
         egui::Panel::top("top_bar")
-            .frame(bar(Margin::symmetric(16, 10)))
-            .exact_size(56.0)
+            .frame(bar(Margin::symmetric(12, 6)).fill(p.app_bg))
+            .exact_size(40.0)
             .show(ui, |ui| self.top_bar(ui));
         egui::Panel::bottom("status_bar")
-            .frame(bar(Margin::symmetric(16, 4)))
-            .exact_size(28.0)
+            .frame(bar(Margin::symmetric(10, 0)).fill(p.panel_header))
+            .exact_size(22.0)
             .show(ui, |ui| self.status_bar(ui, frame));
         egui::Panel::left("case_panel")
-            .frame(bar(Margin::same(16)))
+            .frame(bar(Margin::same(10)))
             .default_size(320.0)
             .min_size(300.0)
             .max_size(460.0)
@@ -1107,7 +1110,7 @@ impl eframe::App for DentCraftApp {
                     .show(ui, |ui| self.case_panel(ui));
             });
         egui::Panel::right("workflow_panel")
-            .frame(bar(Margin::same(16)))
+            .frame(bar(Margin::same(10)))
             .default_size(300.0)
             .min_size(280.0)
             .show(ui, |ui| self.workflow_panel(ui));

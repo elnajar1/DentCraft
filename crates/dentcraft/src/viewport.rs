@@ -248,7 +248,7 @@ impl Viewport {
                 egui::Align2::CENTER_CENTER,
                 "3D view unavailable: no compatible GPU was found",
                 egui::FontId::proportional(14.0),
-                p.muted,
+                p.text_dim,
             );
         }
 
@@ -268,8 +268,8 @@ impl Viewport {
         );
         let p = widgets::palette(ui);
         let painter = ui.painter_at(rect);
-        painter.circle_stroke(pos, 5.0, Stroke::new(1.5, p.gold));
-        painter.circle_filled(pos, 1.5, p.gold);
+        painter.circle_stroke(pos, 5.0, Stroke::new(1.5, p.accent));
+        painter.circle_filled(pos, 1.5, p.accent);
     }
 }
 

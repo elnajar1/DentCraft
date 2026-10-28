@@ -5,7 +5,7 @@ use eframe::egui::{
     Shape, Stroke, TextStyle, Ui, Vec2, WidgetText, epaint::PathShape, pos2, vec2,
 };
 
-use crate::theme::{Palette, RADIUS_PILL, SIZE_SMALL, ThemeKind};
+use crate::theme::{Palette, RADIUS_SM, SIZE_SMALL, ThemeKind};
 
 /// Palette of the theme `ui` is drawn with.
 pub fn palette(ui: &Ui) -> Palette {
@@ -33,7 +33,7 @@ pub fn pill(ui: &mut Ui, text: &str, kind: Pill, enabled: bool) -> Response {
         f32::INFINITY,
         TextStyle::Button,
     );
-    let size = vec2(galley.size().x + 32.0, 32.0);
+    let size = vec2(galley.size().x + 20.0, 26.0);
     let sense = if enabled {
         Sense::click()
     } else {
@@ -43,14 +43,14 @@ pub fn pill(ui: &mut Ui, text: &str, kind: Pill, enabled: bool) -> Response {
     let hovered = enabled && response.hovered();
     let (fill, stroke, ink) = match kind {
         Pill::Primary => (
-            if hovered { p.accent_hover } else { p.accent },
+            if hovered { p.primary_hover } else { p.primary },
             Stroke::NONE,
-            p.on_accent,
+            p.on_primary,
         ),
         Pill::Secondary => (
-            if hovered { p.raised_hover } else { p.raised },
-            Stroke::new(1.0, p.line),
-            p.ink,
+            if hovered { p.hover } else { p.panel_header },
+            Stroke::new(1.0, p.border),
+            p.text,
         ),
     };
     let alpha = if enabled { 1.0 } else { 0.45 };
@@ -58,7 +58,7 @@ pub fn pill(ui: &mut Ui, text: &str, kind: Pill, enabled: bool) -> Response {
         let painter = ui.painter();
         painter.rect(
             rect,
-            CornerRadius::same(RADIUS_PILL),
+            CornerRadius::same(RADIUS_SM),
             fill.gamma_multiply(alpha),
             stroke,
             egui::StrokeKind::Inside,
@@ -82,9 +82,9 @@ pub fn segmented<T: Copy + PartialEq>(
     let p = palette(ui);
     let mut clicked = None;
     egui::Frame::new()
-        .fill(p.raised)
-        .stroke(Stroke::new(1.0, p.line))
-        .corner_radius(CornerRadius::same(RADIUS_PILL))
+        .fill(p.panel_header)
+        .stroke(Stroke::new(1.0, p.border))
+        .corner_radius(CornerRadius::same(RADIUS_SM))
         .inner_margin(egui::Margin::same(3))
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
@@ -97,33 +97,33 @@ pub fn segmented<T: Copy + PartialEq>(
                         f32::INFINITY,
                         TextStyle::Button,
                     );
-                    let size = vec2(galley.size().x + 24.0, 26.0);
+                    let size = vec2(galley.size().x + 16.0, 22.0);
                     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
                     let fill = if on {
                         if ui.visuals().dark_mode {
-                            p.line
+                            p.border
                         } else {
-                            p.surface
+                            p.panel
                         }
                     } else if response.hovered() {
-                        p.raised_hover
+                        p.hover
                     } else {
                         Color32::TRANSPARENT
                     };
                     let stroke = if on && !ui.visuals().dark_mode {
-                        Stroke::new(1.0, p.line)
+                        Stroke::new(1.0, p.border)
                     } else {
                         Stroke::NONE
                     };
                     let painter = ui.painter();
                     painter.rect(
                         rect,
-                        CornerRadius::same(RADIUS_PILL),
+                        CornerRadius::same(RADIUS_SM),
                         fill,
                         stroke,
                         egui::StrokeKind::Inside,
                     );
-                    let ink = if on { p.ink } else { p.muted };
+                    let ink = if on { p.text } else { p.text_dim };
                     painter.galley(rect.center() - galley.size() * 0.5, galley, ink);
                     if response
                         .on_hover_cursor(CursorIcon::PointingHand)
@@ -144,7 +144,7 @@ pub fn section_label(ui: &mut Ui, text: &str) -> Response {
     ui.label(
         RichText::new(text.to_uppercase())
             .size(SIZE_SMALL)
-            .color(p.muted)
+            .color(p.text_dim)
             .extra_letter_spacing(1.2)
             .strong(),
     )
@@ -172,9 +172,13 @@ pub fn icon_button(ui: &mut Ui, icon: Icon, size: f32) -> Response {
     if ui.is_rect_visible(rect) {
         if response.hovered() {
             ui.painter()
-                .circle_filled(rect.center(), size * 0.5, p.raised_hover);
+                .circle_filled(rect.center(), size * 0.5, p.hover);
         }
-        let ink = if response.hovered() { p.ink } else { p.muted };
+        let ink = if response.hovered() {
+            p.text
+        } else {
+            p.text_dim
+        };
         paint_icon(ui.painter(), icon, rect.shrink(size * 0.22), ink, p);
     }
     response.on_hover_cursor(CursorIcon::PointingHand)
@@ -234,11 +238,7 @@ pub fn paint_icon(painter: &egui::Painter, icon: Icon, rect: Rect, ink: Color32,
         Icon::Moon => {
             // Crescent: a disc with a background-coloured disc bitten out of it.
             painter.circle_filled(c, r * 0.8, ink);
-            let bite = if ink == p.ink {
-                p.raised_hover
-            } else {
-                p.surface
-            };
+            let bite = if ink == p.text { p.hover } else { p.app_bg };
             painter.circle_filled(c + vec2(r * 0.42, -r * 0.32), r * 0.66, bite);
         }
         Icon::Fit => {
