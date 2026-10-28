@@ -5,7 +5,10 @@
 mod adjacency;
 mod bvh;
 mod curvature;
+mod fill;
 mod measure;
+mod path;
+mod region;
 mod repair;
 mod shapes;
 mod smooth;
@@ -14,6 +17,9 @@ mod topology;
 pub use adjacency::VertexAdjacency;
 pub use bvh::{Bvh, ClosestPoint, RayHit};
 pub use curvature::PrincipalCurvature;
+pub use fill::{FillReport, fill_holes};
+pub use path::{SurfacePath, path_through, ridge_cost, shortest_path, smooth_polyline_on_surface};
+pub use region::{grow_region, inside_closed_path, region_triangles};
 pub use topology::EdgeMap;
 
 use glam::DVec3;

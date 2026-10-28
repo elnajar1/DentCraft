@@ -9,12 +9,12 @@ use crate::TriMesh;
 /// Undirected edges keyed `[low, high]`, each with the triangles that use it, in mesh order.
 pub type EdgeMap = HashMap<[u32; 2], Vec<u32>>;
 
-fn edge_key([a, b]: [u32; 2]) -> [u32; 2] {
+pub(crate) fn edge_key([a, b]: [u32; 2]) -> [u32; 2] {
     if a < b { [a, b] } else { [b, a] }
 }
 
 /// The directed edges of a triangle in winding order.
-fn directed_edges(t: [u32; 3]) -> [[u32; 2]; 3] {
+pub(crate) fn directed_edges(t: [u32; 3]) -> [[u32; 2]; 3] {
     [[t[0], t[1]], [t[1], t[2]], [t[2], t[0]]]
 }
 
