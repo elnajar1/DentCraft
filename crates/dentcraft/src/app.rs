@@ -18,7 +18,7 @@ use crate::chart::{self, ChartEdit};
 use crate::document::{self, Document};
 use crate::loader::Loader;
 use crate::objects::{self, ObjectState, SceneObject};
-use crate::ribbon::{self, Command, RibbonTab, RibbonView};
+use crate::ribbon::{self, Command, RibbonTab, RibbonView, WorkspaceMenu};
 use crate::theme::{self, Palette, RADIUS_LG, SIZE_SMALL, ThemeKind};
 use crate::viewport::Viewport;
 use crate::widgets::{Icon, icon_button, paint_icon, small_button};
@@ -41,6 +41,8 @@ pub struct StartOptions {
     pub hide: Vec<ScanRole>,
     /// Ribbon tab to show first.
     pub tab: Option<RibbonTab>,
+    /// Show the workspace menu open, for screenshots.
+    pub workspace_menu_open: bool,
     pub screenshot: Option<PathBuf>,
     /// Exit code of a screenshot run, read by `main` once the window has closed.
     pub exit_code: Arc<Mutex<Option<u8>>>,
@@ -89,6 +91,7 @@ pub struct DentCraftApp {
     confirm_discard: Option<Discard>,
     window_title: String,
     ribbon_tab: RibbonTab,
+    workspace_menu: WorkspaceMenu,
     /// Open and collapsed sections of the side panels.
     sections: Sections,
 }
@@ -141,6 +144,7 @@ impl DentCraftApp {
             confirm_discard: None,
             window_title: String::new(),
             ribbon_tab: start.tab.unwrap_or_default(),
+            workspace_menu: WorkspaceMenu::new(start.workspace_menu_open),
             sections,
             case,
             objects: Vec::new(),
@@ -572,6 +576,7 @@ impl DentCraftApp {
         let has_jaw_scan = self.has_jaw_scan();
         let command = RibbonView {
             tab: &mut self.ribbon_tab,
+            workspace_menu: &mut self.workspace_menu,
             session: &self.session,
             has_jaw_scan,
             save_path: self.doc.path().map(|p| p.display().to_string()),

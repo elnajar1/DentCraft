@@ -39,6 +39,10 @@ pub struct Args {
     #[arg(long, value_enum)]
     pub tab: Option<TabArg>,
 
+    /// Popup to show open at startup, e.g. for a screenshot: workspace-menu.
+    #[arg(long, value_enum, value_name = "POPUP")]
+    pub open: Option<OpenArg>,
+
     /// Render the window once everything has loaded, write it to this PNG and exit.
     #[arg(long, value_name = "OUT.png")]
     pub screenshot: Option<PathBuf>,
@@ -78,6 +82,12 @@ impl From<TabArg> for RibbonTab {
             TabArg::View => RibbonTab::View,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum OpenArg {
+    /// The workspace list under the switcher at the left end of the ribbon.
+    WorkspaceMenu,
 }
 
 /// Parses a scan role as written on the command line.
@@ -182,6 +192,14 @@ mod tests {
         let none = Args::try_parse_from(["dentcraft"]).unwrap();
         assert!(none.hide.is_empty());
         assert_eq!(none.tab, None);
+    }
+
+    #[test]
+    fn open_shows_the_workspace_menu() {
+        let args = Args::try_parse_from(["dentcraft", "--open", "workspace-menu"]).unwrap();
+        assert_eq!(args.open, Some(OpenArg::WorkspaceMenu));
+        assert_eq!(Args::try_parse_from(["dentcraft"]).unwrap().open, None);
+        assert!(Args::try_parse_from(["dentcraft", "--open", "settings"]).is_err());
     }
 
     #[test]

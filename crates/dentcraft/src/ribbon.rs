@@ -3,14 +3,18 @@
 use dentcraft_case::ScanRole;
 use dentcraft_render::ViewPreset;
 use dentcraft_workflow::Session;
+use std::sync::Arc;
+
 use eframe::egui::{
-    Align2, Color32, CornerRadius, CursorIcon, FontId, Rect, Response, Sense, Stroke, Ui, Vec2,
-    pos2, vec2,
+    self, Align2, Color32, CornerRadius, CursorIcon, FontId, Galley, Key, Modifiers, Painter, Pos2,
+    Rect, RectAlign, Response, RichText, Sense, Shape, Stroke, Ui, UiBuilder, Vec2, pos2,
+    text::LayoutJob, vec2,
 };
 
-use crate::theme::{RADIUS_SM, SIZE_BODY, SIZE_SMALL};
+use crate::theme::{RADIUS_LG, RADIUS_MD, RADIUS_SM, SIZE_BODY, SIZE_HEADING, SIZE_SMALL};
 use crate::widgets::{self, Icon, paint_icon};
 use crate::workflow_panel::{self, StepAction};
+use crate::workspace::{self, Status, Workspace};
 
 /// Height of the tab strip.
 const TAB_HEIGHT: f32 = 28.0;
@@ -22,6 +26,27 @@ const CAPTION_HEIGHT: f32 = 15.0;
 const GROUP_PAD: f32 = 4.0;
 /// Total height of the ribbon: tab strip, hairline, commands and captions.
 pub const HEIGHT: f32 = TAB_HEIGHT + 1.0 + 2.0 * GROUP_PAD + COMMAND_SIZE.y + CAPTION_HEIGHT;
+/// Width of the workspace switcher at the left end of the ribbon.
+const SWITCHER_WIDTH: f32 = 88.0;
+/// Width of the rows of the workspace menu.
+const MENU_WIDTH: f32 = 450.0;
+
+/// Open state and keyboard highlight of the workspace menu, kept by the app between frames.
+#[derive(Debug, Default)]
+pub struct WorkspaceMenu {
+    pub open: bool,
+    /// Row picked out with Up and Down.
+    key_row: Option<usize>,
+}
+
+impl WorkspaceMenu {
+    pub fn new(open: bool) -> Self {
+        Self {
+            open,
+            key_row: None,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RibbonTab {
@@ -72,6 +97,7 @@ pub fn next_label(session: &Session) -> &'static str {
 /// The state the ribbon shows, borrowed from the app for one frame.
 pub struct RibbonView<'a> {
     pub tab: &'a mut RibbonTab,
+    pub workspace_menu: &'a mut WorkspaceMenu,
     pub session: &'a Session,
     pub has_jaw_scan: bool,
     /// Where Save writes, if the case has been saved before.
@@ -85,6 +111,18 @@ pub struct RibbonView<'a> {
 
 impl RibbonView<'_> {
     pub fn show(self, ui: &mut Ui) -> Option<Command> {
+        let full = ui.max_rect();
+        let block = Rect::from_min_size(full.min, vec2(SWITCHER_WIDTH, full.height()));
+        workspace_switcher(ui, block, self.workspace_menu);
+        let rest = Rect::from_min_max(pos2(block.right(), full.top()), full.max);
+        ui.scope_builder(UiBuilder::new().max_rect(rest), |ui| {
+            self.tabs_and_commands(ui)
+        })
+        .inner
+    }
+
+    /// The tab strip and the commands of the active tab, right of the workspace switcher.
+    fn tabs_and_commands(self, ui: &mut Ui) -> Option<Command> {
         let p = widgets::palette(ui);
         let full = ui.max_rect();
         ui.spacing_mut().item_spacing = Vec2::ZERO;
@@ -225,6 +263,224 @@ impl RibbonView<'_> {
             }
         });
     }
+}
+
+/// The block at the left end of the ribbon that shows the current workspace and opens the
+/// workspace menu below it. Adapted from SolidCraft's workspace switcher.
+fn workspace_switcher(ui: &mut Ui, block: Rect, menu: &mut WorkspaceMenu) {
+    let p = widgets::palette(ui);
+    let current = Workspace::current();
+    let response = ui.interact(
+        block,
+        ui.scope_id().with("workspace_switcher"),
+        Sense::click(),
+    );
+    if response.clicked() {
+        menu.open = !menu.open;
+    }
+    let painter = ui.painter();
+    if response.hovered() || menu.open {
+        painter.rect_filled(block, CornerRadius::ZERO, p.hover);
+    }
+    painter.rect_filled(
+        Rect::from_min_size(block.min, vec2(block.width(), 3.0)),
+        CornerRadius::ZERO,
+        current.accent(&p),
+    );
+    painter.vline(
+        block.right() - 0.5,
+        block.y_range(),
+        Stroke::new(1.0, p.border),
+    );
+    let x = block.center().x;
+    let icon = Rect::from_center_size(pos2(x, block.top() + 34.0), Vec2::splat(30.0));
+    paint_icon(painter, Icon::Workspace(current), icon, p.text, p);
+    let name = painter.layout_no_wrap(
+        current.short_name().to_owned(),
+        FontId::proportional(SIZE_BODY),
+        p.text,
+    );
+    let name_pos = pos2(x, block.top() + 64.0) - name.size() * 0.5;
+    semibold(painter, name_pos, name, p.text);
+    // The label and its dropdown arrow are centred together.
+    let label = painter.layout_no_wrap(
+        "Workspace".to_owned(),
+        FontId::proportional(SIZE_SMALL),
+        p.text_dim,
+    );
+    let label_pos = pos2(x - 6.0, block.top() + 84.0);
+    let arrow = pos2(label_pos.x + label.size().x * 0.5 + 7.0, label_pos.y + 0.5);
+    painter.galley(label_pos - label.size() * 0.5, label, p.text_dim);
+    painter.add(Shape::convex_polygon(
+        vec![
+            arrow + vec2(-3.5, -1.75),
+            arrow + vec2(3.5, -1.75),
+            arrow + vec2(0.0, 2.25),
+        ],
+        p.text_dim,
+        Stroke::NONE,
+    ));
+    let response = response
+        .on_hover_text("Change workspace")
+        .on_hover_cursor(CursorIcon::PointingHand);
+
+    // Up and Down move a highlight over the rows that can be picked; Enter picks.
+    let mut picked = None;
+    if menu.open {
+        let enabled = Workspace::ALL.map(Workspace::is_enabled);
+        let (down, up, enter) = ui.input_mut(|i| {
+            (
+                i.consume_key(Modifiers::NONE, Key::ArrowDown),
+                i.consume_key(Modifiers::NONE, Key::ArrowUp),
+                i.consume_key(Modifiers::NONE, Key::Enter),
+            )
+        });
+        if down || up {
+            menu.key_row = workspace::step_highlight(&enabled, menu.key_row, down);
+        }
+        if enter {
+            picked = menu.key_row.map(|k| Workspace::ALL[k]);
+        }
+    }
+    let key_row = menu.key_row;
+    let max_height = (ui.ctx().content_rect().bottom() - block.bottom() - 116.0).max(60.0);
+    if picked.is_none() {
+        picked = egui::Popup::from_response(&response)
+            .open_bool(&mut menu.open)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .align(RectAlign::BOTTOM_START)
+            .align_alternatives(&[])
+            .frame(egui::Frame::popup(ui.style()).inner_margin(9))
+            .show(|ui| workspace_menu(ui, key_row, max_height))
+            .and_then(|r| r.inner);
+    }
+    // Picking the current workspace just closes the menu. Switching to another arrives with the
+    // second workspace that ships; until then no other row can be picked.
+    if picked.is_some() {
+        menu.open = false;
+    }
+    if !menu.open {
+        menu.key_row = None;
+    }
+}
+
+/// The workspace menu: a header, a row per workspace and a footer note. Returns the workspace
+/// clicked. Adapted from SolidCraft's workspace menu.
+fn workspace_menu(ui: &mut Ui, key_row: Option<usize>, max_height: f32) -> Option<Workspace> {
+    let p = widgets::palette(ui);
+    ui.set_width(MENU_WIDTH);
+    ui.spacing_mut().item_spacing.y = 0.0;
+    ui.add_space(4.0);
+    ui.label(
+        RichText::new("WORKSPACE")
+            .size(SIZE_SMALL)
+            .color(p.text_dim),
+    );
+    ui.add_space(8.0);
+    let mut picked = None;
+    egui::ScrollArea::vertical()
+        .id_salt("workspace_menu_rows")
+        .max_height(max_height)
+        .show(ui, |ui| {
+            for (k, w) in Workspace::ALL.into_iter().enumerate() {
+                if workspace_row(ui, w, key_row == Some(k)) {
+                    picked = Some(w);
+                }
+            }
+        });
+    ui.add_space(6.0);
+    ui.separator();
+    ui.add_space(6.0);
+    ui.add(
+        egui::Label::new(
+            RichText::new(workspace::FOOTER)
+                .size(SIZE_SMALL)
+                .color(p.text_dim),
+        )
+        .wrap(),
+    );
+    ui.add_space(4.0);
+    picked
+}
+
+/// One row of the workspace menu: accent stripe, icon tile, title with a status badge, the
+/// description and, for a workspace that ships, its tabs. Returns true when it was clicked.
+fn workspace_row(ui: &mut Ui, w: Workspace, key_highlight: bool) -> bool {
+    let p = widgets::palette(ui);
+    let status = w.status();
+    let planned = status == Status::Planned;
+    let current = status == Status::Current;
+    let enabled = w.is_enabled();
+    let accent = w.accent(&p);
+    let soft = p.panel.lerp_to_gamma(accent, 0.10);
+    let height = if planned { 60.0 } else { 72.0 };
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (r, response) = ui.allocate_exact_size(vec2(MENU_WIDTH, height), sense);
+    let painter = ui.painter();
+    if current || (enabled && (response.hovered() || key_highlight)) {
+        painter.rect_filled(r, CornerRadius::same(RADIUS_MD - 1), soft);
+    }
+    painter.rect_filled(
+        Rect::from_min_max(
+            r.min + vec2(2.0, 7.0),
+            pos2(r.left() + 6.0, r.bottom() - 7.0),
+        ),
+        CornerRadius::same(RADIUS_SM / 2),
+        accent,
+    );
+    let tile = Rect::from_center_size(pos2(r.left() + 40.0, r.center().y), Vec2::splat(44.0));
+    let tile_fill = if planned { p.panel_header } else { soft };
+    painter.rect_filled(tile, CornerRadius::same(RADIUS_LG + 1), tile_fill);
+    let icon_ink = if enabled {
+        p.text
+    } else {
+        p.text.gamma_multiply(0.35)
+    };
+    paint_icon(painter, Icon::Workspace(w), tile.shrink(7.0), icon_ink, p);
+
+    let text = if enabled { p.text } else { p.text_dim };
+    let x = r.left() + 74.0;
+    let y = r.top() + 17.0;
+    let title = painter.layout_no_wrap(
+        w.title().to_owned(),
+        FontId::proportional(SIZE_HEADING),
+        text,
+    );
+    let badge_x = x + title.size().x + 9.0;
+    semibold(painter, pos2(x, y - title.size().y * 0.5), title, text);
+    let badge = painter.layout_no_wrap(
+        status.label().to_owned(),
+        FontId::proportional(SIZE_SMALL),
+        if current { p.on_accent } else { accent },
+    );
+    let badge_rect = Rect::from_min_size(pos2(badge_x, y - 8.0), badge.size() + vec2(12.0, 3.0));
+    let badge_fill = if current { accent } else { soft };
+    painter.rect_filled(badge_rect, CornerRadius::same(RADIUS_LG), badge_fill);
+    painter.galley(badge_rect.min + vec2(6.0, 1.5), badge, accent);
+    let line = |content: String, y: f32| {
+        let mut job = LayoutJob::simple_singleline(content, FontId::proportional(SIZE_BODY), text);
+        job.wrap.max_width = r.right() - x - 6.0;
+        job.wrap.max_rows = 1;
+        painter.galley(pos2(x, y), painter.layout_job(job), text);
+    };
+    line(w.description().to_owned(), r.top() + 29.0);
+    if let Some(tabs) = w.tabs() {
+        line(tabs, r.top() + 47.0);
+    }
+    enabled && response.on_hover_cursor(CursorIcon::PointingHand).clicked()
+}
+
+/// Paints `galley` again half a point to the right for a semibold look; the bundled fonts have
+/// no bold face.
+fn semibold(painter: &Painter, origin: Pos2, galley: Arc<Galley>, ink: Color32) {
+    let ppp = painter.pixels_per_point();
+    let origin = ((origin.to_vec2() * ppp).round() / ppp).to_pos2();
+    painter.galley(origin + vec2(0.5, 0.0), galley.clone(), ink);
+    painter.galley(origin, galley, ink);
 }
 
 /// One tab of the tab strip; the active tab is underlined in the accent.

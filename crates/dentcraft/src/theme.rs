@@ -95,6 +95,8 @@ pub struct Palette {
     pub primary_hover: Color32,
     /// Text on `primary`.
     pub on_primary: Color32,
+    /// Text on an `accent` fill, such as the Current badge of the workspace menu.
+    pub on_accent: Color32,
     pub danger: Color32,
     /// Viewport background gradient (sRGB).
     pub viewport_top: Color32,
@@ -123,6 +125,7 @@ impl Palette {
         primary: rgb(30, 80, 128),
         primary_hover: rgb(46, 99, 149),
         on_primary: Color32::WHITE,
+        on_accent: Color32::WHITE,
         danger: rgb(236, 120, 108),
         viewport_top: rgb(46, 52, 64),
         viewport_bottom: rgb(46, 52, 64),
@@ -145,6 +148,7 @@ impl Palette {
         primary: rgb(35, 110, 173),
         primary_hover: rgb(43, 118, 180),
         on_primary: Color32::WHITE,
+        on_accent: Color32::WHITE,
         danger: rgb(184, 58, 44),
         viewport_top: rgb(240, 243, 247),
         viewport_bottom: rgb(203, 210, 221),

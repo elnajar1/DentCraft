@@ -12,6 +12,7 @@ mod theme;
 mod viewport;
 mod widgets;
 mod workflow_panel;
+mod workspace;
 
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
@@ -20,7 +21,7 @@ use clap::Parser;
 use eframe::egui;
 
 use crate::app::{DentCraftApp, StartOptions};
-use crate::args::{Args, DEFAULT_SIZE};
+use crate::args::{Args, DEFAULT_SIZE, OpenArg};
 
 fn main() -> ExitCode {
     let args = Args::parse();
@@ -59,6 +60,7 @@ fn main() -> ExitCode {
         theme: args.theme.map(Into::into),
         hide: args.hide,
         tab: args.tab.map(Into::into),
+        workspace_menu_open: args.open == Some(OpenArg::WorkspaceMenu),
         screenshot: args.screenshot,
         exit_code: exit_code.clone(),
     };

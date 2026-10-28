@@ -7,6 +7,7 @@ use eframe::egui::{
 };
 
 use crate::theme::{Palette, RADIUS_SM, SIZE_SMALL, ThemeKind};
+use crate::workspace::Workspace;
 
 /// Palette of the theme `ui` is drawn with.
 pub fn palette(ui: &Ui) -> Palette {
@@ -95,6 +96,8 @@ pub enum Icon {
     Tooth,
     /// Cube with the face the view looks at filled in.
     View(ViewPreset),
+    /// Picture of a workspace for the switcher and its menu.
+    Workspace(Workspace),
 }
 
 /// Fill and ink of a flat command button in its current state.
@@ -311,7 +314,210 @@ pub fn paint_icon(painter: &egui::Painter, icon: Icon, rect: Rect, ink: Color32,
             (-0.65, 0.0),
         ]),
         Icon::View(preset) => paint_view_cube(painter, preset, c, r, ink),
+        Icon::Workspace(w) => paint_workspace(painter, w, c, r, stroke),
     }
+}
+
+/// Workspace pictures, drawn as smooth curves through points in units of the half size.
+fn paint_workspace(painter: &egui::Painter, w: Workspace, c: Pos2, r: f32, stroke: Stroke) {
+    let points = |pts: &[(f32, f32)]| -> Vec<Pos2> {
+        pts.iter().map(|&(x, y)| c + vec2(x, y) * r).collect()
+    };
+    let smooth_closed = |pts: &[(f32, f32)]| {
+        let path = spline(&points(pts), true);
+        painter.add(Shape::Path(PathShape::closed_line(path, stroke)));
+    };
+    let smooth_open = |pts: &[(f32, f32)]| {
+        painter.add(Shape::line(spline(&points(pts), false), stroke));
+    };
+    let polygon = |pts: &[(f32, f32)]| {
+        painter.add(Shape::Path(PathShape::closed_line(points(pts), stroke)));
+    };
+    let segment = |a: (f32, f32), b: (f32, f32)| {
+        painter.line_segment([c + vec2(a.0, a.1) * r, c + vec2(b.0, b.1) * r], stroke);
+    };
+    // Points on an arch around (0, cy), `t` in degrees from its front (top of the icon).
+    let arch = |rx: f32, ry: f32, cy: f32, t: f32| {
+        let t = t.to_radians();
+        (rx * t.sin(), cy - ry * t.cos())
+    };
+    match w {
+        // Molar crown: three cusps on top, a rounded margin at the bottom.
+        Workspace::CrownBridge => smooth_closed(&[
+            (-0.6, 0.72),
+            (-0.82, 0.15),
+            (-0.8, -0.45),
+            (-0.55, -0.82),
+            (-0.27, -0.55),
+            (0.0, -0.78),
+            (0.27, -0.55),
+            (0.55, -0.82),
+            (0.8, -0.45),
+            (0.82, 0.15),
+            (0.6, 0.72),
+            (0.0, 0.84),
+        ]),
+        // Dental arch standing on a plinth seen slightly from above.
+        Workspace::ModelBuilder => {
+            polygon(&[
+                (-0.92, 0.5),
+                (-0.72, 0.3),
+                (0.72, 0.3),
+                (0.92, 0.5),
+                (0.92, 0.88),
+                (-0.92, 0.88),
+            ]);
+            segment((-0.92, 0.5), (0.92, 0.5));
+            smooth_open(&[
+                (-0.66, 0.3),
+                (-0.72, -0.3),
+                (-0.42, -0.74),
+                (0.0, -0.88),
+                (0.42, -0.74),
+                (0.72, -0.3),
+                (0.66, 0.3),
+            ]);
+            smooth_open(&[
+                (-0.28, 0.3),
+                (-0.32, -0.12),
+                (0.0, -0.4),
+                (0.32, -0.12),
+                (0.28, 0.3),
+            ]);
+        }
+        // Crown on an abutment over a threaded, tapered screw.
+        Workspace::Implant => {
+            smooth_closed(&[
+                (-0.44, -0.3),
+                (-0.52, -0.66),
+                (-0.26, -0.92),
+                (0.0, -0.76),
+                (0.26, -0.92),
+                (0.52, -0.66),
+                (0.44, -0.3),
+                (0.0, -0.24),
+            ]);
+            segment((-0.16, -0.25), (-0.16, -0.08));
+            segment((0.16, -0.25), (0.16, -0.08));
+            polygon(&[
+                (-0.32, -0.08),
+                (0.32, -0.08),
+                (0.2, 0.74),
+                (0.0, 0.92),
+                (-0.2, 0.74),
+            ]);
+            for y in [0.12, 0.34, 0.56] {
+                let half = 0.32 - (y + 0.08) * 0.14;
+                segment((-half, y + 0.07), (half, y - 0.07));
+            }
+        }
+        // Horseshoe shell over the arch, open at the back.
+        Workspace::Splint => smooth_closed(&[
+            (-0.6, 0.86),
+            (-0.86, 0.3),
+            (-0.78, -0.42),
+            (-0.4, -0.82),
+            (0.0, -0.9),
+            (0.4, -0.82),
+            (0.78, -0.42),
+            (0.86, 0.3),
+            (0.6, 0.86),
+            (0.44, 0.62),
+            (0.48, 0.05),
+            (0.3, -0.36),
+            (0.0, -0.48),
+            (-0.3, -0.36),
+            (-0.48, 0.05),
+            (-0.44, 0.62),
+        ]),
+        // Gum flange with a row of teeth around the arch.
+        Workspace::Denture => {
+            let curve = |rx: f32, ry: f32| {
+                (-11..=11)
+                    .map(|i| arch(rx, ry, 0.12, i as f32 * 11.0))
+                    .collect::<Vec<_>>()
+            };
+            smooth_open(&curve(0.96, 1.02));
+            smooth_open(&curve(0.34, 0.42));
+            for i in -3..=3 {
+                let (x, y) = arch(0.66, 0.72, 0.12, i as f32 * 33.0);
+                painter.circle_stroke(c + vec2(x, y) * r, 0.15 * r, stroke);
+            }
+        }
+        // Lips around a smile with the upper teeth showing.
+        Workspace::SmileDesign => {
+            smooth_closed(&[
+                (-0.96, -0.12),
+                (-0.56, -0.5),
+                (-0.18, -0.6),
+                (0.0, -0.48),
+                (0.18, -0.6),
+                (0.56, -0.5),
+                (0.96, -0.12),
+                (0.56, 0.52),
+                (0.0, 0.74),
+                (-0.56, 0.52),
+            ]);
+            smooth_closed(&[
+                (-0.74, -0.1),
+                (-0.36, -0.22),
+                (0.0, -0.2),
+                (0.36, -0.22),
+                (0.74, -0.1),
+                (0.36, 0.3),
+                (0.0, 0.38),
+                (-0.36, 0.3),
+            ]);
+            smooth_open(&[
+                (-0.62, 0.0),
+                (-0.3, 0.12),
+                (0.0, 0.16),
+                (0.3, 0.12),
+                (0.62, 0.0),
+            ]);
+            for x in [-0.42, -0.14, 0.14, 0.42_f32] {
+                let top = -0.21 + x.abs() * 0.05;
+                let bottom = 0.16 - x * x * 0.4;
+                segment((x, top), (x, bottom));
+            }
+        }
+    }
+}
+
+/// Catmull-Rom curve through `pts`, sampled into a polyline.
+fn spline(pts: &[Pos2], closed: bool) -> Vec<Pos2> {
+    const STEPS: usize = 6;
+    let n = pts.len();
+    if n < 3 {
+        return pts.to_vec();
+    }
+    let at = |i: isize| -> Pos2 {
+        if closed {
+            pts[i.rem_euclid(n as isize) as usize]
+        } else {
+            pts[i.clamp(0, n as isize - 1) as usize]
+        }
+    };
+    let segments = if closed { n } else { n - 1 };
+    let mut out = Vec::with_capacity(segments * STEPS + 1);
+    for s in 0..segments as isize {
+        let (p0, p1, p2, p3) = (at(s - 1), at(s), at(s + 1), at(s + 2));
+        for k in 0..STEPS {
+            let t = k as f32 / STEPS as f32;
+            let (t2, t3) = (t * t, t * t * t);
+            let v = (p1.to_vec2() * 2.0
+                + (p2 - p0) * t
+                + (p0.to_vec2() * 2.0 - p1.to_vec2() * 5.0 + p2.to_vec2() * 4.0 - p3.to_vec2())
+                    * t2
+                + (p3.to_vec2() - p0.to_vec2() + p1.to_vec2() * 3.0 - p2.to_vec2() * 3.0) * t3)
+                * 0.5;
+            out.push(v.to_pos2());
+        }
+    }
+    if !closed {
+        out.push(pts[n - 1]);
+    }
+    out
 }
 
 /// Oblique cube with the front face at the lower left and the face `preset` looks at filled.
