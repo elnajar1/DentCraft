@@ -94,6 +94,10 @@ pub enum Icon {
     ChevronDown,
     /// Molar outline, for design tools.
     Tooth,
+    /// Arrow curving back to the left.
+    Undo,
+    /// Arrow curving on to the right.
+    Redo,
     /// Cube with the face the view looks at filled in.
     View(ViewPreset),
     /// Picture of a workspace for the switcher and its menu.
@@ -313,6 +317,18 @@ pub fn paint_icon(painter: &egui::Painter, icon: Icon, rect: Rect, ink: Color32,
             (-0.5, 0.45),
             (-0.65, 0.0),
         ]),
+        Icon::Undo | Icon::Redo => {
+            // A hook: down the right side of an arc, then back along the top to the arrow tip.
+            let s = if icon == Icon::Undo { 1.0 } else { -1.0 };
+            let mut hook = vec![(-0.35 * s, 0.75)];
+            for i in 0..=8 {
+                let a = std::f32::consts::FRAC_PI_2 - i as f32 * std::f32::consts::PI / 8.0;
+                hook.push(((0.15 + 0.6 * a.cos()) * s, 0.15 + 0.6 * a.sin()));
+            }
+            hook.push((-0.75 * s, -0.45));
+            open(&hook);
+            open(&[(-0.4 * s, -0.8), (-0.75 * s, -0.45), (-0.4 * s, -0.1)]);
+        }
         Icon::View(preset) => paint_view_cube(painter, preset, c, r, ink),
         Icon::Workspace(w) => paint_workspace(painter, w, c, r, stroke),
     }

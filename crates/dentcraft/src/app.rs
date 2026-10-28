@@ -9,13 +9,14 @@ use dentcraft_mesh::Aabb;
 use dentcraft_render::{MeshId, ViewPreset};
 use dentcraft_workflow::{Session, plan};
 use eframe::egui::{
-    self, Align, Align2, ColorImage, CornerRadius, Key, Layout, Margin, RichText, Stroke,
-    TextureHandle, TextureOptions, vec2,
+    self, Align, Align2, ColorImage, CornerRadius, Key, KeyboardShortcut, Layout, Margin,
+    Modifiers, RichText, Stroke, TextureHandle, TextureOptions, vec2,
 };
 
 use crate::browser::{self, SECTIONS_KEY, Section, Sections};
 use crate::chart::{self, ChartEdit};
 use crate::document::{self, Document};
+use crate::history::History;
 use crate::loader::Loader;
 use crate::objects::{self, ObjectState, SceneObject};
 use crate::ribbon::{self, Command, RibbonTab, RibbonView, WorkspaceMenu};
@@ -88,6 +89,8 @@ pub struct DentCraftApp {
     /// Height of the workflow step card last frame.
     workflow_card_height: f32,
     doc: Document,
+    /// Undo and redo of the case's design.
+    history: History,
     confirm_discard: Option<Discard>,
     window_title: String,
     ribbon_tab: RibbonTab,
@@ -141,6 +144,7 @@ impl DentCraftApp {
             workflow_error: None,
             workflow_card_height: 260.0,
             doc: Document::untitled(&case),
+            history: History::default(),
             confirm_discard: None,
             window_title: String::new(),
             ribbon_tab: start.tab.unwrap_or_default(),
@@ -331,7 +335,16 @@ impl DentCraftApp {
         self.auto_fit = true;
         self.session = Session::for_case(&case);
         self.workflow_error = None;
+        self.history.clear();
         self.case = case;
+    }
+
+    fn undo(&mut self) {
+        self.history.undo(&mut self.case.design);
+    }
+
+    fn redo(&mut self) {
+        self.history.redo(&mut self.case.design);
     }
 
     fn new_case(&mut self) {
@@ -487,6 +500,21 @@ impl DentCraftApp {
             Key::Num5,
             Key::Num6,
         ];
+        // Ctrl+Shift+Z first: Ctrl+Z also matches while Shift is held.
+        let (undo, redo) = ctx.input_mut(|i| {
+            let redo = i.consume_shortcut(&KeyboardShortcut::new(
+                Modifiers::COMMAND | Modifiers::SHIFT,
+                Key::Z,
+            )) || i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Y));
+            let undo = i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Z));
+            (undo, redo)
+        });
+        if undo {
+            self.undo();
+        }
+        if redo {
+            self.redo();
+        }
         let (preset, fit) = ctx.input(|i| {
             let preset = keys
                 .iter()
@@ -502,7 +530,7 @@ impl DentCraftApp {
         }
     }
 
-    /// Row 1: logo, app name, case name, view preset and theme toggle.
+    /// Row 1: logo, app name, undo and redo, case name, view preset and theme toggle.
     fn app_bar(&mut self, ui: &mut egui::Ui) {
         let p = self.palette();
         ui.horizontal_centered(|ui| {
@@ -515,6 +543,22 @@ impl DentCraftApp {
             );
             ui.label(RichText::new("DentCraft").size(13.0).strong().color(p.text));
             ui.add_space(8.0);
+            // Quick-access buttons next to the app name, as in SolidCraft.
+            let undo = self
+                .history
+                .undo_label()
+                .map(|l| format!("Undo {l}  (Ctrl+Z)"));
+            if history_button(ui, Icon::Undo, undo, "Nothing to undo").clicked() {
+                self.undo();
+            }
+            let redo = self
+                .history
+                .redo_label()
+                .map(|l| format!("Redo {l}  (Ctrl+Y)"));
+            if history_button(ui, Icon::Redo, redo, "Nothing to redo").clicked() {
+                self.redo();
+            }
+            ui.add_space(4.0);
             ui.add(egui::Separator::default().vertical().spacing(8.0));
             ui.add_space(4.0);
             ui.add(
@@ -1053,6 +1097,20 @@ fn object_row(ui: &mut egui::Ui, obj: &mut SceneObject, hovered: bool, p: &Palet
         .color(p.text_dim),
     );
     remove
+}
+
+/// Undo or redo button of the app bar: enabled with `tip` when there is a step to take.
+fn history_button(
+    ui: &mut egui::Ui,
+    icon: Icon,
+    tip: Option<String>,
+    disabled_tip: &str,
+) -> egui::Response {
+    let enabled = tip.is_some();
+    ui.add_enabled_ui(enabled, |ui| icon_button(ui, icon, 24.0))
+        .inner
+        .on_hover_text(tip.unwrap_or_default())
+        .on_disabled_hover_text(disabled_tip)
 }
 
 /// Case issues in a calm warning box.

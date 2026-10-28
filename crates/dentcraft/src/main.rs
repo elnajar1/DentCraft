@@ -5,6 +5,7 @@ mod args;
 mod browser;
 mod chart;
 mod document;
+mod history;
 mod loader;
 mod objects;
 mod ribbon;

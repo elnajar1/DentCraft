@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Fdi, Material};
+use crate::{Design, Fdi, Material};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -136,6 +136,9 @@ pub struct Case {
     pub scans: Vec<Scan>,
     #[serde(default)]
     pub material: Material,
+    /// The user's design decisions (file version 2 and later).
+    #[serde(default, skip_serializing_if = "Design::is_empty")]
+    pub design: Design,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -161,6 +164,7 @@ impl Case {
             connectors: Vec::new(),
             scans: Vec::new(),
             material: Material::default(),
+            design: Design::default(),
         }
     }
 
@@ -274,7 +278,8 @@ struct CaseFile {
 }
 
 const FORMAT: &str = "dentcraft-case";
-const VERSION: u32 = 1;
+/// 2 added the design section; version 1 files load with an empty design.
+const VERSION: u32 = 2;
 
 #[derive(Debug, thiserror::Error)]
 pub enum CaseFileError {
@@ -396,6 +401,88 @@ mod tests {
             file: "upper.stl".into(),
         });
         assert!(case.validate().is_empty());
+    }
+
+    fn temp_file(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("dentcraft-case-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("case.dentcraft")
+    }
+
+    fn designed_bridge() -> Case {
+        let mut case = three_unit_bridge();
+        case.design.jaw_frame = Some(crate::JawFrame {
+            origin: [1.0, 2.0, 3.0],
+            occlusal: [0.0, 0.0, 1.0],
+            forward: [0.0, 1.0, 0.0],
+        });
+        let tooth = case.design.teeth.entry(t(14)).or_default();
+        tooth.margin = Some(vec![
+            glam::DVec3::new(0.5, 0.25, -1.0),
+            glam::DVec3::new(1.0 / 3.0, 2.0, 0.0),
+            glam::DVec3::new(-4.0, 1e-9, 7.5),
+        ]);
+        tooth.insertion_axis = Some(glam::DVec3::new(0.0, 0.1, 0.995));
+        tooth.inner_surface.cement_gap = Some(0.07);
+        tooth.inner_surface.seal_width = Some(0.8);
+        case.design
+            .teeth
+            .entry(t(16))
+            .or_default()
+            .inner_surface
+            .seal_gap = Some(0.02);
+        case
+    }
+
+    #[test]
+    fn version_2_round_trips_the_design_exactly() {
+        let case = designed_bridge();
+        let path = temp_file("v2");
+        case.save(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("\"version\": 2"), "{text}");
+        assert_eq!(Case::load(&path).unwrap(), case);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn version_1_files_load_with_an_empty_design() {
+        let path = temp_file("v1");
+        std::fs::write(
+            &path,
+            r#"{"format":"dentcraft-case","version":1,"case":{"name":"old",
+                "units":[{"tooth":14,"kind":"crown"}]}}"#,
+        )
+        .unwrap();
+        let case = Case::load(&path).unwrap();
+        assert_eq!(case.units.len(), 1);
+        assert!(case.design.is_empty());
+        // An empty design is left out of the file.
+        assert!(!Case::new("x").to_json().contains("design"));
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn malformed_designs_are_rejected() {
+        let path = temp_file("bad");
+        for design in [
+            r#"{"teeth":{"99":{}}}"#,
+            r#"{"teeth":{"14":{"margin":[[1.0,2.0]]}}}"#,
+            r#"{"teeth":{"14":{"insertion_axis":"up"}}}"#,
+            r#"{"jaw_frame":{"origin":[0,0,0]}}"#,
+            r#"{"teeth":{"14":{"inner_surface":{"cement_gap":"wide"}}}}"#,
+        ] {
+            let text = format!(
+                r#"{{"format":"dentcraft-case","version":2,"case":{{"name":"x","design":{design}}}}}"#
+            );
+            std::fs::write(&path, text).unwrap();
+            assert!(
+                matches!(Case::load(&path), Err(CaseFileError::Parse { .. })),
+                "{design} was accepted"
+            );
+        }
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[test]
