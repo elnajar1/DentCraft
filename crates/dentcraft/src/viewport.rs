@@ -1,17 +1,22 @@
-//! The 3D viewport: wgpu paint callback, camera interaction, hover picking and overlays.
+//! The 3D viewport: wgpu paint callback, camera interaction, hover picking, tools and overlays.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use dentcraft_mesh::Aabb;
 use dentcraft_render::{
-    Camera, DrawItem, MeshData, MeshId, MeshRenderer, RenderOptions, ViewPreset,
+    Camera, DrawItem, MeshData, MeshId, MeshRenderer, Overlay, RenderOptions, ViewPreset,
 };
-use eframe::egui::{self, Color32, PointerButton, Pos2, Rect, Sense, Stroke, Ui, vec2};
+use eframe::egui::{
+    self, Color32, CornerRadius, CursorIcon, FontId, PointerButton, Pos2, Rect, Sense, Stroke, Ui,
+    vec2,
+};
 use eframe::egui_wgpu::{self, wgpu};
 use glam::{DVec3, Vec2};
 
-use crate::objects::{SceneObject, pick};
+use crate::objects::SceneObject;
+use crate::theme::{RADIUS_LG, SIZE_BODY};
+use crate::tools::{self, HANDLE_RADIUS, Pointer, SurfaceHit, Tools};
 use crate::widgets;
 
 /// Seconds of a camera transition to a preset or a fit.
@@ -20,7 +25,9 @@ const TRANSITION: f32 = 0.5;
 /// GPU state of the viewport, kept in egui-wgpu's callback resources.
 struct ViewportResources {
     renderer: MeshRenderer,
-    uploaded: HashSet<MeshId>,
+    /// The data each mesh was uploaded from; a different allocation (a tool's colours) uploads
+    /// again. Holding the `Arc` keeps its address from being reused.
+    uploaded: HashMap<MeshId, Arc<MeshData>>,
 }
 
 /// Creates the mesh renderer. Call once at startup with eframe's render state.
@@ -37,7 +44,7 @@ pub fn init_gpu(render_state: &egui_wgpu::RenderState) {
         .callback_resources
         .insert(ViewportResources {
             renderer,
-            uploaded: HashSet::new(),
+            uploaded: HashMap::new(),
         });
 }
 
@@ -45,8 +52,20 @@ pub fn init_gpu(render_state: &egui_wgpu::RenderState) {
 struct SceneCallback {
     camera: Camera,
     items: Vec<(DrawItem, Arc<MeshData>)>,
+    /// Line widths and handle radii in points; scaled to pixels when rendering.
+    overlays: Vec<Overlay>,
     options: RenderOptions,
     size_points: egui::Vec2,
+}
+
+/// `overlay` with its screen sizes multiplied by `scale`.
+fn scale_overlay(overlay: &Overlay, scale: f32) -> Overlay {
+    let mut o = overlay.clone();
+    match &mut o {
+        Overlay::Polyline { width_px, .. } => *width_px *= scale,
+        Overlay::Points { radius_px, .. } => *radius_px *= scale,
+    }
+    o
 }
 
 impl egui_wgpu::CallbackTrait for SceneCallback {
@@ -61,31 +80,47 @@ impl egui_wgpu::CallbackTrait for SceneCallback {
         let Some(res) = resources.get_mut::<ViewportResources>() else {
             return Vec::new();
         };
-        // Keep the GPU meshes in step with the objects: drop removed ones, upload new ones.
-        let wanted: HashSet<MeshId> = self.items.iter().map(|(i, _)| i.mesh).collect();
-        let stale: Vec<MeshId> = res.uploaded.difference(&wanted).copied().collect();
+        // Keep the GPU meshes in step with the objects: drop removed ones, upload new or changed
+        // ones.
+        let stale: Vec<MeshId> = res
+            .uploaded
+            .keys()
+            .filter(|id| !self.items.iter().any(|(i, _)| i.mesh == **id))
+            .copied()
+            .collect();
         for id in stale {
             res.renderer.remove(id);
             res.uploaded.remove(&id);
         }
         for (item, data) in &self.items {
-            if res.uploaded.insert(item.mesh) {
+            if !res
+                .uploaded
+                .get(&item.mesh)
+                .is_some_and(|d| Arc::ptr_eq(d, data))
+            {
                 res.renderer.upload(device, item.mesh, data);
+                res.uploaded.insert(item.mesh, data.clone());
             }
         }
         let draws: Vec<DrawItem> = self.items.iter().map(|(i, _)| *i).collect();
         let ppp = screen.pixels_per_point;
+        let overlays: Vec<Overlay> = self
+            .overlays
+            .iter()
+            .map(|o| scale_overlay(o, ppp))
+            .collect();
         let size = [
             (self.size_points.x * ppp).round().max(1.0) as u32,
             (self.size_points.y * ppp).round().max(1.0) as u32,
         ];
-        res.renderer.render(
+        res.renderer.render_with_overlays(
             device,
             queue,
             encoder,
             size,
             &self.camera,
             &draws,
+            &overlays,
             &self.options,
         );
         Vec::new()
@@ -116,6 +151,8 @@ pub struct Viewport {
     pub preset: Option<ViewPreset>,
     /// Surface point under the pointer, in millimetres.
     pub hover: Option<DVec3>,
+    /// The scan surface under the pointer, with the object it belongs to.
+    hit: Option<SurfaceHit>,
     last_pointer: Option<Pos2>,
     gpu: bool,
 }
@@ -128,9 +165,16 @@ impl Viewport {
             camera,
             preset: Some(preset),
             hover: None,
+            hit: None,
             last_pointer: None,
             gpu,
         }
+    }
+
+    /// Forgets the surface point under the pointer, e.g. after the scans changed.
+    pub fn clear_hover(&mut self) {
+        self.hover = None;
+        self.hit = None;
     }
 
     /// Smoothly turns to `preset`, framing `bounds`.
@@ -151,7 +195,7 @@ impl Viewport {
         }
     }
 
-    /// Draws the scene into `rect` and handles mouse interaction.
+    /// Draws the scene into `rect` and handles mouse interaction, passing tool events to `tools`.
     pub fn show(
         &mut self,
         ui: &mut Ui,
@@ -159,6 +203,7 @@ impl Viewport {
         objects: &[SceneObject],
         bounds: Option<&Aabb>,
         options: RenderOptions,
+        tools: &mut Tools,
     ) -> ViewportOutput {
         let mut out = ViewportOutput::default();
         let response = ui.interact(
@@ -167,17 +212,29 @@ impl Viewport {
             Sense::click_and_drag(),
         );
         self.camera.aspect = rect.width().max(1.0) / rect.height().max(1.0);
+        let min = Vec2::new(rect.left(), rect.top());
+        let size = Vec2::new(rect.width(), rect.height());
+        let px = |p: Pos2| Vec2::new(p.x, p.y);
 
-        let ndc = |p: Pos2| {
-            Vec2::new(
-                (p.x - rect.left()) / rect.width() * 2.0 - 1.0,
-                1.0 - (p.y - rect.top()) / rect.height() * 2.0,
-            )
+        // A primary drag that starts on a tool handle moves the handle instead of orbiting.
+        let handles = tools.handles();
+        let handle_at = |camera: &Camera, p: Pos2| {
+            tools::pick_handle(camera, min, size, &handles, px(p), HANDLE_RADIUS)
         };
+        if response.drag_started_by(PointerButton::Primary)
+            && let Some(origin) = ui.input(|i| i.pointer.press_origin())
+            && let Some(handle) = handle_at(&self.camera, origin)
+        {
+            let pixel = px(origin);
+            let hit = tools::surface_hit(objects, &self.camera, pixel, min, size);
+            tools.drag_start(handle, &Pointer { pixel, hit });
+        }
+        let handle_drag = tools.dragging().is_some();
+
         let delta = response.drag_delta();
         let drag = Vec2::new(delta.x, delta.y);
         let mut moved = false;
-        if response.dragged_by(PointerButton::Primary) && drag != Vec2::ZERO {
+        if response.dragged_by(PointerButton::Primary) && !handle_drag && drag != Vec2::ZERO {
             self.camera.orbit(drag);
             self.preset = None;
             moved = true;
@@ -199,7 +256,8 @@ impl Viewport {
                 factor /= pinch;
             }
             if factor != 1.0 {
-                self.camera.zoom_at(factor, ndc(pointer));
+                let ndc = Camera::pixel_to_ndc(px(pointer), min, size);
+                self.camera.zoom_at(factor, ndc);
                 moved = true;
             }
         }
@@ -215,27 +273,76 @@ impl Viewport {
             ui.ctx().request_repaint();
         }
 
-        // Hover picking: only when the pointer or the view changed.
-        let dragging = response.dragged();
-        let pointer = response.hover_pos().filter(|_| !dragging);
+        // Surface picking: only when the pointer or the view changed, and not while orbiting or
+        // panning. A dragged handle follows the surface under the pointer.
+        let orbiting = response.dragged() && !handle_drag;
+        let pointer = if handle_drag {
+            response.interact_pointer_pos()
+        } else {
+            response.hover_pos().filter(|_| !orbiting)
+        };
         if pointer != self.last_pointer || moved || animating {
             self.last_pointer = pointer;
-            self.hover = pointer.and_then(|p| {
-                let (origin, dir) = self.camera.ray(ndc(p));
-                pick(objects, origin.as_dvec3(), dir.as_dvec3()).map(|(_, point)| point)
+            self.hit =
+                pointer.and_then(|p| tools::surface_hit(objects, &self.camera, px(p), min, size));
+            self.hover = self.hit.map(|h| h.point);
+            let now = pointer.map(|p| Pointer {
+                pixel: px(p),
+                hit: self.hit,
             });
+            match (&now, handle_drag) {
+                (Some(p), true) => tools.drag(p),
+                (_, false) => tools.hover(now.as_ref()),
+                (None, true) => {}
+            }
+        }
+        if handle_drag && !response.dragged() {
+            tools.drag_end(&Pointer {
+                pixel: pointer.map_or(Vec2::ZERO, px),
+                hit: self.hit,
+            });
+        } else if !handle_drag
+            && response.clicked_by(PointerButton::Primary)
+            && let Some(p) = response.interact_pointer_pos()
+        {
+            let pixel = px(p);
+            let hit = tools::surface_hit(objects, &self.camera, pixel, min, size);
+            tools.click(&Pointer { pixel, hit });
+        }
+
+        // Cursor: a hand over handles, a crosshair while a tool picks surfaces.
+        if tools.dragging().is_some() {
+            ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+        } else if let Some(p) = response.hover_pos().filter(|_| !orbiting) {
+            if handle_at(&self.camera, p).is_some() {
+                ui.ctx().set_cursor_icon(CursorIcon::Grab);
+            } else if tools.picks_surface() {
+                ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
+            }
         }
 
         if self.gpu {
+            let colors = tools.vertex_colors();
             let items = objects
                 .iter()
-                .filter_map(|o| o.loaded().map(|l| (o.draw_item(), l.render.clone())))
+                .filter_map(|o| {
+                    let l = o.loaded()?;
+                    let mut item = o.draw_item();
+                    Some(match &colors {
+                        Some(c) if c.scan == o.id => {
+                            item.vertex_colors = true;
+                            (item, c.data.clone())
+                        }
+                        _ => (item, l.render.clone()),
+                    })
+                })
                 .collect();
             ui.painter().add(egui_wgpu::Callback::new_paint_callback(
                 rect,
                 SceneCallback {
                     camera: self.camera.clone(),
                     items,
+                    overlays: tools.overlays(&widgets::palette(ui)),
                     options,
                     size_points: rect.size(),
                 },
@@ -252,20 +359,53 @@ impl Viewport {
             );
         }
 
-        self.paint_hover_marker(ui, rect);
+        if !tools.picks_surface() {
+            self.paint_hover_marker(ui, rect);
+        }
+        self.paint_labels(ui, rect, tools);
         paint_axis_gizmo(ui, rect, &self.camera);
         out
     }
 
+    /// Screen position of a world point in `rect`, or `None` behind the camera.
+    fn to_screen(&self, rect: Rect, point: DVec3) -> Option<Pos2> {
+        let min = Vec2::new(rect.left(), rect.top());
+        let size = Vec2::new(rect.width(), rect.height());
+        self.camera
+            .project_to_pixel(point.as_vec3(), min, size)
+            .map(|p| Pos2::new(p.x, p.y))
+    }
+
+    /// The active tool's labels, each in a theme pill just above and right of its anchor.
+    fn paint_labels(&self, ui: &Ui, rect: Rect, tools: &Tools) {
+        let p = widgets::palette(ui);
+        let painter = ui.painter_at(rect);
+        for label in tools.labels() {
+            let Some(at) = self.to_screen(rect, label.anchor) else {
+                continue;
+            };
+            let galley =
+                painter.layout_no_wrap(label.text, FontId::proportional(SIZE_BODY), p.text);
+            let pill = Rect::from_min_size(
+                at + vec2(10.0, -galley.size().y - 18.0),
+                galley.size() + vec2(18.0, 8.0),
+            );
+            painter.rect(
+                pill,
+                CornerRadius::same(RADIUS_LG),
+                p.panel_header,
+                Stroke::new(1.0, p.accent),
+                egui::StrokeKind::Inside,
+            );
+            painter.galley(pill.min + vec2(9.0, 4.0), galley, p.text);
+        }
+    }
+
     fn paint_hover_marker(&self, ui: &Ui, rect: Rect) {
         let Some(point) = self.hover else { return };
-        let Some(ndc) = self.camera.project(point.as_vec3()) else {
+        let Some(pos) = self.to_screen(rect, point) else {
             return;
         };
-        let pos = Pos2::new(
-            rect.left() + (ndc.x + 1.0) * 0.5 * rect.width(),
-            rect.top() + (1.0 - ndc.y) * 0.5 * rect.height(),
-        );
         let p = widgets::palette(ui);
         let painter = ui.painter_at(rect);
         painter.circle_stroke(pos, 5.0, Stroke::new(1.5, p.accent));

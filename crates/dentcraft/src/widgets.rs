@@ -92,6 +92,8 @@ pub enum Icon {
     ChevronRight,
     /// Chevron pointing down: an open section.
     ChevronDown,
+    /// Ruler with tick marks, for measuring.
+    Ruler,
     /// Molar outline, for design tools.
     Tooth,
     /// Arrow curving back to the left.
@@ -298,6 +300,15 @@ pub fn paint_icon(painter: &egui::Painter, icon: Icon, rect: Rect, ink: Color32,
         }
         Icon::ChevronRight => open(&[(-0.3, -0.7), (0.4, 0.0), (-0.3, 0.7)]),
         Icon::ChevronDown => open(&[(-0.7, -0.3), (0.0, 0.4), (0.7, -0.3)]),
+        Icon::Ruler => {
+            // A ruler lying at 45 degrees, ticks of two lengths along its upper edge.
+            closed(&[(-0.95, 0.45), (0.45, -0.95), (0.95, -0.45), (-0.45, 0.95)]);
+            for (i, len) in [0.3, 0.18, 0.3, 0.18, 0.3].into_iter().enumerate() {
+                let t = -0.5 + i as f32 * 0.25;
+                let (x, y) = (t - 0.25, -t - 0.25);
+                open(&[(x, y), (x + len * 0.7, y + len * 0.7)]);
+            }
+        }
         Icon::Tooth => closed(&[
             (-0.75, -0.45),
             (-0.6, -0.82),

@@ -10,6 +10,7 @@ mod loader;
 mod objects;
 mod ribbon;
 mod theme;
+mod tools;
 mod viewport;
 mod widgets;
 mod workflow_panel;
@@ -63,6 +64,7 @@ fn main() -> ExitCode {
         tab: args.tab.map(Into::into),
         workspace_menu_open: args.open == Some(OpenArg::WorkspaceMenu),
         screenshot: args.screenshot,
+        measure: args.measure,
         exit_code: exit_code.clone(),
     };
     let result = eframe::run_native(

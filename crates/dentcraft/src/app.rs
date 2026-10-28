@@ -8,6 +8,8 @@ use dentcraft_case::{Case, Material, Scan, ScanRole};
 use dentcraft_mesh::Aabb;
 use dentcraft_render::{MeshId, ViewPreset};
 use dentcraft_workflow::{Session, plan};
+use glam::DVec3;
+
 use eframe::egui::{
     self, Align, Align2, ColorImage, CornerRadius, Key, KeyboardShortcut, Layout, Margin,
     Modifiers, RichText, Stroke, TextureHandle, TextureOptions, vec2,
@@ -21,6 +23,7 @@ use crate::loader::Loader;
 use crate::objects::{self, ObjectState, SceneObject};
 use crate::ribbon::{self, Command, RibbonTab, RibbonView, WorkspaceMenu};
 use crate::theme::{self, Palette, RADIUS_LG, SIZE_SMALL, ThemeKind};
+use crate::tools::{self, MEASURE, Measure, Tools};
 use crate::viewport::Viewport;
 use crate::widgets::{Icon, icon_button, paint_icon, small_button};
 use crate::workflow_panel::{self, StepAction, WorkflowView};
@@ -45,6 +48,8 @@ pub struct StartOptions {
     /// Show the workspace menu open, for screenshots.
     pub workspace_menu_open: bool,
     pub screenshot: Option<PathBuf>,
+    /// Two points to measure between, snapped to the scans once they have loaded.
+    pub measure: Option<[DVec3; 2]>,
     /// Exit code of a screenshot run, read by `main` once the window has closed.
     pub exit_code: Arc<Mutex<Option<u8>>>,
 }
@@ -97,6 +102,10 @@ pub struct DentCraftApp {
     workspace_menu: WorkspaceMenu,
     /// Open and collapsed sections of the side panels.
     sections: Sections,
+    /// The active viewport tool.
+    tools: Tools,
+    /// Points from `--measure`, waiting for the scans to load.
+    pending_measure: Option<[DVec3; 2]>,
 }
 
 /// The logo shipped with the app, decoded to RGBA.
@@ -150,6 +159,8 @@ impl DentCraftApp {
             ribbon_tab: start.tab.unwrap_or_default(),
             workspace_menu: WorkspaceMenu::new(start.workspace_menu_open),
             sections,
+            tools: Tools::default(),
+            pending_measure: start.measure,
             case,
             objects: Vec::new(),
             next_id: 1,
@@ -263,6 +274,13 @@ impl DentCraftApp {
         }
         if self.objects.iter().all(|o| o.loaded().is_some()) && !self.objects.is_empty() {
             self.auto_fit = false;
+            if let Some([a, b]) = self.pending_measure.take() {
+                let snap = |p| tools::snap_to_surface(&self.objects, p);
+                match (snap(a), snap(b)) {
+                    (Some(a), Some(b)) => self.tools.activate(Box::new(Measure::between(a, b))),
+                    _ => self.fail("--measure: no visible scan to snap the points to".to_owned()),
+                }
+            }
         }
         // Scans still loading belong to the case too, so opening a case does not mark it changed.
         self.case.scans = self
@@ -330,7 +348,8 @@ impl DentCraftApp {
     /// Clears the scene and makes `case` the open case.
     fn reset(&mut self, case: Case) {
         self.objects.clear();
-        self.viewport.hover = None;
+        self.viewport.clear_hover();
+        self.tools.deactivate();
         self.hovered_row = None;
         self.auto_fit = true;
         self.session = Session::for_case(&case);
@@ -528,6 +547,14 @@ impl DentCraftApp {
         if fit {
             self.viewport.fit(self.bounds().as_ref());
         }
+        let (escape, delete) =
+            ctx.input(|i| (i.key_pressed(Key::Escape), i.key_pressed(Key::Delete)));
+        if escape {
+            self.tools.escape();
+        }
+        if delete {
+            self.tools.delete();
+        }
     }
 
     /// Row 1: logo, app name, undo and redo, case name, view preset and theme toggle.
@@ -627,6 +654,7 @@ impl DentCraftApp {
             preset: self.viewport.preset,
             upper_visible: objects::role_visible(&self.objects, ScanRole::Upper),
             lower_visible: objects::role_visible(&self.objects, ScanRole::Lower),
+            active_tool: self.tools.active_name(),
         }
         .show(ui);
         if let Some(command) = command {
@@ -646,6 +674,13 @@ impl DentCraftApp {
             Command::Fit => self.viewport.fit(self.bounds().as_ref()),
             Command::ShowRole(role, visible) => {
                 objects::set_role_visible(&mut self.objects, role, visible);
+            }
+            Command::Measure => {
+                if self.tools.active_name() == Some(MEASURE) {
+                    self.tools.deactivate();
+                } else {
+                    self.tools.activate(Box::<Measure>::default());
+                }
             }
         }
     }
@@ -769,7 +804,7 @@ impl DentCraftApp {
         }
         if let Some(index) = remove {
             self.objects.remove(index);
-            self.viewport.hover = None;
+            self.viewport.clear_hover();
         }
     }
 
@@ -878,9 +913,14 @@ impl DentCraftApp {
         let rect = ui.max_rect();
         let bounds = self.bounds();
         let options = self.palette().render_options(self.theme);
-        let out = self
-            .viewport
-            .show(ui, rect, &self.objects, bounds.as_ref(), options);
+        let out = self.viewport.show(
+            ui,
+            rect,
+            &self.objects,
+            bounds.as_ref(),
+            options,
+            &mut self.tools,
+        );
         if out.interacted {
             self.auto_fit = false;
         }
@@ -983,6 +1023,7 @@ impl DentCraftApp {
 
     fn drive_screenshot(&mut self, ctx: &egui::Context) {
         let busy = self.objects.iter().any(|o| o.loaded().is_none())
+            || self.pending_measure.is_some()
             || self.viewport.camera.is_animating();
         let Some(job) = &mut self.screenshot else {
             return;

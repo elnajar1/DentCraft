@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use clap::{Parser, ValueEnum};
 use dentcraft_case::ScanRole;
 use dentcraft_render::ViewPreset;
+use glam::DVec3;
 
 use crate::ribbon::RibbonTab;
 use crate::theme::ThemeKind;
@@ -50,6 +51,11 @@ pub struct Args {
     /// Window size in points, e.g. 1600x1000.
     #[arg(long, value_name = "WxH", value_parser = parse_size)]
     pub size: Option<[u32; 2]>,
+
+    /// Start the Measure tool between two points in millimetres, e.g. "0,0,0;10,0,0". Each point
+    /// snaps to the nearest surface of the visible scans once they have loaded.
+    #[arg(long, value_name = "X,Y,Z;X,Y,Z", value_parser = parse_measure)]
+    pub measure: Option<[DVec3; 2]>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -128,6 +134,26 @@ pub fn parse_size(text: &str) -> Result<[u32; 2], String> {
         ));
     }
     Ok([w, h])
+}
+
+/// Parses two points `x,y,z;x,y,z` of finite numbers.
+pub fn parse_measure(text: &str) -> Result<[DVec3; 2], String> {
+    let bad = || format!("invalid points `{text}` (expected x,y,z;x,y,z, e.g. 0,0,0;10,0,0)");
+    let point = |part: &str| -> Result<DVec3, String> {
+        let v: Vec<f64> = part
+            .split(',')
+            .map(|n| n.trim().parse::<f64>().map_err(|_| bad()))
+            .collect::<Result<_, _>>()?;
+        match v[..] {
+            [x, y, z] if v.iter().all(|c| c.is_finite()) => Ok(DVec3::new(x, y, z)),
+            _ => Err(bad()),
+        }
+    };
+    let mut parts = text.split(';');
+    let (Some(a), Some(b), None) = (parts.next(), parts.next(), parts.next()) else {
+        return Err(bad());
+    };
+    Ok([point(a)?, point(b)?])
 }
 
 #[cfg(test)]
@@ -220,6 +246,34 @@ mod tests {
     fn unknown_role_and_tab_are_errors() {
         assert!(Args::try_parse_from(["dentcraft", "--hide", "maxilla"]).is_err());
         assert!(Args::try_parse_from(["dentcraft", "--tab", "sculpt"]).is_err());
+    }
+
+    #[test]
+    fn measure_parses_two_points() {
+        assert_eq!(
+            parse_measure("1,2,3;-4.5, 0 ,1e1"),
+            Ok([DVec3::new(1.0, 2.0, 3.0), DVec3::new(-4.5, 0.0, 10.0)])
+        );
+        let args = Args::try_parse_from(["dentcraft", "--measure", "0,0,0;1,1,1"]).unwrap();
+        assert_eq!(args.measure, Some([DVec3::ZERO, DVec3::ONE]));
+        assert_eq!(Args::try_parse_from(["dentcraft"]).unwrap().measure, None);
+    }
+
+    #[test]
+    fn measure_rejects_malformed_and_non_finite_points() {
+        for bad in [
+            "",
+            "1,2,3",
+            "1,2,3;4,5",
+            "1,2,3;4,5,6,7",
+            "1,2,3;4,5,6;7,8,9",
+            "a,b,c;1,2,3",
+            "1,2,3;4,,6",
+            "NaN,0,0;1,1,1",
+            "0,0,0;inf,1,1",
+        ] {
+            assert!(parse_measure(bad).is_err(), "`{bad}` should be rejected");
+        }
     }
 
     #[test]

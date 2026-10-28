@@ -12,6 +12,7 @@ use eframe::egui::{
 };
 
 use crate::theme::{RADIUS_LG, RADIUS_MD, RADIUS_SM, SIZE_BODY, SIZE_HEADING, SIZE_SMALL};
+use crate::tools::MEASURE;
 use crate::widgets::{self, Icon, paint_icon};
 use crate::workflow_panel::{self, StepAction};
 use crate::workspace::{self, Status, Workspace};
@@ -80,6 +81,8 @@ pub enum Command {
     Fit,
     /// Show or hide every scan with this role.
     ShowRole(ScanRole, bool),
+    /// Start or leave the Measure tool.
+    Measure,
 }
 
 /// Label of the command that completes the active step.
@@ -107,6 +110,8 @@ pub struct RibbonView<'a> {
     /// Whether upper and lower jaw scans are shown; `None` when there are none.
     pub upper_visible: Option<bool>,
     pub lower_visible: Option<bool>,
+    /// Name of the active viewport tool.
+    pub active_tool: Option<&'static str>,
 }
 
 impl RibbonView<'_> {
@@ -260,6 +265,16 @@ impl RibbonView<'_> {
                 if response.clicked() {
                     *command = Some(Command::ShowRole(role, !on));
                 }
+            }
+        });
+        divider(ui);
+        group(ui, "Inspect", |ui| {
+            let on = self.active_tool == Some(MEASURE);
+            if command_button(ui, Icon::Ruler, "Measure", true, on)
+                .on_hover_text("Measure between two points on the scans  (Esc or Delete clears)")
+                .clicked()
+            {
+                *command = Some(Command::Measure);
             }
         });
     }
