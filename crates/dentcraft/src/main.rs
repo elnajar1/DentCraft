@@ -1,3 +1,72 @@
-fn main() {
-    println!("Hello, world!");
+//! DentCraft desktop application.
+
+mod app;
+mod args;
+mod loader;
+mod objects;
+mod theme;
+mod viewport;
+mod widgets;
+
+use std::process::ExitCode;
+use std::sync::{Arc, Mutex};
+
+use clap::Parser;
+use eframe::egui;
+
+use crate::app::{DentCraftApp, StartOptions};
+use crate::args::{Args, DEFAULT_SIZE};
+
+fn main() -> ExitCode {
+    let args = Args::parse();
+    let screenshot = args.screenshot.is_some();
+    let [w, h] = args.size.unwrap_or(DEFAULT_SIZE);
+
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("DentCraft")
+        .with_app_id("dentcraft")
+        .with_inner_size([w as f32, h as f32])
+        .with_min_inner_size([960.0, 600.0])
+        .with_drag_and_drop(true);
+    if let Some(logo) = app::logo_image() {
+        let (width, height) = logo.dimensions();
+        viewport = viewport.with_icon(Arc::new(egui::IconData {
+            rgba: logo.into_raw(),
+            width,
+            height,
+        }));
+    }
+    let options = eframe::NativeOptions {
+        viewport,
+        // The scene renderer brings its own MSAA and depth; egui's pass must have neither.
+        multisampling: 0,
+        depth_buffer: 0,
+        // An explicit size or a screenshot run must not be overridden by the saved window.
+        persist_window: !screenshot && args.size.is_none(),
+        ..Default::default()
+    };
+
+    let exit_code = Arc::new(Mutex::new(None));
+    let start = StartOptions {
+        files: args.files,
+        view: args.view,
+        theme: args.theme.map(Into::into),
+        screenshot: args.screenshot,
+        exit_code: exit_code.clone(),
+    };
+    let result = eframe::run_native(
+        "DentCraft",
+        options,
+        Box::new(move |cc| Ok(Box::new(DentCraftApp::new(cc, start)))),
+    );
+    if let Err(err) = result {
+        eprintln!("dentcraft: {err}");
+        return ExitCode::FAILURE;
+    }
+    if screenshot {
+        // Closing the window before the capture counts as a failure.
+        let code = exit_code.lock().ok().and_then(|c| *c).unwrap_or(1);
+        return ExitCode::from(code);
+    }
+    ExitCode::SUCCESS
 }
