@@ -1,0 +1,17 @@
+DentCraft
+Copyright (c) 2026 DentCraft contributors.
+Licensed under the MIT License or the Apache License, Version 2.0, at your option
+(LICENSE-MIT, LICENSE-APACHE).
+
+Third-party material
+
+Software dependencies are listed in Cargo.lock and keep their own licences.
+
+DentCraft is an independent project. Its behaviour is designed from public dental literature,
+general CAD conventions and user feedback, under the clean-room rules in AGENTS.md. DentCraft is
+not affiliated with, sponsored by or endorsed by exocad, Align Technology, 3Shape, Dentsply
+Sirona, Medit or any other dental CAD vendor. Product names appear only to describe
+compatibility.
+
+DentCraft is research software. It is not a cleared or certified medical device. Designs it
+produces must be reviewed by a qualified dental professional before clinical use.

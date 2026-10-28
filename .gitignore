@@ -1,0 +1,20 @@
+/target
+**/*.rs.bk
+*.pdb
+
+# Local scan data and patient cases never go in the repository.
+*.stl
+*.STL
+*.ply
+*.obj
+*.dentcraft
+!crates/**/tests/fixtures/**
+
+# Private notes and market research stay local.
+/research/
+/scratch/
+
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

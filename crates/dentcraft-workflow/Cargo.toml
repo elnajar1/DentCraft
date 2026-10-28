@@ -1,0 +1,15 @@
+[package]
+name = "dentcraft-workflow"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+dentcraft-case = { version = "0.1.0", path = "../dentcraft-case" }
+serde = { version = "1.0.229", features = ["derive"] }
+thiserror = "2.0.21"
+
+[lints]
+workspace = true
