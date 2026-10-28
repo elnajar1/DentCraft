@@ -8,6 +8,15 @@ rust-version.workspace = true
 
 [dependencies]
 clap = { version = "4.6.7", features = ["derive"] }
+dentcraft-case = { version = "0.1.0", path = "../dentcraft-case" }
+dentcraft-io = { version = "0.1.0", path = "../dentcraft-io" }
+dentcraft-mesh = { version = "0.1.0", path = "../dentcraft-mesh" }
+dentcraft-workflow = { version = "0.1.0", path = "../dentcraft-workflow" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+
+[dev-dependencies]
+glam = "0.34.1"
 
 [lints]
 workspace = true

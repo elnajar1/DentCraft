@@ -504,6 +504,13 @@ name = "dentcraft-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "dentcraft-case",
+ "dentcraft-io",
+ "dentcraft-mesh",
+ "dentcraft-workflow",
+ "glam",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

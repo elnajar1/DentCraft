@@ -6,10 +6,10 @@
 - [x] Case model: FDI teeth, restorations, bridges, materials, `.dentcraft` files
 - [x] Workflow engine: plan per case, step session with skip / back / re-open
 - [x] STL import and export
-- [ ] PLY and OBJ import and export
-- [ ] Mesh topology: welding, boundaries, components, repair
+- [x] PLY and OBJ import and export
+- [x] Mesh topology: welding, boundaries, components, repair
 - [ ] Desktop app: 3D viewer, scan import, case setup, wizard panel
-- [ ] CLI: mesh info and conversion, case plan
+- [x] CLI: mesh info and conversion, case plan
 
 ## 0.2 — Single crown, manual
 
