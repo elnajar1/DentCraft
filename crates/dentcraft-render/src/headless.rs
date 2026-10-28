@@ -2,7 +2,7 @@
 
 use image::RgbaImage;
 
-use crate::{Camera, DrawItem, MeshData, MeshId, MeshRenderer, RenderOptions};
+use crate::{Camera, DrawItem, MeshData, MeshId, MeshRenderer, Overlay, RenderOptions};
 
 /// A GPU device with a [`MeshRenderer`] and no window.
 pub struct Headless {
@@ -56,16 +56,30 @@ impl Headless {
         items: &[DrawItem],
         options: &RenderOptions,
     ) -> RgbaImage {
+        self.render_to_image_with_overlays(width, height, camera, items, &[], options)
+    }
+
+    /// [`Headless::render_to_image`] with curves and handles drawn over the meshes.
+    pub fn render_to_image_with_overlays(
+        &mut self,
+        width: u32,
+        height: u32,
+        camera: &Camera,
+        items: &[DrawItem],
+        overlays: &[Overlay],
+        options: &RenderOptions,
+    ) -> RgbaImage {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-        self.renderer.render(
+        self.renderer.render_with_overlays(
             &self.device,
             &self.queue,
             &mut encoder,
             [width, height],
             camera,
             items,
+            overlays,
             options,
         );
         let (width, height) = (width.max(1), height.max(1));

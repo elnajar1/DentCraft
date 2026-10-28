@@ -57,6 +57,8 @@ impl SceneObject {
             color: self.color.map(|c| c as f32 / 255.0),
             opacity: self.opacity,
             visible: self.visible,
+            vertex_colors: false,
+            clip: false,
         }
     }
 }

@@ -6,10 +6,14 @@
 //! ([`Headless::render_to_image`]).
 
 mod camera;
+pub mod colormap;
 mod headless;
 mod renderer;
 
 pub use camera::{Camera, ViewPreset};
 pub use headless::Headless;
-pub use renderer::{DrawItem, MeshData, MeshId, MeshRenderer, RenderOptions, SCENE_FORMAT, Vertex};
+pub use renderer::{
+    ClipPlane, ColorCountError, DrawItem, MeshData, MeshId, MeshRenderer, Overlay, RenderOptions,
+    SCENE_FORMAT, Vertex,
+};
 pub use wgpu;

@@ -62,6 +62,8 @@ fn renders_a_sphere_offscreen() {
         color: [0.9, 0.85, 0.75],
         opacity: 1.0,
         visible: true,
+        vertex_colors: false,
+        clip: false,
     };
     let options = RenderOptions {
         vignette: 0.0,

@@ -348,6 +348,46 @@ impl Camera {
         (clip.w > 1e-6).then(|| Vec2::new(clip.x / clip.w, clip.y / clip.w))
     }
 
+    /// Normalised device coordinates of a point in a viewport rectangle given by its top-left
+    /// corner and size (+Y down, like egui; pixels or points alike).
+    pub fn pixel_to_ndc(pixel: Vec2, viewport_min: Vec2, viewport_size: Vec2) -> Vec2 {
+        let uv = (pixel - viewport_min) / viewport_size.max(Vec2::splat(1e-6));
+        Vec2::new(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0)
+    }
+
+    /// Inverse of [`Camera::pixel_to_ndc`].
+    pub fn ndc_to_pixel(ndc: Vec2, viewport_min: Vec2, viewport_size: Vec2) -> Vec2 {
+        viewport_min + Vec2::new(ndc.x + 1.0, 1.0 - ndc.y) * 0.5 * viewport_size
+    }
+
+    /// Ray through a point of a viewport rectangle (see [`Camera::pixel_to_ndc`]). Uses the
+    /// rectangle's aspect ratio, as the renderer does, whatever `aspect` holds.
+    pub fn pixel_ray(&self, pixel: Vec2, viewport_min: Vec2, viewport_size: Vec2) -> (Vec3, Vec3) {
+        self.with_aspect(viewport_size)
+            .ray(Self::pixel_to_ndc(pixel, viewport_min, viewport_size))
+    }
+
+    /// Projects a world point into a viewport rectangle, or `None` behind the camera. Uses the
+    /// rectangle's aspect ratio, as the renderer does.
+    pub fn project_to_pixel(
+        &self,
+        point: Vec3,
+        viewport_min: Vec2,
+        viewport_size: Vec2,
+    ) -> Option<Vec2> {
+        self.with_aspect(viewport_size)
+            .project(point)
+            .map(|ndc| Self::ndc_to_pixel(ndc, viewport_min, viewport_size))
+    }
+
+    fn with_aspect(&self, viewport_size: Vec2) -> Self {
+        Self {
+            aspect: viewport_size.x / viewport_size.y.max(1e-6),
+            transition: None,
+            ..self.clone()
+        }
+    }
+
     /// Screen directions of the world axes for an orientation gizmo: (+X, +Y, +Z), each as a 2D
     /// vector with +Y up and length ≤ 1, plus its depth towards the viewer.
     pub fn axis_gizmo(&self) -> [(Vec2, f32); 3] {
@@ -443,6 +483,51 @@ mod tests {
         camera.zoom_at(0.5, cursor);
         let after = camera.project(p).unwrap();
         assert!(after.distance(cursor) < 1e-4, "{after} vs {cursor}");
+    }
+
+    #[test]
+    fn pixel_rays_and_projection_round_trip() {
+        let (min, size) = (Vec2::new(250.0, 40.0), Vec2::new(900.0, 560.0));
+        for preset in ViewPreset::ALL {
+            let mut camera = Camera {
+                // Deliberately stale: the pixel helpers use the viewport's aspect.
+                aspect: 1.0,
+                ..Camera::default()
+            };
+            camera.set_view(preset, Some(&cube()));
+            camera.orbit(Vec2::new(37.0, -21.0));
+            camera.pan(Vec2::new(15.0, 8.0), size.y);
+
+            // The ray through the middle of the viewport passes through the target.
+            let (o, d) = camera.pixel_ray(min + size * 0.5, min, size);
+            let off_axis = (camera.target - o).cross(d).length();
+            assert!(off_axis < 1e-3, "{preset:?}: {off_axis}");
+            let (o2, d2) = camera.ray(Vec2::ZERO);
+            assert!(o2.distance(o) < 1e-5 && d2.distance(d) < 1e-6);
+
+            for (x, y) in [
+                (0.0, 0.0),
+                (0.13, 0.91),
+                (0.5, 0.25),
+                (0.97, 0.6),
+                (1.0, 1.0),
+            ] {
+                let pixel = min + size * Vec2::new(x, y);
+                let (o, d) = camera.pixel_ray(pixel, min, size);
+                for t in [
+                    camera.distance * 0.7,
+                    camera.distance,
+                    camera.distance * 1.3,
+                ] {
+                    let back = camera.project_to_pixel(o + d * t, min, size).unwrap();
+                    assert!(back.distance(pixel) < 0.5, "{preset:?}: {pixel} -> {back}");
+                }
+            }
+        }
+        let ndc = Vec2::new(-0.3, 0.8);
+        let pixel = Camera::ndc_to_pixel(ndc, min, size);
+        assert!(Camera::pixel_to_ndc(pixel, min, size).distance(ndc) < 1e-6);
+        assert_eq!(Camera::pixel_to_ndc(min, min, size), Vec2::new(-1.0, 1.0));
     }
 
     #[test]

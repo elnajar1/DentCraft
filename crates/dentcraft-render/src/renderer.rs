@@ -47,7 +47,29 @@ pub struct MeshData {
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u32>,
     pub bounds: Option<Aabb>,
+    /// Optional sRGB RGBA8 colour per vertex, used by items drawn with
+    /// [`DrawItem::vertex_colors`].
+    pub colors: Option<Vec<[u8; 4]>>,
 }
+
+/// [`MeshData::with_colors`] got a colour count that differs from the vertex count.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ColorCountError {
+    pub vertices: usize,
+    pub colors: usize,
+}
+
+impl std::fmt::Display for ColorCountError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} vertex colours for a mesh with {} vertices",
+            self.colors, self.vertices
+        )
+    }
+}
+
+impl std::error::Error for ColorCountError {}
 
 impl MeshData {
     pub fn from_mesh(mesh: &TriMesh) -> Self {
@@ -65,7 +87,26 @@ impl MeshData {
             vertices,
             indices: mesh.triangles.iter().flatten().copied().collect(),
             bounds: mesh.bounds(),
+            colors: None,
         }
+    }
+
+    /// Like [`MeshData::from_mesh`], with one sRGB RGBA colour (0..1) per vertex, for example
+    /// from [`crate::colormap`]. Alpha mixes the vertex colour over the item's base colour, so
+    /// alpha 0 leaves a vertex in the base colour. A colour count that differs from the vertex
+    /// count is an error.
+    pub fn with_colors(mesh: &TriMesh, colors: &[[f32; 4]]) -> Result<Self, ColorCountError> {
+        if colors.len() != mesh.positions.len() {
+            return Err(ColorCountError {
+                vertices: mesh.positions.len(),
+                colors: colors.len(),
+            });
+        }
+        let to_byte = |c: f32| (c.clamp(0.0, 1.0) * 255.0).round() as u8;
+        Ok(Self {
+            colors: Some(colors.iter().map(|c| c.map(to_byte)).collect()),
+            ..Self::from_mesh(mesh)
+        })
     }
 }
 
@@ -75,9 +116,46 @@ pub struct DrawItem {
     pub mesh: MeshId,
     /// sRGB colour, 0..1.
     pub color: [f32; 3],
-    /// 1 = opaque.
+    /// 1 = opaque. Transparent items are drawn after opaque ones, back to front.
     pub opacity: f32,
     pub visible: bool,
+    /// Use the mesh's vertex colours over `color` (ignored when the mesh has none).
+    pub vertex_colors: bool,
+    /// Cut by [`RenderOptions::clip`]: the part on the plane's positive side is not drawn and the
+    /// inside revealed by the cut shows the flat section colour.
+    pub clip: bool,
+}
+
+/// A plane that cuts the items that opt in ([`DrawItem::clip`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ClipPlane {
+    pub point: Vec3,
+    /// Points towards the removed side.
+    pub normal: Vec3,
+}
+
+/// Curves and handles drawn over the meshes at a fixed screen size. Parts hidden behind opaque
+/// geometry stay visible, dimmed, so a curve can be followed around the model. Transparent items
+/// do not hide overlays. Sizes are in pixels of the render target; overlays are not clipped.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Overlay {
+    Polyline {
+        points: Vec<Vec3>,
+        /// Joins the last point back to the first.
+        closed: bool,
+        /// sRGB colour, 0..1.
+        color: [f32; 3],
+        width_px: f32,
+    },
+    /// Round handles.
+    Points {
+        points: Vec<Vec3>,
+        /// sRGB fill colour, 0..1.
+        color: [f32; 3],
+        radius_px: f32,
+        /// sRGB colour of a thin ring around each handle.
+        outline: Option<[f32; 3]>,
+    },
 }
 
 /// Scene-wide look.
@@ -91,6 +169,10 @@ pub struct RenderOptions {
     /// sRGB tint for back faces (the inside of open scans) and how strongly it applies.
     pub backface: [f32; 3],
     pub backface_strength: f32,
+    /// Section plane for the items with [`DrawItem::clip`].
+    pub clip: Option<ClipPlane>,
+    /// Flat sRGB colour of the cut face.
+    pub section: [f32; 3],
 }
 
 impl RenderOptions {
@@ -101,6 +183,8 @@ impl RenderOptions {
             vignette: 0.5,
             backface: [0.40, 0.45, 0.53],
             backface_strength: 0.7,
+            clip: None,
+            section: [0.86, 0.62, 0.30],
         }
     }
 
@@ -111,6 +195,8 @@ impl RenderOptions {
             vignette: 0.25,
             backface: [0.56, 0.61, 0.69],
             backface_strength: 0.7,
+            clip: None,
+            section: [0.80, 0.55, 0.24],
         }
     }
 }
@@ -141,19 +227,90 @@ struct FrameUniform {
     bg_top: [f32; 4],
     bg_bottom: [f32; 4],
     backface: [f32; 4],
+    /// xyz: eye position, w: world size of one pixel at unit distance from the eye.
+    eye: [f32; 4],
+    /// Target width and height in pixels.
+    viewport: [f32; 4],
+    /// Plane as (normal, offset); (0, 0, 0, -1) clips nothing.
+    clip_plane: [f32; 4],
+    /// Linear section colour, w = 1 while a clip plane is active.
+    section: [f32; 4],
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct DrawUniform {
     color: [f32; 4],
+    /// x: use vertex colours, y: clipped.
+    flags: [f32; 4],
+}
+
+/// One polyline segment, expanded to a screen-space quad in the vertex shader.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct LineInstance {
+    a: [f32; 3],
+    width: f32,
+    b: [f32; 3],
+    _pad: f32,
+    color: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct PointInstance {
+    center: [f32; 3],
+    radius: f32,
+    color: [f32; 4],
+    /// w = 0: no ring.
+    outline: [f32; 4],
 }
 
 struct GpuMesh {
     vertices: wgpu::Buffer,
+    /// Vertex colours, or `None` to read the shared placeholder buffer.
+    colors: Option<wgpu::Buffer>,
+    vertex_count: u64,
     indices: wgpu::Buffer,
     index_count: u32,
     center: Vec3,
+}
+
+/// A vertex buffer that grows to fit what is written into it.
+struct DynamicBuffer {
+    label: &'static str,
+    buffer: Option<wgpu::Buffer>,
+    usage: wgpu::BufferUsages,
+}
+
+impl DynamicBuffer {
+    fn new(label: &'static str, usage: wgpu::BufferUsages) -> Self {
+        Self {
+            label,
+            buffer: None,
+            usage,
+        }
+    }
+
+    /// Makes room for at least `size` bytes (never shrinks).
+    fn reserve(&mut self, device: &wgpu::Device, size: u64) -> &wgpu::Buffer {
+        if self.buffer.as_ref().is_none_or(|b| b.size() < size) {
+            self.buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(self.label),
+                size: size.max(256).next_power_of_two(),
+                usage: self.usage,
+                mapped_at_creation: false,
+            }));
+        }
+        self.buffer.as_ref().expect("buffer was just created")
+    }
+
+    fn write(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, data: &[u8]) {
+        if !data.is_empty() {
+            let buffer = self.reserve(device, data.len() as u64);
+            queue.write_buffer(buffer, 0, data);
+        }
+    }
 }
 
 struct Target {
@@ -183,13 +340,25 @@ pub struct MeshRenderer {
     draw_capacity: u64,
     background: wgpu::RenderPipeline,
     opaque: wgpu::RenderPipeline,
-    transparent: wgpu::RenderPipeline,
+    /// Transparent items draw their back faces, then their front faces.
+    transparent_back: wgpu::RenderPipeline,
+    transparent_front: wgpu::RenderPipeline,
+    /// Overlays: the hidden parts (dimmed), then the visible parts.
+    lines: [wgpu::RenderPipeline; 2],
+    points: [wgpu::RenderPipeline; 2],
     meshes: HashMap<MeshId, GpuMesh>,
+    /// Stands in for the colours of meshes without any; its contents are never shown.
+    placeholder_colors: DynamicBuffer,
+    line_instances: DynamicBuffer,
+    point_instances: DynamicBuffer,
     target: Option<Target>,
     blit: Option<Blit>,
     /// Draw order scratch space (item index, view depth), reused across frames.
     order: Vec<(usize, f32)>,
 }
+
+/// Opacity below which an item is drawn as transparent.
+const OPAQUE: f32 = 0.999;
 
 impl MeshRenderer {
     /// Highest of 4× / 1× MSAA the adapter supports for the scene target.
@@ -266,7 +435,15 @@ impl MeshRenderer {
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3],
         };
-        let mesh_pipeline = |label: &str, blend: wgpu::BlendState, depth_write: bool| {
+        let color_layout = wgpu::VertexBufferLayout {
+            array_stride: 4,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &wgpu::vertex_attr_array![2 => Unorm8x4],
+        };
+        let mesh_pipeline = |label: &str,
+                             blend: wgpu::BlendState,
+                             depth_write: bool,
+                             cull_mode: Option<wgpu::Face>| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(&layout),
@@ -274,12 +451,12 @@ impl MeshRenderer {
                     module: &shader,
                     entry_point: Some("vs_mesh"),
                     compilation_options: Default::default(),
-                    buffers: &[Some(vertex_layout.clone())],
+                    buffers: &[Some(vertex_layout.clone()), Some(color_layout.clone())],
                 },
                 primitive: wgpu::PrimitiveState {
                     topology: wgpu::PrimitiveTopology::TriangleList,
                     front_face: wgpu::FrontFace::Ccw,
-                    cull_mode: None,
+                    cull_mode,
                     ..Default::default()
                 },
                 depth_stencil: Some(wgpu::DepthStencilState {
@@ -304,12 +481,105 @@ impl MeshRenderer {
                 cache: None,
             })
         };
-        let opaque = mesh_pipeline("dentcraft opaque", wgpu::BlendState::REPLACE, true);
-        let transparent = mesh_pipeline(
-            "dentcraft transparent",
+        let opaque = mesh_pipeline("dentcraft opaque", wgpu::BlendState::REPLACE, true, None);
+        let transparent_back = mesh_pipeline(
+            "dentcraft transparent back",
             wgpu::BlendState::ALPHA_BLENDING,
             false,
+            Some(wgpu::Face::Front),
         );
+        let transparent_front = mesh_pipeline(
+            "dentcraft transparent front",
+            wgpu::BlendState::ALPHA_BLENDING,
+            false,
+            Some(wgpu::Face::Back),
+        );
+        // Overlays never write depth. The hidden pass draws only where geometry is in front,
+        // the visible pass only where it is not, so each pixel gets exactly one of them.
+        let overlay_pipeline = |label: &str,
+                                vs: &str,
+                                fs: &str,
+                                instance: wgpu::VertexBufferLayout<'_>,
+                                hidden: bool| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some(vs),
+                    compilation_options: Default::default(),
+                    buffers: &[Some(instance)],
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleStrip,
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(if hidden {
+                        wgpu::CompareFunction::Greater
+                    } else {
+                        wgpu::CompareFunction::LessEqual
+                    }),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample,
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(fs),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: SCENE_FORMAT,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let line_layout = wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<LineInstance>() as u64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &wgpu::vertex_attr_array![
+                0 => Float32x3, 1 => Float32, 2 => Float32x3, 3 => Float32, 4 => Float32x4
+            ],
+        };
+        let point_layout = wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<PointInstance>() as u64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &wgpu::vertex_attr_array![
+                0 => Float32x3, 1 => Float32, 2 => Float32x4, 3 => Float32x4
+            ],
+        };
+        let lines = [
+            overlay_pipeline(
+                "dentcraft hidden lines",
+                "vs_line",
+                "fs_line_hidden",
+                line_layout.clone(),
+                true,
+            ),
+            overlay_pipeline("dentcraft lines", "vs_line", "fs_line", line_layout, false),
+        ];
+        let points = [
+            overlay_pipeline(
+                "dentcraft hidden points",
+                "vs_point",
+                "fs_point_hidden",
+                point_layout.clone(),
+                true,
+            ),
+            overlay_pipeline(
+                "dentcraft points",
+                "vs_point",
+                "fs_point",
+                point_layout,
+                false,
+            ),
+        ];
         let background = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("dentcraft background"),
             layout: Some(&layout),
@@ -348,8 +618,23 @@ impl MeshRenderer {
             draw_capacity,
             background,
             opaque,
-            transparent,
+            transparent_back,
+            transparent_front,
+            lines,
+            points,
             meshes: HashMap::new(),
+            placeholder_colors: DynamicBuffer::new(
+                "dentcraft placeholder colours",
+                wgpu::BufferUsages::VERTEX,
+            ),
+            line_instances: DynamicBuffer::new(
+                "dentcraft line instances",
+                wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            ),
+            point_instances: DynamicBuffer::new(
+                "dentcraft point instances",
+                wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            ),
             target: None,
             blit,
             order: Vec::new(),
@@ -476,10 +761,26 @@ impl MeshRenderer {
             .bounds
             .map(|b| b.center().as_vec3())
             .unwrap_or(Vec3::ZERO);
+        let vertex_count = data.vertices.len() as u64;
+        let colors = match &data.colors {
+            Some(colors) if colors.len() == data.vertices.len() => Some(device.create_buffer_init(
+                &wgpu::util::BufferInitDescriptor {
+                    label: Some("dentcraft mesh colours"),
+                    contents: bytemuck::cast_slice(colors),
+                    usage: wgpu::BufferUsages::VERTEX,
+                },
+            )),
+            _ => {
+                self.placeholder_colors.reserve(device, vertex_count * 4);
+                None
+            }
+        };
         self.meshes.insert(
             id,
             GpuMesh {
                 vertices,
+                colors,
+                vertex_count,
                 indices,
                 index_count: data.indices.len() as u32,
                 center,
@@ -597,6 +898,22 @@ impl MeshRenderer {
         items: &[DrawItem],
         options: &RenderOptions,
     ) {
+        self.render_with_overlays(device, queue, encoder, size, camera, items, &[], options);
+    }
+
+    /// [`MeshRenderer::render`] with curves and handles drawn over the meshes.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_with_overlays(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        size: [u32; 2],
+        camera: &Camera,
+        items: &[DrawItem],
+        overlays: &[Overlay],
+        options: &RenderOptions,
+    ) {
         let size = [size[0].max(1), size[1].max(1)];
         self.ensure_target(device, size);
         let mut camera = camera.clone();
@@ -605,14 +922,32 @@ impl MeshRenderer {
             let [r, g, b] = linear(rgb);
             [r, g, b, w]
         };
+        let clip = options
+            .clip
+            .filter(|c| c.normal.length_squared() > 1e-12 && c.point.is_finite());
+        let clip_plane = clip.map_or([0.0, 0.0, 0.0, -1.0], |c| {
+            let n = c.normal.normalize();
+            [n.x, n.y, n.z, -n.dot(c.point)]
+        });
+        let eye = camera.eye();
         let frame = FrameUniform {
             view_proj: camera.view_projection().to_cols_array_2d(),
             view: camera.view().to_cols_array_2d(),
             bg_top: bg(options.background_top, options.vignette),
             bg_bottom: bg(options.background_bottom, 0.0),
             backface: bg(options.backface, options.backface_strength),
+            eye: [
+                eye.x,
+                eye.y,
+                eye.z,
+                2.0 * (camera.fov_y * 0.5).tan() / size[1] as f32,
+            ],
+            viewport: [size[0] as f32, size[1] as f32, 0.0, 0.0],
+            clip_plane,
+            section: bg(options.section, if clip.is_some() { 1.0 } else { 0.0 }),
         };
         queue.write_buffer(&self.frame_buffer, 0, bytemuck::bytes_of(&frame));
+        let (line_count, point_count) = self.write_overlays(device, queue, overlays);
 
         // Opaque first (front to back), then transparent (back to front).
         let view = camera.view();
@@ -626,7 +961,7 @@ impl MeshRenderer {
                 self.order.push((i, depth));
             }
         }
-        let is_opaque = |i: usize| items[i].opacity >= 0.999;
+        let is_opaque = |i: usize| items[i].opacity >= OPAQUE;
         self.order.sort_by(|a, b| {
             let (oa, ob) = (is_opaque(a.0), is_opaque(b.0));
             ob.cmp(&oa).then_with(|| {
@@ -647,8 +982,16 @@ impl MeshRenderer {
         for (slot, (i, _)) in self.order.iter().enumerate() {
             let item = &items[*i];
             let [r, g, b] = linear(item.color);
+            let has_colors = self.meshes[&item.mesh].colors.is_some();
+            let flag = |on: bool| if on { 1.0 } else { 0.0 };
             let draw = DrawUniform {
                 color: [r, g, b, item.opacity.clamp(0.0, 1.0)],
+                flags: [
+                    flag(item.vertex_colors && has_colors),
+                    flag(item.clip),
+                    0.0,
+                    0.0,
+                ],
             };
             let at = slot * DRAW_STRIDE as usize;
             uniforms[at..at + std::mem::size_of::<DrawUniform>()]
@@ -690,14 +1033,10 @@ impl MeshRenderer {
         pass.set_bind_group(1, &self.draw_bind_group, &[0]);
         pass.set_pipeline(&self.background);
         pass.draw(0..3, 0..1);
-        let mut transparent = false;
         pass.set_pipeline(&self.opaque);
+        let mut current = &self.opaque;
         for (slot, (i, _)) in self.order.iter().enumerate() {
             let item = &items[*i];
-            if !transparent && item.opacity < 0.999 {
-                transparent = true;
-                pass.set_pipeline(&self.transparent);
-            }
             let mesh = &self.meshes[&item.mesh];
             pass.set_bind_group(
                 1,
@@ -705,9 +1044,108 @@ impl MeshRenderer {
                 &[(slot as u64 * DRAW_STRIDE) as u32],
             );
             pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+            let colors = match (&mesh.colors, &self.placeholder_colors.buffer) {
+                (Some(colors), _) => colors,
+                (None, Some(placeholder)) => placeholder,
+                (None, None) => unreachable!("upload reserved the placeholder colours"),
+            };
+            pass.set_vertex_buffer(1, colors.slice(..mesh.vertex_count * 4));
             pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..mesh.index_count, 0, 0..1);
+            let passes: &[&wgpu::RenderPipeline] = if item.opacity >= OPAQUE {
+                &[&self.opaque]
+            } else {
+                // Inner (far) faces first, so a single transparent shell blends cleanly.
+                &[&self.transparent_back, &self.transparent_front]
+            };
+            for &pipeline in passes {
+                if !std::ptr::eq(pipeline, current) {
+                    pass.set_pipeline(pipeline);
+                    current = pipeline;
+                }
+                pass.draw_indexed(0..mesh.index_count, 0, 0..1);
+            }
         }
+
+        // Overlays last, so handles stay on top of transparent items: hidden parts, then
+        // visible parts, lines under points.
+        let lines = self
+            .line_instances
+            .buffer
+            .as_ref()
+            .filter(|_| line_count > 0);
+        let points = self
+            .point_instances
+            .buffer
+            .as_ref()
+            .filter(|_| point_count > 0);
+        for visible in [0, 1] {
+            if let Some(buffer) = lines {
+                pass.set_pipeline(&self.lines[visible]);
+                pass.set_vertex_buffer(0, buffer.slice(..));
+                pass.draw(0..4, 0..line_count);
+            }
+            if let Some(buffer) = points {
+                pass.set_pipeline(&self.points[visible]);
+                pass.set_vertex_buffer(0, buffer.slice(..));
+                pass.draw(0..4, 0..point_count);
+            }
+        }
+    }
+
+    /// Fills the overlay instance buffers; returns the line segment and point counts.
+    fn write_overlays(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        overlays: &[Overlay],
+    ) -> (u32, u32) {
+        let rgba = |rgb: [f32; 3]| {
+            let [r, g, b] = linear(rgb);
+            [r, g, b, 1.0]
+        };
+        let mut lines = Vec::new();
+        let mut points = Vec::new();
+        for overlay in overlays {
+            match overlay {
+                Overlay::Polyline {
+                    points: path,
+                    closed,
+                    color,
+                    width_px,
+                } => {
+                    let segment = |a: Vec3, b: Vec3| LineInstance {
+                        a: a.to_array(),
+                        width: width_px.max(0.0),
+                        b: b.to_array(),
+                        _pad: 0.0,
+                        color: rgba(*color),
+                    };
+                    lines.extend(path.windows(2).map(|w| segment(w[0], w[1])));
+                    if *closed && path.len() > 2 {
+                        lines.push(segment(path[path.len() - 1], path[0]));
+                    }
+                }
+                Overlay::Points {
+                    points: centers,
+                    color,
+                    radius_px,
+                    outline,
+                } => {
+                    let outline = outline.map_or([0.0; 4], rgba);
+                    points.extend(centers.iter().map(|c| PointInstance {
+                        center: c.to_array(),
+                        radius: radius_px.max(0.0),
+                        color: rgba(*color),
+                        outline,
+                    }));
+                }
+            }
+        }
+        self.line_instances
+            .write(device, queue, bytemuck::cast_slice(&lines));
+        self.point_instances
+            .write(device, queue, bytemuck::cast_slice(&points));
+        (lines.len() as u32, points.len() as u32)
     }
 
     /// Draws the last rendered scene into `pass`, filling its viewport. Requires `output` to have

@@ -21,3 +21,5 @@ workspace = true
 
 [dev-dependencies]
 glam = "0.34.1"
+# PNG output for the ignored demo-image test; the app already enables it.
+image = { version = "0.25.10", default-features = false, features = ["png"] }
