@@ -8,6 +8,11 @@ Third-party material
 
 Software dependencies are listed in Cargo.lock and keep their own licences.
 
+The application's UI colour tokens, type scale and layout conventions (ribbon toolbar, browser
+panels) are adapted from SolidCraft (https://github.com/tangency-labs/solidcraft), Copyright (c)
+2026 SolidCraft contributors, licensed under the Apache License, Version 2.0. Text colours were
+adjusted for contrast.
+
 DentCraft is an independent project. Its behaviour is designed from public dental literature,
 general CAD conventions and user feedback, under the clean-room rules in AGENTS.md. DentCraft is
 not affiliated with, sponsored by or endorsed by exocad, Align Technology, 3Shape, Dentsply
