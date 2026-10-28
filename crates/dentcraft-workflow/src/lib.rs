@@ -191,6 +191,34 @@ impl Session {
         Self::new(plan(case))
     }
 
+    /// A session for a new plan that keeps the work already done: a step that is in both plans
+    /// with the same teeth keeps its done or skipped status. The first unfinished step is active.
+    pub fn replan(&self, steps: Vec<PlannedStep>) -> Self {
+        let mut status: Vec<StepStatus> = steps
+            .iter()
+            .map(|step| {
+                self.steps
+                    .iter()
+                    .position(|old| old == step)
+                    .map(|i| self.status[i])
+                    .filter(|s| matches!(s, StepStatus::Done | StepStatus::Skipped))
+                    .unwrap_or(StepStatus::Pending)
+            })
+            .collect();
+        let current = status
+            .iter()
+            .position(|s| *s == StepStatus::Pending)
+            .unwrap_or(0);
+        if status.get(current) == Some(&StepStatus::Pending) {
+            status[current] = StepStatus::Active;
+        }
+        Self {
+            steps,
+            status,
+            current,
+        }
+    }
+
     pub fn steps(&self) -> &[PlannedStep] {
         &self.steps
     }
@@ -375,6 +403,31 @@ mod tests {
         assert_eq!(session.complete(), Err(WorkflowError::Finished));
         let (done, total) = session.progress();
         assert_eq!(done, total);
+    }
+
+    #[test]
+    fn replanning_keeps_finished_steps_that_still_apply() {
+        let mut case = Case::new("crown");
+        case.set_unit(t(36), RestorationKind::Crown);
+        let mut session = Session::for_case(&case);
+        session.complete().unwrap(); // Scans
+        session.skip().unwrap(); // Orientation
+        session.complete().unwrap(); // Margin on 36
+
+        case.set_unit(t(46), RestorationKind::Crown);
+        let replanned = session.replan(plan(&case));
+        assert_eq!(replanned.status(0), StepStatus::Done);
+        assert_eq!(replanned.status(1), StepStatus::Skipped);
+        // The margin step now covers 36 and 46, so it has to be done again.
+        assert_eq!(replanned.current().unwrap().id, StepId::Margin);
+        assert_eq!(replanned.current().unwrap().teeth, vec![t(46), t(36)]);
+
+        let mut finished = Session::for_case(&Case::new("x"));
+        while finished.current().is_some() {
+            finished.complete().unwrap();
+        }
+        let same = finished.replan(plan(&Case::new("x")));
+        assert!(same.is_finished() && same.current().is_none());
     }
 
     #[test]
