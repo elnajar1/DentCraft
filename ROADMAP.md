@@ -8,7 +8,8 @@
 - [x] STL import and export
 - [x] PLY and OBJ import and export
 - [x] Mesh topology: welding, boundaries, components, repair
-- [ ] Desktop app: 3D viewer, scan import, case setup, wizard panel
+- [x] Desktop app: themed shell, 3D viewer, scan import (STL, PLY, OBJ), objects list
+- [ ] Desktop app: FDI tooth chart, case open and save, guided workflow panel
 - [x] CLI: mesh info and conversion, case plan
 
 ## 0.2 — Single crown, manual
