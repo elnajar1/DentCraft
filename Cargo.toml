@@ -15,6 +15,7 @@ dentcraft-mesh = { path = "crates/dentcraft-mesh" }
 dentcraft-io = { path = "crates/dentcraft-io" }
 dentcraft-case = { path = "crates/dentcraft-case" }
 dentcraft-workflow = { path = "crates/dentcraft-workflow" }
+dentcraft-render = { path = "crates/dentcraft-render" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

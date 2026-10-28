@@ -1,0 +1,23 @@
+[package]
+name = "dentcraft-render"
+description = "3D viewport rendering for DentCraft (wgpu)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+bytemuck = { version = "1.25.2", features = ["derive"] }
+dentcraft-mesh.workspace = true
+glam = "0.34.1"
+image = { version = "0.25.10", default-features = false }
+pollster = "1.0.1"
+# Same major version as egui-wgpu 0.37, so the app hands its own device to this crate.
+wgpu = "30.0.1"
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+glam = "0.34.1"

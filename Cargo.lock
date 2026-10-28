@@ -466,6 +466,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "dentcraft-render"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "dentcraft-mesh",
+ "glam",
+ "image",
+ "pollster",
+ "wgpu",
+]
+
+[[package]]
 name = "dentcraft-workflow"
 version = "0.1.0"
 dependencies = [
