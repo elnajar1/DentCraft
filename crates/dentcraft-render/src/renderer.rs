@@ -254,6 +254,10 @@ struct LineInstance {
     b: [f32; 3],
     _pad: f32,
     color: [f32; 4],
+    /// The neighbouring polyline points before `a` and after `b`, w = 0 where there is none. A
+    /// pixel near a joint belongs to the nearer segment only, so joints blend once.
+    prev: [f32; 4],
+    next: [f32; 4],
 }
 
 #[repr(C)]
@@ -544,7 +548,8 @@ impl MeshRenderer {
             array_stride: std::mem::size_of::<LineInstance>() as u64,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &wgpu::vertex_attr_array![
-                0 => Float32x3, 1 => Float32, 2 => Float32x3, 3 => Float32, 4 => Float32x4
+                0 => Float32x3, 1 => Float32, 2 => Float32x3, 3 => Float32, 4 => Float32x4,
+                5 => Float32x4, 6 => Float32x4
             ],
         };
         let point_layout = wgpu::VertexBufferLayout {
@@ -1113,17 +1118,27 @@ impl MeshRenderer {
                     color,
                     width_px,
                 } => {
-                    let segment = |a: Vec3, b: Vec3| LineInstance {
-                        a: a.to_array(),
+                    let n = path.len();
+                    let closed = *closed && n > 2;
+                    let segments = if closed { n } else { n.saturating_sub(1) };
+                    // Point `i` steps along the path (wrapping when closed), w = 0 if none.
+                    let neighbour = |i: isize| {
+                        let i = if closed {
+                            Some(i.rem_euclid(n as isize) as usize)
+                        } else {
+                            usize::try_from(i).ok().filter(|&i| i < n)
+                        };
+                        i.map_or([0.0; 4], |i| path[i].extend(1.0).to_array())
+                    };
+                    lines.extend((0..segments).map(|k| LineInstance {
+                        a: path[k].to_array(),
                         width: width_px.max(0.0),
-                        b: b.to_array(),
+                        b: path[(k + 1) % n].to_array(),
                         _pad: 0.0,
                         color: rgba(*color),
-                    };
-                    lines.extend(path.windows(2).map(|w| segment(w[0], w[1])));
-                    if *closed && path.len() > 2 {
-                        lines.push(segment(path[path.len() - 1], path[0]));
-                    }
+                        prev: neighbour(k as isize - 1),
+                        next: neighbour(k as isize + 2),
+                    }));
                 }
                 Overlay::Points {
                     points: centers,

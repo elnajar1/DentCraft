@@ -179,6 +179,9 @@ struct LineIn {
     @location(1) width: f32,
     @location(2) b: vec3<f32>,
     @location(4) color: vec4<f32>,
+    // Neighbouring points before a and after b, w = 0 where there is none.
+    @location(5) prev: vec4<f32>,
+    @location(6) next: vec4<f32>,
 };
 
 struct LineOut {
@@ -188,6 +191,10 @@ struct LineOut {
     // Segment length and half width, in pixels.
     @location(1) extent: vec2<f32>,
     @location(2) color: vec4<f32>,
+    // The neighbouring points in the same pixel frame as `local` (prev xy, next xy) and whether
+    // they exist (x: prev, y: next).
+    @location(3) @interpolate(flat) neighbours: vec4<f32>,
+    @location(4) @interpolate(flat) has: vec2<f32>,
 };
 
 // One segment as a quad around its capsule (strip corners: a-, a+, b-, b+). Round caps make the
@@ -230,13 +237,49 @@ fn vs_line(in: LineIn) -> LineOut {
     out.local = vec3<f32>(along, across, 1.0) * out.clip.w;
     out.extent = vec2<f32>(length_px, half_width);
     out.color = in.color;
+    // Neighbours in the segment's frame: along `dir` from pa, across along `side`.
+    out.has = vec2<f32>(0.0);
+    if in.prev.w > 0.0 {
+        let cp = toward_eye(in.prev.xyz, bias);
+        if cp.w >= min_w {
+            out.neighbours = vec4<f32>(local_of(to_pixels(cp), pa, dir, side), out.neighbours.zw);
+            out.has.x = 1.0;
+        }
+    }
+    if in.next.w > 0.0 {
+        let cn = toward_eye(in.next.xyz, bias);
+        if cn.w >= min_w {
+            out.neighbours = vec4<f32>(out.neighbours.xy, local_of(to_pixels(cn), pa, dir, side));
+            out.has.y = 1.0;
+        }
+    }
     return out;
+}
+
+fn local_of(q: vec2<f32>, origin: vec2<f32>, dir: vec2<f32>, side: vec2<f32>) -> vec2<f32> {
+    return vec2<f32>(dot(q - origin, dir), dot(q - origin, side));
+}
+
+fn segment_distance(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
+    let ab = b - a;
+    let t = clamp(dot(p - a, ab) / max(dot(ab, ab), 1e-8), 0.0, 1.0);
+    return length(p - a - ab * t);
 }
 
 fn line_color(in: LineOut) -> vec4<f32> {
     let p = in.local.xy / in.local.z;
     // Distance to the segment from (0, 0) to (length, 0).
     let d = length(vec2<f32>(p.x - clamp(p.x, 0.0, in.extent.x), p.y));
+    // Near a joint the nearer segment draws the pixel, ties going to the earlier one, so the
+    // overlapping round caps blend once.
+    let tie = 1e-3;
+    if in.has.x > 0.5 && segment_distance(p, in.neighbours.xy, vec2<f32>(0.0)) <= d + tie {
+        discard;
+    }
+    if in.has.y > 0.5
+        && segment_distance(p, vec2<f32>(in.extent.x, 0.0), in.neighbours.zw) < d - tie {
+        discard;
+    }
     let coverage = clamp(in.extent.y + 0.5 - d, 0.0, 1.0);
     return vec4<f32>(in.color.rgb, in.color.a * coverage);
 }

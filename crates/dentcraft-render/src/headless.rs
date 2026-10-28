@@ -13,9 +13,11 @@ pub struct Headless {
 }
 
 impl Headless {
-    /// Opens the default GPU adapter, or returns `None` when the machine has none (CI).
+    /// Opens the default GPU adapter, or returns `None` when the machine has none (CI). wgpu's
+    /// environment variables apply, so `WGPU_BACKEND=gl` tests the OpenGL path.
     pub fn new() -> Option<Self> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let instance =
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             force_fallback_adapter: false,
