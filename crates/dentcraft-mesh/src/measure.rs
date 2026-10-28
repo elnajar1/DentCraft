@@ -5,9 +5,10 @@ use crate::TriMesh;
 impl TriMesh {
     /// Total triangle area, in mm².
     pub fn surface_area(&self) -> f64 {
+        // `Sum` starts from -0.0, which an empty mesh would report.
         (0..self.triangles.len())
             .map(|i| self.triangle_cross(i).length())
-            .sum::<f64>()
+            .fold(0.0, |sum, a| sum + a)
             * 0.5
     }
 
@@ -65,6 +66,7 @@ mod tests {
     fn empty_and_degenerate_meshes_measure_zero() {
         let empty = TriMesh::default();
         assert_eq!((empty.surface_area(), empty.signed_volume()), (0.0, 0.0));
+        assert!(empty.surface_area().is_sign_positive());
         let flat = TriMesh::new(
             vec![DVec3::ZERO, DVec3::X, DVec3::X * 2.0],
             vec![[0, 1, 2], [0, 0, 1]],

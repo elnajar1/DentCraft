@@ -17,20 +17,32 @@ impl TriMesh {
         } else {
             0.0
         };
-        let cell_size = if tolerance > 0.0 { tolerance } else { 1.0 };
-        let cell = |p: DVec3| (p / cell_size).floor().to_array().map(|c| c as i64);
+        // Per axis: the grid cell, or the exact bits where there is no cell (zero tolerance, or a
+        // coordinate too far out for an `i64` cell, where no other value lies within tolerance).
+        let axis_key = |c: f64| {
+            let cell = (c / tolerance).floor();
+            if tolerance > 0.0 && cell.abs() < (1u64 << 62) as f64 {
+                (false, cell as i64)
+            } else {
+                (true, if c == 0.0 { 0 } else { c.to_bits() as i64 })
+            }
+        };
         let max_distance_squared = tolerance * tolerance;
-        let mut grid: HashMap<[i64; 3], Vec<u32>> = HashMap::new();
+        let mut grid: HashMap<[(bool, i64); 3], Vec<u32>> = HashMap::new();
         let mut kept: Vec<DVec3> = Vec::new();
         let mut remap = Vec::with_capacity(self.positions.len());
         for &p in &self.positions {
-            let [x, y, z] = cell(p);
+            let key = p.to_array().map(axis_key);
+            let offsets = key.map(|(exact, _)| if exact { 0..=0 } else { -1..=1 });
             let mut found: Option<u32> = None;
-            for dx in -1..=1 {
-                for dy in -1..=1 {
-                    for dz in -1..=1 {
-                        let key = [x.wrapping_add(dx), y.wrapping_add(dy), z.wrapping_add(dz)];
-                        for &j in grid.get(&key).into_iter().flatten() {
+            for dx in offsets[0].clone() {
+                for dy in offsets[1].clone() {
+                    for dz in offsets[2].clone() {
+                        let mut near = key;
+                        for (axis, d) in near.iter_mut().zip([dx, dy, dz]) {
+                            axis.1 += d;
+                        }
+                        for &j in grid.get(&near).into_iter().flatten() {
                             if kept[j as usize].distance_squared(p) <= max_distance_squared
                                 && found.is_none_or(|f| j < f)
                             {
@@ -43,7 +55,7 @@ impl TriMesh {
             let index = found.unwrap_or_else(|| {
                 let j = kept.len() as u32;
                 kept.push(p);
-                grid.entry([x, y, z]).or_default().push(j);
+                grid.entry(key).or_default().push(j);
                 j
             });
             remap.push(index);
@@ -208,6 +220,44 @@ mod tests {
         assert_eq!(mesh.clone().weld(f64::NAN), vec![0, 1]);
         let mut empty = TriMesh::default();
         assert!(empty.weld(1.0).is_empty());
+    }
+
+    #[test]
+    fn weld_far_coordinates_and_signed_zero() {
+        // Beyond 2^62 cells only identical values are within tolerance on that axis.
+        let far = 1e30;
+        let mut mesh = TriMesh::new(
+            vec![
+                DVec3::new(far, 0.0, 0.0),
+                DVec3::new(far, 0.001, 0.0),
+                DVec3::new(far.next_up(), 0.0, 0.0),
+                DVec3::new(f64::INFINITY, 0.0, 0.0),
+                DVec3::new(f64::INFINITY, 0.0, 0.0),
+            ],
+            vec![],
+        );
+        assert_eq!(mesh.weld(0.01), vec![0, 0, 1, 2, 3]);
+        let mut zeros = TriMesh::new(vec![DVec3::ZERO, DVec3::new(-0.0, 0.0, -0.0)], vec![]);
+        assert_eq!(zeros.weld(0.0), vec![0, 0]);
+    }
+
+    #[test]
+    fn weld_of_dense_or_far_input_is_not_quadratic() {
+        let n = 100_000;
+        // Distinct points in one unit cube, and far-away points a tolerance cell cannot hold.
+        let dense = (0..n).map(|i| DVec3::new(i as f64 / n as f64, 0.5, 0.5));
+        let far = (0..n).map(|i| DVec3::new(1e30 * (1.0 + i as f64 / n as f64), 0.0, 0.0));
+        for (positions, tolerance) in [(dense.collect(), 0.0), (far.collect(), 0.01)] {
+            let mut mesh = TriMesh::new(positions, vec![]);
+            let start = std::time::Instant::now();
+            let remap = mesh.weld(tolerance);
+            let elapsed = start.elapsed();
+            assert_eq!(remap, (0..n as u32).collect::<Vec<_>>());
+            assert!(
+                elapsed.as_secs_f64() < crate::tests::TIME_LIMIT_SECONDS,
+                "took {elapsed:?}"
+            );
+        }
     }
 
     #[test]

@@ -95,43 +95,92 @@ impl TriMesh {
     /// closed (inconsistent winding) is returned as it was walked.
     pub fn boundary_loops(&self) -> Vec<Vec<u32>> {
         let map = self.edge_map();
-        let edges: Vec<[u32; 2]> = self
-            .triangles
-            .iter()
-            .filter(|t| has_distinct_corners(t))
-            .flat_map(|t| directed_edges(*t))
-            .filter(|e| map[&edge_key(*e)].len() == 1)
+        // Edge `3·t + k` is edge `k` of triangle `t` in winding order.
+        let edge = |id: usize| directed_edges(self.triangles[id / 3])[id % 3];
+        let edges: Vec<usize> = (0..self.triangles.len() * 3)
+            .filter(|&id| {
+                has_distinct_corners(&self.triangles[id / 3]) && map[&edge_key(edge(id))].len() == 1
+            })
             .collect();
-        let mut at: HashMap<u32, Vec<usize>> = HashMap::new();
-        for (i, [a, b]) in edges.iter().enumerate() {
-            at.entry(*a).or_default().push(i);
-            at.entry(*b).or_default().push(i);
+        let mut used = vec![false; self.triangles.len() * 3];
+        // Boundary edges leaving and entering each vertex, built only when the fan walk fails;
+        // used ones are dropped lazily.
+        type Lists = HashMap<u32, Vec<usize>>;
+        let mut lists: Option<(Lists, Lists)> = None;
+        let build = || {
+            let (mut out, mut into): (Lists, Lists) = Default::default();
+            for &id in edges.iter().rev() {
+                let [a, b] = edge(id);
+                out.entry(a).or_default().push(id);
+                into.entry(b).or_default().push(id);
+            }
+            (out, into)
+        };
+        fn take(lists: &mut Lists, v: u32, used: &[bool]) -> Option<usize> {
+            let list = lists.get_mut(&v)?;
+            while let Some(&e) = list.last() {
+                if !used[e] {
+                    return Some(e);
+                }
+                list.pop();
+            }
+            None
         }
-        let mut used = vec![false; edges.len()];
         let mut loops = Vec::new();
-        for start in 0..edges.len() {
+        for &start in &edges {
             if used[start] {
                 continue;
             }
             used[start] = true;
-            let [first, mut current] = edges[start];
+            let [first, mut current] = edge(start);
+            let mut arrived_by = Some(start);
             let mut chain = vec![first];
             while current != first {
                 chain.push(current);
-                // Prefer an edge leaving `current` along the winding.
-                let next = at[&current]
-                    .iter()
-                    .copied()
-                    .filter(|&e| !used[e])
-                    .min_by_key(|&e| edges[e][0] != current);
-                let Some(e) = next else { break };
+                // Prefer the edge leaving `current` beside the one we came in on, then any edge
+                // along the winding, then one against it.
+                let beside = arrived_by
+                    .and_then(|e| self.next_in_fan(&map, current, e))
+                    .filter(|&e| !used[e]);
+                let next = match beside {
+                    Some(e) => Some((e, true)),
+                    None => {
+                        let (out, into) = lists.get_or_insert_with(build);
+                        take(out, current, &used)
+                            .map(|e| (e, true))
+                            .or_else(|| take(into, current, &used).map(|e| (e, false)))
+                    }
+                };
+                let Some((e, along)) = next else { break };
                 used[e] = true;
-                let [a, b] = edges[e];
-                current = if a == current { b } else { a };
+                arrived_by = along.then_some(e);
+                current = edge(e)[usize::from(along)];
             }
             loops.push(chain);
         }
         loops
+    }
+
+    /// The boundary edge leaving `v` that is met by turning around `v` from the boundary edge
+    /// `incoming` (ending at `v`), through triangles that share an edge at `v`. `None` where the
+    /// fan is non-manifold or the edge found does not leave `v`.
+    fn next_in_fan(&self, map: &EdgeMap, v: u32, incoming: usize) -> Option<usize> {
+        let mut triangle = (incoming / 3) as u32;
+        let mut prev = directed_edges(self.triangles[triangle as usize])[incoming % 3][0];
+        for _ in 0..self.triangles.len() {
+            let t = self.triangles[triangle as usize];
+            let w = *t.iter().find(|&&c| c != v && c != prev)?;
+            match map.get(&edge_key([v, w]))?.as_slice() {
+                [_] => {
+                    let k = directed_edges(t).iter().position(|&e| e == [v, w])?;
+                    return Some(triangle as usize * 3 + k);
+                }
+                &[x, y] => triangle = if x == triangle { y } else { x },
+                _ => return None,
+            }
+            prev = w;
+        }
+        None
     }
 }
 
@@ -275,5 +324,46 @@ mod tests {
         let loops = mesh.boundary_loops();
         assert_eq!(loops.len(), 2);
         assert!(loops.iter().all(|l| l.len() == 3));
+    }
+
+    #[test]
+    fn squares_touching_at_a_corner_yield_two_loops() {
+        // Each square is two triangles, so a walk around either one passes through vertex 0.
+        let mesh = TriMesh::new(
+            vec![
+                DVec3::ZERO,
+                DVec3::new(1.0, 0.0, 0.0),
+                DVec3::new(1.0, 1.0, 0.0),
+                DVec3::new(0.0, 1.0, 0.0),
+                DVec3::new(-1.0, 0.0, 0.0),
+                DVec3::new(-1.0, -1.0, 0.0),
+                DVec3::new(0.0, -1.0, 0.0),
+            ],
+            vec![[3, 0, 2], [0, 4, 5], [0, 5, 6], [0, 1, 2]],
+        );
+        assert_eq!(
+            mesh.boundary_loops(),
+            vec![vec![3, 0, 1, 2], vec![0, 4, 5, 6]]
+        );
+    }
+
+    #[test]
+    fn wide_fan_at_one_vertex_is_linear() {
+        // 100 000 separate triangles sharing only vertex 0.
+        let k = 100_000u32;
+        let positions = (0..=2 * k)
+            .map(|i| DVec3::new(i as f64, 1.0, 0.0))
+            .collect();
+        let triangles = (0..k).map(|i| [2 * i + 1, 0, 2 * i + 2]).collect();
+        let mesh = TriMesh::new(positions, triangles);
+        let start = std::time::Instant::now();
+        let loops = mesh.boundary_loops();
+        let elapsed = start.elapsed();
+        assert_eq!(loops.len(), k as usize);
+        assert!(loops.iter().all(|l| l.len() == 3));
+        assert!(
+            elapsed.as_secs_f64() < crate::tests::TIME_LIMIT_SECONDS,
+            "took {elapsed:?}"
+        );
     }
 }

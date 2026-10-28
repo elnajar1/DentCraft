@@ -222,34 +222,58 @@ fn box_distance_squared(b: &Aabb, p: DVec3) -> f64 {
     (b.min - p).max(p - b.max).max(DVec3::ZERO).length_squared()
 }
 
-/// Möller–Trumbore intersection, accepting hits from either side.
+/// Watertight intersection (Woop, Benthin and Wald, JCGT 2013), accepting hits from either side.
+/// Each vertex is moved into a sheared frame where the ray runs along +z from the origin, so a
+/// vertex or edge shared by two triangles is evaluated identically by both and a ray through it
+/// cannot slip between them.
 fn ray_triangle(mesh: &TriMesh, triangle: u32, origin: DVec3, dir: DVec3) -> Option<RayHit> {
-    let [a, b, c] = mesh.triangle(triangle as usize);
-    let (e1, e2) = (b - a, c - a);
-    let p = dir.cross(e2);
-    let det = e1.dot(p);
-    // Parallel to the plane, or a triangle without area.
-    if det.abs() <= 1e-12 * dir.length() * e1.cross(e2).length() || !det.is_finite() {
+    let kz = dir.abs().max_position();
+    let (mut kx, mut ky) = ((kz + 1) % 3, (kz + 2) % 3);
+    if dir[kz] < 0.0 {
+        // Keep the winding of the sheared triangle.
+        std::mem::swap(&mut kx, &mut ky);
+    }
+    let shear = DVec3::new(dir[kx] / dir[kz], dir[ky] / dir[kz], 1.0 / dir[kz]);
+    let [a, b, c] = mesh.triangle(triangle as usize).map(|p| {
+        let p = p - origin;
+        DVec3::new(
+            p[kx] - shear.x * p[kz],
+            p[ky] - shear.y * p[kz],
+            shear.z * p[kz],
+        )
+    });
+    let mut u = c.x * b.y - c.y * b.x;
+    let mut v = a.x * c.y - a.y * c.x;
+    let mut w = b.x * a.y - b.y * a.x;
+    if u == 0.0 || v == 0.0 || w == 0.0 {
+        // On an edge or vertex: settle the signs exactly.
+        u = diff_of_products(c.x, b.y, c.y, b.x);
+        v = diff_of_products(a.x, c.y, a.y, c.x);
+        w = diff_of_products(b.x, a.y, b.y, a.x);
+    }
+    if (u < 0.0 || v < 0.0 || w < 0.0) && (u > 0.0 || v > 0.0 || w > 0.0) {
         return None;
     }
-    let inv = 1.0 / det;
-    let s = origin - a;
-    let u = s.dot(p) * inv;
-    if !(0.0..=1.0).contains(&u) {
+    // Zero for a ray parallel to the plane or a triangle without area.
+    let det = u + v + w;
+    let t = (u * a.z + v * b.z + w * c.z) / det;
+    // Rejects det = 0, hits behind the origin and non-finite input.
+    if !(t >= 0.0 && t.is_finite()) {
         return None;
     }
-    let q = s.cross(e1);
-    let v = dir.dot(q) * inv;
-    if v < 0.0 || u + v > 1.0 {
-        return None;
-    }
-    let t = e2.dot(q) * inv;
-    (t >= 0.0).then(|| RayHit {
+    Some(RayHit {
         triangle,
         t,
         point: origin + dir * t,
-        barycentric: DVec3::new(1.0 - u - v, u, v),
+        barycentric: DVec3::new(u, v, w) / det,
     })
+}
+
+/// `a·b − c·d` with a few ulps of error (Kahan), so its sign is exact barring underflow.
+fn diff_of_products(a: f64, b: f64, c: f64, d: f64) -> f64 {
+    let cd = c * d;
+    let error = (-c).mul_add(d, cd);
+    a.mul_add(b, -cd) + error
 }
 
 fn closest_on_segment(a: DVec3, b: DVec3, p: DVec3) -> DVec3 {
@@ -388,6 +412,34 @@ mod tests {
             }
         }
         assert!(hits >= 250, "only {hits} rays hit");
+    }
+
+    #[test]
+    fn rays_through_shared_vertices_and_edges_never_leak() {
+        let mesh = sphere();
+        let bvh = Bvh::build(&mesh);
+        let mut targets = mesh.positions.clone();
+        for [a, b] in mesh.edge_map().into_keys() {
+            let [p, q] = [a, b].map(|v| mesh.positions[v as usize]);
+            targets.extend([0.5, 0.25, 0.75].map(|s| p.lerp(q, s)));
+        }
+        let origins = [
+            DVec3::ZERO,
+            DVec3::new(1.5, -2.25, 0.75),
+            DVec3::new(-3.0, 2.0, -4.5),
+            DVec3::new(0.1, 0.2, 6.0),
+        ];
+        for origin in origins {
+            for &target in &targets {
+                // The mesh is convex, so the first hit is the target itself, at t = 1.
+                let hit = bvh.raycast(&mesh, origin, target - origin);
+                let hit = hit.unwrap_or_else(|| panic!("ray {origin} -> {target} leaked"));
+                assert!(
+                    hit.t > 0.0 && (hit.t - 1.0).abs() < 1e-9,
+                    "{origin} -> {target}"
+                );
+            }
+        }
     }
 
     #[test]

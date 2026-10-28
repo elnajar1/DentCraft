@@ -103,6 +103,9 @@ impl TriMesh {
 pub(crate) mod tests {
     use super::*;
 
+    /// Bound for tests that guard against quadratic time; looser where tests run unoptimised.
+    pub(crate) const TIME_LIMIT_SECONDS: f64 = if cfg!(debug_assertions) { 10.0 } else { 2.0 };
+
     pub(crate) fn unit_tetrahedron() -> TriMesh {
         TriMesh::new(
             vec![DVec3::ZERO, DVec3::X, DVec3::Y, DVec3::Z],
