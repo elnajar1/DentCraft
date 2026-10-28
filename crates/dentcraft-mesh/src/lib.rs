@@ -2,6 +2,15 @@
 //!
 //! Geometry is stored in `f64`. Units are millimetres.
 
+mod bvh;
+mod measure;
+mod repair;
+mod shapes;
+mod topology;
+
+pub use bvh::{Bvh, ClosestPoint, RayHit};
+pub use topology::EdgeMap;
+
 use glam::DVec3;
 use serde::{Deserialize, Serialize};
 
@@ -91,7 +100,7 @@ impl TriMesh {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     pub(crate) fn unit_tetrahedron() -> TriMesh {
@@ -99,6 +108,26 @@ mod tests {
             vec![DVec3::ZERO, DVec3::X, DVec3::Y, DVec3::Z],
             vec![[0, 2, 1], [0, 1, 3], [1, 2, 3], [0, 3, 2]],
         )
+    }
+
+    /// Axis-aligned cube of edge `s` at the origin, wound counter-clockwise seen from outside.
+    pub(crate) fn cube(s: f64) -> TriMesh {
+        let positions = (0..8)
+            .map(|i| DVec3::new((i & 1) as f64, ((i >> 1) & 1) as f64, ((i >> 2) & 1) as f64) * s)
+            .collect();
+        let quads = [
+            [0, 2, 3, 1],
+            [4, 5, 7, 6],
+            [0, 1, 5, 4],
+            [2, 6, 7, 3],
+            [0, 4, 6, 2],
+            [1, 3, 7, 5],
+        ];
+        let triangles = quads
+            .iter()
+            .flat_map(|[a, b, c, d]| [[*a, *b, *c], [*a, *c, *d]])
+            .collect();
+        TriMesh::new(positions, triangles)
     }
 
     #[test]
