@@ -41,5 +41,7 @@ for the project and released under the repository licence.
 | `dentcraft-io` | STL, PLY and OBJ import and export |
 | `dentcraft-case` | Case model: teeth (FDI), restorations, scans, materials, `.dentcraft` files |
 | `dentcraft-workflow` | The design wizard: steps per restoration type and session state |
+| `dentcraft-design` | Design algorithms: orientation, insertion axis, inner surface |
+| `dentcraft-render` | wgpu mesh renderer used by the app and headless screenshots |
 | `dentcraft-cli` | Headless command line |
 | `dentcraft` | Desktop application (egui + wgpu) |

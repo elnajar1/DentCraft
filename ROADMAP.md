@@ -1,6 +1,6 @@
 # Roadmap
 
-## 0.1 — Foundations (in progress)
+## 0.1 — Foundations
 
 - [x] Workspace, licences, clean-room rules
 - [x] Case model: FDI teeth, restorations, bridges, materials, `.dentcraft` files
@@ -13,26 +13,47 @@
 - [x] SolidCraft-style interface: ribbon, browser panels, light and dark themes
 - [x] CLI: mesh info and conversion, case plan
 
-## 0.2 — Single crown, manual
+## 0.2 — Preparation tools (in progress)
 
-- [ ] Orientation: occlusal plane and midline
-- [ ] Margin line: curvature-guided tracing and editing
-- [ ] Insertion axis with undercut map
-- [ ] Inner surface with cement gap and margin seal
-- [ ] Anatomy from an open tooth library
-- [ ] Contacts and occlusion distance map
-- [ ] Minimum-thickness check and fix
-- [ ] Watertight export
+- [ ] Workspace switcher: Crown & Bridge now; Model Builder, Implant, Splint, Denture and Smile
+      Design planned
+- [ ] Viewer: colour maps, overlay lines and handles, transparency, section plane, picking
+- [ ] Mesh toolkit: curvature, smoothing, shortest paths, region growing, hole filling
+- [ ] Orientation: occlusal plane and midline, automatic and adjustable
+- [ ] Margin line: curvature-guided tracing, editing and automatic proposal
+- [ ] Insertion axis: automatic best axis and undercut map
+- [ ] Inner surface: cement gap, margin seal and undercut block-out
+- [ ] Undo and redo for every design step
 
-## 0.3 — Bridges and automation
+## 0.3 — Single crown, end to end
 
-- [ ] Pontics, pontic base, connectors with cross-section control
-- [ ] Automatic tooth segmentation and labelling
-- [ ] Automatic margin detection
-- [ ] Anatomy proposals from a learned model
+- [ ] Anatomy from DentCraft's own parametric tooth library
+- [ ] Anatomy by mirroring the contralateral tooth or copying the pre-op scan
+- [ ] Fit to margin, contacts and antagonist, with minimum thickness
+- [ ] Sculpt brushes: add, remove, smooth, flatten, morph
+- [ ] Distance maps: contacts, occlusion and thickness
+- [ ] Watertight STL export per unit
+
+## 0.4 — Bridges and every restoration type
+
+- [ ] Pontics and pontic base
+- [ ] Connectors with cross-section control and area check
+- [ ] Copings, inlays, onlays and veneers
+
+## 0.5 — Model Builder workspace
+
+- [ ] Printable models: base, hollowing, drain holes and labels
+- [ ] Dies: cut, ditch and pins
+
+## 1.0 — Stable
+
+- [ ] Installers for Windows, macOS and Linux
+- [ ] Arabic and right-to-left interface
+- [ ] User guide and tutorials
+- [ ] Smooth viewing of million-triangle scans
 
 ## Later
 
-- Inlays, onlays and veneers polish; copings and cut-back
-- Implant abutments, model creation, bite splints, dentures
-- Browser build, MCP server for AI agents, right-to-left interface
+- Implant abutments, bite splints, dentures and smile design
+- Automatic tooth segmentation and anatomy proposals from learned models
+- Browser build and an MCP server for AI agents
