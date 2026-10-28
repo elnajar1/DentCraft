@@ -53,7 +53,7 @@ pub struct PreparedStump {
     pub mesh: TriMesh,
     /// Exact margin vertices, counter-clockwise about the stump axis, without a repeated endpoint.
     pub margin: Vec<DVec3>,
-    /// Triangle indices of the walls, top chamfer and flat top, excluding the shoulder below the margin.
+    /// Triangle indices of the preparation: everything at and above the margin.
     pub region: Vec<u32>,
     /// Unit axis after the requested rotation.
     pub axis: DVec3,
@@ -180,6 +180,149 @@ fn add_ring(mesh: &mut TriMesh, n: usize, radius: f64, z: f64, square: bool) {
     }
 }
 
+/// Finish-line profile of the independently generated preparation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FinishLine {
+    /// A flat 0.7 mm ledge at the margin height with a 0.2 mm rounded concave
+    /// inner corner joining the axial wall; the margin is the convex outer edge.
+    Shoulder,
+    /// A concave quarter circle of radius 0.9 mm from the axial wall down to the
+    /// margin; the margin is again the convex outer edge where the flare of the
+    /// unprepared root meets the chamfer.
+    Chamfer,
+}
+
+/// Sampling and orientation of a realistic rotational preparation, in millimetres.
+#[derive(Clone, Debug)]
+pub struct ToothParams {
+    pub finish: FinishLine,
+    pub segments: usize,
+    pub wall_steps: usize,
+    pub tilt_deg: f64,
+}
+
+impl Default for ToothParams {
+    fn default() -> Self {
+        Self {
+            finish: FinishLine::Shoulder,
+            segments: 256,
+            wall_steps: 64,
+            tilt_deg: 0.0,
+        }
+    }
+}
+
+/// A realistic rotational preparation on an unprepared root.
+///
+/// From the bottom up: a square base plate (half-width 6 mm, 0.3 mm thick), a root
+/// that flares outward downward by 3° up to radius 4 mm at height 8 mm, the chosen
+/// finish line, a 6° tapered axial wall and a rounded occlusal top with a flat top
+/// disc at height 12 mm. The margin is the convex outer edge of the finish line:
+/// the ring at radius 4 mm, height 8 mm, returned exactly (rotated by `tilt_deg`
+/// about X). The prep region contains every triangle at and above the margin ring
+/// (finish line, wall, occlusal cap) and nothing of the plate or root. Invalid
+/// sampling or tilt returns [`DesignError::InvalidParameter`].
+pub fn prepared_tooth(p: &ToothParams) -> Result<PreparedStump, DesignError> {
+    if p.segments < 96
+        || p.segments % 8 != 0
+        || p.wall_steps < 2
+        || !p.tilt_deg.is_finite()
+        || p.segments
+            .checked_mul(p.wall_steps.saturating_add(160))
+            .is_none_or(|n| n > 2_000_000)
+    {
+        return Err(DesignError::InvalidParameter("tooth sampling or tilt"));
+    }
+    let n = p.segments;
+    let mut mesh = TriMesh::default();
+    add_ring(&mut mesh, n, 6.0, 0.0, true);
+    add_ring(&mut mesh, n, 6.0, 0.3, true);
+    for i in 0..=80 {
+        let z = 0.5 + 7.5 * i as f64 / 80.0;
+        add_ring(
+            &mut mesh,
+            n,
+            4.0 + (8.0 - z) * 3.0_f64.to_radians().tan(),
+            z,
+            false,
+        );
+    }
+    let margin_start = mesh.positions.len() - n;
+    let prep_start = mesh.triangles.len();
+    let wall_z = match p.finish {
+        FinishLine::Shoulder => {
+            for i in 1..=14 {
+                add_ring(&mut mesh, n, 4.0 - 0.7 * i as f64 / 14.0, 8.0, false);
+            }
+            for i in 1..=10 {
+                let a = std::f64::consts::FRAC_PI_2 * i as f64 / 10.0;
+                add_ring(
+                    &mut mesh,
+                    n,
+                    3.3 - 0.2 * a.sin(),
+                    8.0 + 0.2 * (1.0 - a.cos()),
+                    false,
+                );
+            }
+            8.2
+        }
+        FinishLine::Chamfer => {
+            for i in 1..=24 {
+                let a = std::f64::consts::FRAC_PI_2 * i as f64 / 24.0;
+                add_ring(
+                    &mut mesh,
+                    n,
+                    4.0 - 0.9 * a.sin(),
+                    8.0 + 0.9 * (1.0 - a.cos()),
+                    false,
+                );
+            }
+            8.9
+        }
+    };
+    let slope = 6.0_f64.to_radians().tan();
+    for i in 1..=p.wall_steps {
+        let z = wall_z + (11.5 - wall_z) * i as f64 / p.wall_steps as f64;
+        add_ring(&mut mesh, n, 3.1 - (z - wall_z) * slope, z, false);
+    }
+    let r = 3.1 - (11.5 - wall_z) * slope;
+    for i in 1..=16 {
+        let a = std::f64::consts::FRAC_PI_2 * i as f64 / 16.0;
+        add_ring(
+            &mut mesh,
+            n,
+            r - 0.5 * (1.0 - a.cos()),
+            11.5 + 0.5 * a.sin(),
+            false,
+        );
+    }
+    let last = mesh.positions.len() - n;
+    let top = mesh.positions.len() as u32;
+    mesh.positions.push(DVec3::Z * 12.0);
+    for i in 0..n {
+        mesh.triangles
+            .push([top, (last + i) as u32, (last + (i + 1) % n) as u32]);
+    }
+    let region = (prep_start as u32..mesh.triangles.len() as u32).collect();
+    let bottom = mesh.positions.len() as u32;
+    mesh.positions.push(DVec3::ZERO);
+    for i in 0..n {
+        mesh.triangles
+            .push([bottom, ((i + 1) % n) as u32, i as u32]);
+    }
+    let rotation = DQuat::from_rotation_x(p.tilt_deg.to_radians());
+    for v in &mut mesh.positions {
+        *v = rotation * *v;
+    }
+    let margin = mesh.positions[margin_start..margin_start + n].to_vec();
+    Ok(PreparedStump {
+        mesh,
+        margin,
+        region,
+        axis: rotation * DVec3::Z,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,5 +374,72 @@ mod tests {
             ..Default::default()
         };
         assert!(prepared_stump(&p).is_err());
+    }
+
+    #[test]
+    fn prepared_tooth_is_closed_with_the_margin_as_outer_edge() {
+        for finish in [FinishLine::Shoulder, FinishLine::Chamfer] {
+            let p = ToothParams {
+                finish,
+                tilt_deg: 12.0,
+                ..Default::default()
+            };
+            let die = prepared_tooth(&p).unwrap();
+            assert!(die.mesh.is_closed(), "{finish:?}");
+            assert!(die.mesh.is_consistently_oriented(), "{finish:?}");
+            assert_eq!(die.mesh.connected_components().len(), 1);
+            assert_eq!(die.margin.len(), p.segments);
+            for &point in &die.margin {
+                assert!((point.dot(die.axis) - 8.0).abs() < 1e-9, "{finish:?}");
+                let radial = point - die.axis * point.dot(die.axis);
+                assert!((radial.length() - 4.0).abs() < 1e-9, "{finish:?}");
+            }
+            // The prep region is exactly at and above the margin ring.
+            for &t in &die.region {
+                for v in die.mesh.triangles[t as usize] {
+                    assert!(
+                        die.mesh.positions[v as usize].dot(die.axis) >= 8.0 - 1e-9,
+                        "{finish:?}"
+                    );
+                }
+            }
+            assert!(!die.region.is_empty());
+            // The prep patch is a disc whose only boundary is the margin ring.
+            let prep = die.mesh.extract_triangles(&die.region);
+            let loops = prep.boundary_loops();
+            assert_eq!(loops.len(), 1, "{finish:?}");
+            assert_eq!(loops[0].len(), p.segments);
+            for &v in &loops[0] {
+                assert!(
+                    die.margin.contains(&prep.positions[v as usize]),
+                    "{finish:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn prepared_tooth_rejects_invalid_sampling() {
+        assert!(
+            prepared_tooth(&ToothParams {
+                segments: 95,
+                ..Default::default()
+            })
+            .is_err()
+        );
+        assert!(
+            prepared_tooth(&ToothParams {
+                wall_steps: 1,
+                ..Default::default()
+            })
+            .is_err()
+        );
+        assert!(
+            prepared_tooth(&ToothParams {
+                tilt_deg: f64::NAN,
+                ..Default::default()
+            })
+            .is_err()
+        );
     }
 }
