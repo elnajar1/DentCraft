@@ -54,7 +54,7 @@ pub struct Args {
 
     /// Start the Measure tool between two points in millimetres, e.g. "0,0,0;10,0,0". Each point
     /// snaps to the nearest surface of the visible scans once they have loaded.
-    #[arg(long, value_name = "X,Y,Z;X,Y,Z", value_parser = parse_measure)]
+    #[arg(long, value_name = "X,Y,Z;X,Y,Z", value_parser = parse_measure, allow_hyphen_values = true)]
     pub measure: Option<[DVec3; 2]>,
 }
 
@@ -257,6 +257,9 @@ mod tests {
         let args = Args::try_parse_from(["dentcraft", "--measure", "0,0,0;1,1,1"]).unwrap();
         assert_eq!(args.measure, Some([DVec3::ZERO, DVec3::ONE]));
         assert_eq!(Args::try_parse_from(["dentcraft"]).unwrap().measure, None);
+        // A first coordinate below zero is a value, not an option.
+        let args = Args::try_parse_from(["dentcraft", "--measure", "-1,0,0;1,0,0"]).unwrap();
+        assert_eq!(args.measure, Some([-DVec3::X, DVec3::X]));
     }
 
     #[test]
