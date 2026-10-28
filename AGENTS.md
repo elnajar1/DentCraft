@@ -32,6 +32,12 @@ for the project and released under the repository licence.
 - `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings` and
   `cargo test --workspace` must pass before a commit.
 - No `unsafe` (the workspace forbids it).
+- Accuracy tests for design geometry (gaps, thickness, clearances) measure true 3D distances, at
+  triangle interiors (edge midpoints, centroids) as well as vertices, and include steep walls,
+  directions that are not grid-aligned and scan-like noise. A vertices-only check on a flat test
+  shape once hid a crown that bound on its walls and cut 11 µm into the die.
+- Renderer changes run the offscreen tests once with `WGPU_BACKEND=gl` too: it is the local
+  stand-in for CI's Linux llvmpipe, which lacks several downlevel features.
 
 ## Crate map
 
