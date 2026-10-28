@@ -7,9 +7,10 @@ use eframe::egui::{
     Sense, Shape, Stroke, Ui, Vec2, vec2,
 };
 
+use crate::browser::{self, Section, Sections};
 use crate::chart::{ON_FILL, kind_color};
-use crate::theme::{Palette, RADIUS_LG, RADIUS_SM, SIZE_SMALL};
-use crate::widgets::{self, Icon, Pill, paint_icon, pill, section_label};
+use crate::theme::{Palette, RADIUS_SM, SIZE_SMALL};
+use crate::widgets::{self, Icon, paint_icon, small_button};
 
 /// Shown on every step whose design tools are not built yet.
 pub const NOT_YET_NOTE: &str = "Design tools for this step arrive in DentCraft 0.2.";
@@ -35,8 +36,9 @@ pub struct WorkflowView<'a> {
     pub case: &'a Case,
     pub has_jaw_scan: bool,
     pub error: Option<&'a str>,
-    /// Height of the step card last frame, so the list leaves room for it.
+    /// Height of the step section last frame, so the step list leaves room for it.
     pub card_height: &'a mut f32,
+    pub sections: &'a mut Sections,
 }
 
 impl WorkflowView<'_> {
@@ -45,62 +47,82 @@ impl WorkflowView<'_> {
         let session = self.session;
         let mut action = None;
         let (done, total) = session.progress();
+        ui.spacing_mut().item_spacing.y = 0.0;
 
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            section_label(ui, "Workflow");
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+        browser::header(
+            ui,
+            Section::Workflow,
+            self.sections.open_mut(Section::Workflow),
+            |ui| {
                 ui.label(
                     RichText::new(format!("{done} of {total} steps"))
                         .size(SIZE_SMALL)
                         .color(p.text_dim),
                 );
-            });
-        });
-        progress_bar(ui, done as f32 / total.max(1) as f32, &p);
-        ui.add_space(6.0);
-
-        let list_height = (ui.available_height() - *self.card_height - 12.0).max(80.0);
-        egui::ScrollArea::vertical()
-            .max_height(list_height)
-            .auto_shrink([false, true])
-            .show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = 2.0;
-                for (index, step) in session.steps().iter().enumerate() {
-                    if step_row(
-                        ui,
-                        index,
-                        step.id,
-                        &step.teeth,
-                        session.status(index),
-                        self.case,
-                        &p,
-                    ) {
-                        action = Some(StepAction::GoTo(index));
-                    }
-                }
-            });
-        ui.add_space(10.0);
-
-        let card = egui::Frame::new()
-            .fill(p.panel_header)
-            .stroke(Stroke::new(1.0, p.border))
-            .corner_radius(CornerRadius::same(RADIUS_LG))
-            .inner_margin(Margin::same(14))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                match session.current() {
-                    Some(step) => {
-                        let id = step.id;
-                        let index = session.current_index();
-                        if let Some(a) = active_card(ui, &self, index, id, &step.teeth, &p) {
-                            action = Some(a);
+            },
+        );
+        if self.sections.is_open(Section::Workflow) {
+            let step_open = self.sections.is_open(Section::Step);
+            let card_height = *self.card_height;
+            browser::body(ui, |ui| {
+                progress_bar(ui, done as f32 / total.max(1) as f32, &p);
+                ui.add_space(4.0);
+                // Leave room for the step section under the list.
+                let reserve = if step_open {
+                    card_height
+                } else {
+                    browser::HEADER_HEIGHT + 1.0
+                };
+                let list_height =
+                    (ui.available_height() - reserve - f32::from(browser::BODY_MARGIN.bottom))
+                        .max(80.0);
+                egui::ScrollArea::vertical()
+                    .max_height(list_height)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        for (index, step) in session.steps().iter().enumerate() {
+                            if step_row(
+                                ui,
+                                index,
+                                step.id,
+                                &step.teeth,
+                                session.status(index),
+                                self.case,
+                                &p,
+                            ) {
+                                action = Some(StepAction::GoTo(index));
+                            }
                         }
-                    }
-                    None => finished_card(ui, total, &p),
-                }
+                    });
             });
-        *self.card_height = card.response.rect.height();
+        }
+
+        let top = ui.cursor().top();
+        let current = session.current().map(|s| (session.current_index(), s));
+        browser::header(
+            ui,
+            Section::Step,
+            self.sections.open_mut(Section::Step),
+            |ui| {
+                let text = match current {
+                    Some((index, _)) => format!("{} of {total}", index + 1),
+                    None => "Done".to_owned(),
+                };
+                ui.label(RichText::new(text).size(SIZE_SMALL).color(p.text_dim));
+            },
+        );
+        if self.sections.is_open(Section::Step) {
+            browser::body(ui, |ui| match current {
+                Some((index, step)) => {
+                    if let Some(a) = active_card(ui, &self, index, step.id, &step.teeth, &p) {
+                        action = Some(a);
+                    }
+                }
+                None => finished_card(ui, total, &p),
+            });
+        }
+        *self.card_height = ui.cursor().top() - top;
         action
     }
 }
@@ -285,20 +307,13 @@ fn active_card(
     let total = session.steps().len();
     let mut action = None;
     ui.horizontal(|ui| {
-        ui.label(
-            RichText::new(format!("STEP {} OF {total}", index + 1))
-                .size(SIZE_SMALL)
-                .color(p.accent)
-                .extra_letter_spacing(1.2)
-                .strong(),
-        );
+        ui.label(RichText::new(id.title()).heading().color(p.text));
         if id.is_optional() {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.label(RichText::new("Optional").size(SIZE_SMALL).color(p.text_dim));
             });
         }
     });
-    ui.label(RichText::new(id.title()).heading().color(p.text));
     ui.label(RichText::new(id.summary()).color(p.text_dim));
     if !teeth.is_empty() {
         ui.add_space(2.0);
@@ -334,14 +349,14 @@ fn active_card(
     ui.add_space(6.0);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
-        if pill(ui, "Back", Pill::Secondary, index > 0)
+        if small_button(ui, "Back", index > 0, false)
             .on_hover_text("Re-open the previous step")
             .clicked()
         {
             action = Some(StepAction::Back);
         }
         if id.is_optional()
-            && pill(ui, "Skip", Pill::Secondary, true)
+            && small_button(ui, "Skip", true, false)
                 .on_hover_text("Leave this step out")
                 .clicked()
         {
@@ -350,7 +365,7 @@ fn active_card(
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             let last = session.progress().0 + 1 == total;
             let label = if last { "Finish" } else { "Next" };
-            let next = pill(ui, label, Pill::Primary, ready);
+            let next = small_button(ui, label, ready, true);
             if next.on_disabled_hover_text(NEEDS_JAW_SCAN).clicked() {
                 action = Some(StepAction::Next);
             }

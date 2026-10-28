@@ -1,9 +1,9 @@
-//! Small branded widgets: pill and command buttons, painted line icons and section labels.
+//! Small branded widgets: small and command buttons, and painted line icons.
 
 use dentcraft_render::ViewPreset;
 use eframe::egui::{
-    self, Align2, Color32, CornerRadius, CursorIcon, FontId, Pos2, Rect, Response, RichText, Sense,
-    Shape, Stroke, TextStyle, Ui, Vec2, WidgetText, epaint::PathShape, pos2, vec2,
+    self, Align2, Color32, CornerRadius, CursorIcon, FontId, Pos2, Rect, Response, Sense, Shape,
+    Stroke, TextStyle, Ui, Vec2, WidgetText, epaint::PathShape, pos2, vec2,
 };
 
 use crate::theme::{Palette, RADIUS_SM, SIZE_SMALL, ThemeKind};
@@ -17,16 +17,9 @@ pub fn palette(ui: &Ui) -> Palette {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Pill {
-    /// Filled with the accent colour: the main action of an area.
-    Primary,
-    /// Raised fill with a hairline border.
-    Secondary,
-}
-
-/// Pill-shaped button.
-pub fn pill(ui: &mut Ui, text: &str, kind: Pill, enabled: bool) -> Response {
+/// Small flat button with a hairline border. `primary` marks the main action of an area with
+/// the selected fill and an accent border.
+pub fn small_button(ui: &mut Ui, text: &str, enabled: bool, primary: bool) -> Response {
     let p = palette(ui);
     let galley = WidgetText::from(text).into_galley(
         ui,
@@ -34,56 +27,38 @@ pub fn pill(ui: &mut Ui, text: &str, kind: Pill, enabled: bool) -> Response {
         f32::INFINITY,
         TextStyle::Button,
     );
-    let size = vec2(galley.size().x + 20.0, 26.0);
+    let size = vec2((galley.size().x + 20.0).max(56.0), 24.0);
     let sense = if enabled {
         Sense::click()
     } else {
         Sense::hover()
     };
     let (rect, response) = ui.allocate_exact_size(size, sense);
-    let hovered = enabled && response.hovered();
-    let (fill, stroke, ink) = match kind {
-        Pill::Primary => (
-            if hovered { p.primary_hover } else { p.primary },
-            Stroke::NONE,
-            p.on_primary,
-        ),
-        Pill::Secondary => (
-            if hovered { p.hover } else { p.panel_header },
-            Stroke::new(1.0, p.border),
-            p.text,
-        ),
-    };
-    let alpha = if enabled { 1.0 } else { 0.45 };
     if ui.is_rect_visible(rect) {
+        let (mut fill, ink) = button_colors(&p, &response, enabled, primary);
+        if fill == Color32::TRANSPARENT {
+            fill = p.panel_header;
+        }
+        let border = if primary && enabled {
+            p.accent
+        } else {
+            p.border
+        };
         let painter = ui.painter();
         painter.rect(
             rect,
             CornerRadius::same(RADIUS_SM),
-            fill.gamma_multiply(alpha),
-            stroke,
+            fill,
+            Stroke::new(1.0, border),
             egui::StrokeKind::Inside,
         );
-        let pos = rect.center() - galley.size() * 0.5;
-        painter.galley(pos, galley, ink.gamma_multiply(alpha));
+        painter.galley(rect.center() - galley.size() * 0.5, galley, ink);
     }
     if enabled {
         response.on_hover_cursor(CursorIcon::PointingHand)
     } else {
         response
     }
-}
-
-/// Small upper-case label that heads a section.
-pub fn section_label(ui: &mut Ui, text: &str) -> Response {
-    let p = palette(ui);
-    ui.label(
-        RichText::new(text.to_uppercase())
-            .size(SIZE_SMALL)
-            .color(p.text_dim)
-            .extra_letter_spacing(1.2)
-            .strong(),
-    )
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -112,6 +87,10 @@ pub enum Icon {
     Next,
     /// Two chevrons and a bar.
     Skip,
+    /// Chevron pointing right: a closed section.
+    ChevronRight,
+    /// Chevron pointing down: an open section.
+    ChevronDown,
     /// Molar outline, for design tools.
     Tooth,
     /// Cube with the face the view looks at filled in.
@@ -310,6 +289,8 @@ pub fn paint_icon(painter: &egui::Painter, icon: Icon, rect: Rect, ink: Color32,
             open(&[(-0.2, -0.6), (0.4, 0.0), (-0.2, 0.6)]);
             open(&[(0.75, -0.65), (0.75, 0.65)]);
         }
+        Icon::ChevronRight => open(&[(-0.3, -0.7), (0.4, 0.0), (-0.3, 0.7)]),
+        Icon::ChevronDown => open(&[(-0.7, -0.3), (0.0, 0.4), (0.7, -0.3)]),
         Icon::Tooth => closed(&[
             (-0.75, -0.45),
             (-0.6, -0.82),

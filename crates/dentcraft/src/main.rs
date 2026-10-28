@@ -2,6 +2,7 @@
 
 mod app;
 mod args;
+mod browser;
 mod chart;
 mod document;
 mod loader;

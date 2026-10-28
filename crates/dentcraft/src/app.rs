@@ -13,6 +13,7 @@ use eframe::egui::{
     TextureHandle, TextureOptions, vec2,
 };
 
+use crate::browser::{self, SECTIONS_KEY, Section, Sections};
 use crate::chart::{self, ChartEdit};
 use crate::document::{self, Document};
 use crate::loader::Loader;
@@ -20,7 +21,7 @@ use crate::objects::{self, ObjectState, SceneObject};
 use crate::ribbon::{self, Command, RibbonTab, RibbonView};
 use crate::theme::{self, Palette, RADIUS_LG, SIZE_SMALL, ThemeKind};
 use crate::viewport::Viewport;
-use crate::widgets::{Icon, Pill, icon_button, paint_icon, pill, section_label};
+use crate::widgets::{Icon, icon_button, paint_icon, small_button};
 use crate::workflow_panel::{self, StepAction, WorkflowView};
 
 const THEME_KEY: &str = "theme";
@@ -84,6 +85,8 @@ pub struct DentCraftApp {
     confirm_discard: Option<Discard>,
     window_title: String,
     ribbon_tab: RibbonTab,
+    /// Open and collapsed sections of the side panels.
+    sections: Sections,
 }
 
 /// The logo shipped with the app, decoded to RGBA.
@@ -111,13 +114,15 @@ impl DentCraftApp {
             }
             None => false,
         };
-        let stored = if start.screenshot.is_none() {
-            cc.storage
-                .and_then(|s| s.get_string(THEME_KEY))
-                .and_then(|k| ThemeKind::from_key(&k))
-        } else {
-            None
-        };
+        // A screenshot run ignores saved state, so it looks the same on every machine.
+        let storage = cc.storage.filter(|_| start.screenshot.is_none());
+        let stored = storage
+            .and_then(|s| s.get_string(THEME_KEY))
+            .and_then(|k| ThemeKind::from_key(&k));
+        let sections = storage
+            .and_then(|s| s.get_string(SECTIONS_KEY))
+            .map(|k| Sections::from_key(&k))
+            .unwrap_or_default();
         let theme = start.theme.or(stored).unwrap_or_default();
         theme::install(&cc.egui_ctx, theme);
 
@@ -132,6 +137,7 @@ impl DentCraftApp {
             confirm_discard: None,
             window_title: String::new(),
             ribbon_tab: RibbonTab::default(),
+            sections,
             case,
             objects: Vec::new(),
             next_id: 1,
@@ -418,10 +424,10 @@ impl DentCraftApp {
                 );
                 ui.add_space(12.0);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if pill(ui, "Discard changes", Pill::Primary, true).clicked() {
+                    if small_button(ui, "Discard changes", true, true).clicked() {
                         choice = Some(true);
                     }
-                    if pill(ui, "Keep editing", Pill::Secondary, true).clicked() {
+                    if small_button(ui, "Keep editing", true, false).clicked() {
                         choice = Some(false);
                     }
                 });
@@ -590,68 +596,90 @@ impl DentCraftApp {
 
     fn case_panel(&mut self, ui: &mut egui::Ui) {
         let p = self.palette();
-        ui.add_space(4.0);
-        section_label(ui, "Case");
-        ui.add(
-            egui::TextEdit::singleline(&mut self.case.name)
-                .hint_text("Case name")
-                .desired_width(f32::INFINITY)
-                .margin(Margin::symmetric(10, 6)),
+        let small = |text: String| RichText::new(text).size(SIZE_SMALL).color(p.text_dim);
+        ui.spacing_mut().item_spacing.y = 0.0;
+
+        browser::header(
+            ui,
+            Section::Case,
+            self.sections.open_mut(Section::Case),
+            |_| {},
         );
-        ui.add_space(14.0);
-
-        ui.horizontal(|ui| {
-            section_label(ui, "Teeth");
-            let n = self.case.units.len();
-            if n > 0 {
-                ui.label(
-                    RichText::new(format!("{n} unit{}", if n == 1 { "" } else { "s" }))
-                        .size(SIZE_SMALL)
-                        .color(p.text_dim),
+        if self.sections.is_open(Section::Case) {
+            browser::body(ui, |ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.case.name)
+                        .hint_text("Case name")
+                        .desired_width(f32::INFINITY)
+                        .margin(Margin::symmetric(10, 6)),
                 );
-            }
-        });
-        if let Some(edit) = chart::tooth_chart(ui, &self.case) {
-            self.apply_chart_edit(edit);
-        }
-        chart::legend(ui);
-        if self.case.units.is_empty() {
-            ui.label(
-                RichText::new("Click a tooth to add a restoration.")
-                    .size(SIZE_SMALL)
-                    .color(p.text_dim),
-            );
-        }
-        ui.add_space(14.0);
-
-        section_label(ui, "Material");
-        self.material_picker(ui, &p);
-        let issues = self.case.validate();
-        if !issues.is_empty() {
-            ui.add_space(10.0);
-            issues_box(ui, &issues, &p);
-        }
-        ui.add_space(14.0);
-
-        ui.horizontal(|ui| {
-            section_label(ui, "Objects");
-            if !self.objects.is_empty() {
-                ui.label(
-                    RichText::new(self.objects.len().to_string())
-                        .size(SIZE_SMALL)
-                        .color(p.text_dim),
-                );
-            }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if icon_button(ui, Icon::Plus, 24.0)
-                    .on_hover_text("Import scans…")
-                    .clicked()
-                {
-                    self.pick_files();
-                }
             });
-        });
+        }
 
+        let n = self.case.units.len();
+        browser::header(
+            ui,
+            Section::Teeth,
+            self.sections.open_mut(Section::Teeth),
+            |ui| {
+                if n > 0 {
+                    ui.label(small(format!("{n} unit{}", if n == 1 { "" } else { "s" })));
+                }
+            },
+        );
+        if self.sections.is_open(Section::Teeth) {
+            let edit = browser::body(ui, |ui| {
+                let edit = chart::tooth_chart(ui, &self.case);
+                chart::legend(ui);
+                if self.case.units.is_empty() {
+                    ui.label(small("Click a tooth to add a restoration.".to_owned()));
+                }
+                let issues = self.case.validate();
+                if !issues.is_empty() {
+                    ui.add_space(4.0);
+                    issues_box(ui, &issues, &p);
+                }
+                edit
+            });
+            if let Some(edit) = edit {
+                self.apply_chart_edit(edit);
+            }
+        }
+
+        browser::header(
+            ui,
+            Section::Material,
+            self.sections.open_mut(Section::Material),
+            |_| {},
+        );
+        if self.sections.is_open(Section::Material) {
+            browser::body(ui, |ui| self.material_picker(ui, &p));
+        }
+
+        let count = self.objects.len();
+        let mut import = false;
+        browser::header(
+            ui,
+            Section::Scans,
+            self.sections.open_mut(Section::Scans),
+            |ui| {
+                import = icon_button(ui, Icon::Plus, 20.0)
+                    .on_hover_text("Import scans…")
+                    .clicked();
+                if count > 0 {
+                    ui.label(small(count.to_string()));
+                }
+            },
+        );
+        if import {
+            self.pick_files();
+        }
+        if self.sections.is_open(Section::Scans) {
+            browser::body(ui, |ui| self.scan_list(ui, &p));
+        }
+    }
+
+    fn scan_list(&mut self, ui: &mut egui::Ui, p: &Palette) {
         if self.objects.is_empty() {
             ui.label(
                 RichText::new("No scans yet. Import or drop STL, PLY or OBJ files.")
@@ -670,7 +698,7 @@ impl DentCraftApp {
                 .corner_radius(CornerRadius::same(10))
                 .inner_margin(Margin::symmetric(10, 8))
                 .show(ui, |ui| {
-                    if object_row(ui, obj, is_hovered, &p) {
+                    if object_row(ui, obj, is_hovered, p) {
                         remove = Some(index);
                     }
                 });
@@ -697,6 +725,7 @@ impl DentCraftApp {
             has_jaw_scan,
             error: self.workflow_error.as_deref(),
             card_height: &mut self.workflow_card_height,
+            sections: &mut self.sections,
         }
         .show(ui);
         if let Some(action) = action {
@@ -823,7 +852,7 @@ impl DentCraftApp {
                             .color(p.text_dim),
                     );
                     ui.add_space(12.0);
-                    clicked = pill(ui, "Import scans…", Pill::Primary, true).clicked();
+                    clicked = small_button(ui, "Import scans…", true, true).clicked();
                 });
             });
             if clicked {
@@ -1114,7 +1143,7 @@ impl eframe::App for DentCraftApp {
             .exact_size(22.0)
             .show(ui, |ui| self.status_bar(ui, frame));
         egui::Panel::left("case_panel")
-            .frame(bar(Margin::same(10)))
+            .frame(bar(Margin::ZERO))
             .default_size(320.0)
             .min_size(300.0)
             .max_size(460.0)
@@ -1124,7 +1153,7 @@ impl eframe::App for DentCraftApp {
                     .show(ui, |ui| self.case_panel(ui));
             });
         egui::Panel::right("workflow_panel")
-            .frame(bar(Margin::same(10)))
+            .frame(bar(Margin::ZERO))
             .default_size(300.0)
             .min_size(280.0)
             .show(ui, |ui| self.workflow_panel(ui));
@@ -1140,6 +1169,7 @@ impl eframe::App for DentCraftApp {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         if self.screenshot.is_none() {
             storage.set_string(THEME_KEY, self.theme.key().to_owned());
+            storage.set_string(SECTIONS_KEY, self.sections.to_key());
         }
     }
 
