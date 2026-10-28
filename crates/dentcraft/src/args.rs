@@ -3,8 +3,10 @@
 use std::path::PathBuf;
 
 use clap::{Parser, ValueEnum};
+use dentcraft_case::ScanRole;
 use dentcraft_render::ViewPreset;
 
+use crate::ribbon::RibbonTab;
 use crate::theme::ThemeKind;
 
 /// Default window size, in logical points.
@@ -28,6 +30,15 @@ pub struct Args {
     #[arg(long, value_enum)]
     pub theme: Option<ThemeArg>,
 
+    /// Hide scans with this role once loaded: upper, lower, upper-pre-op, lower-pre-op, bite
+    /// or other. Repeat to hide several.
+    #[arg(long, value_name = "ROLE", value_parser = parse_role)]
+    pub hide: Vec<ScanRole>,
+
+    /// Ribbon tab to show.
+    #[arg(long, value_enum)]
+    pub tab: Option<TabArg>,
+
     /// Render the window once everything has loaded, write it to this PNG and exit.
     #[arg(long, value_name = "OUT.png")]
     pub screenshot: Option<PathBuf>,
@@ -50,6 +61,40 @@ impl From<ThemeArg> for ThemeKind {
             ThemeArg::Light => ThemeKind::Light,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum TabArg {
+    Case,
+    Design,
+    View,
+}
+
+impl From<TabArg> for RibbonTab {
+    fn from(arg: TabArg) -> Self {
+        match arg {
+            TabArg::Case => RibbonTab::Case,
+            TabArg::Design => RibbonTab::Design,
+            TabArg::View => RibbonTab::View,
+        }
+    }
+}
+
+/// Parses a scan role as written on the command line.
+pub fn parse_role(text: &str) -> Result<ScanRole, String> {
+    Ok(match text {
+        "upper" => ScanRole::Upper,
+        "lower" => ScanRole::Lower,
+        "upper-pre-op" => ScanRole::UpperPreOp,
+        "lower-pre-op" => ScanRole::LowerPreOp,
+        "bite" => ScanRole::Bite,
+        "other" => ScanRole::Other,
+        _ => {
+            return Err(format!(
+                "unknown role `{text}` (expected upper, lower, upper-pre-op, lower-pre-op, bite or other)"
+            ));
+        }
+    })
 }
 
 fn parse_view(text: &str) -> Result<ViewPreset, String> {
@@ -118,6 +163,45 @@ mod tests {
         assert_eq!(args.theme, Some(ThemeArg::Light));
         assert_eq!(args.screenshot, Some(PathBuf::from("out.png")));
         assert_eq!(args.size, Some([1280, 800]));
+    }
+
+    #[test]
+    fn hide_repeats_and_tab_selects_a_ribbon_tab() {
+        let args = Args::try_parse_from([
+            "dentcraft",
+            "--hide",
+            "lower",
+            "--hide",
+            "upper-pre-op",
+            "--tab",
+            "design",
+        ])
+        .unwrap();
+        assert_eq!(args.hide, vec![ScanRole::Lower, ScanRole::UpperPreOp]);
+        assert_eq!(args.tab.map(RibbonTab::from), Some(RibbonTab::Design));
+        let none = Args::try_parse_from(["dentcraft"]).unwrap();
+        assert!(none.hide.is_empty());
+        assert_eq!(none.tab, None);
+    }
+
+    #[test]
+    fn every_role_parses() {
+        let names = [
+            "upper",
+            "lower",
+            "upper-pre-op",
+            "lower-pre-op",
+            "bite",
+            "other",
+        ];
+        let roles: Vec<_> = names.iter().map(|n| parse_role(n).unwrap()).collect();
+        assert_eq!(roles, ScanRole::ALL);
+    }
+
+    #[test]
+    fn unknown_role_and_tab_are_errors() {
+        assert!(Args::try_parse_from(["dentcraft", "--hide", "maxilla"]).is_err());
+        assert!(Args::try_parse_from(["dentcraft", "--tab", "sculpt"]).is_err());
     }
 
     #[test]

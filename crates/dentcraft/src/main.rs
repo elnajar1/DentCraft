@@ -57,6 +57,8 @@ fn main() -> ExitCode {
         case: args.case,
         view: args.view,
         theme: args.theme.map(Into::into),
+        hide: args.hide,
+        tab: args.tab.map(Into::into),
         screenshot: args.screenshot,
         exit_code: exit_code.clone(),
     };

@@ -37,6 +37,10 @@ pub struct StartOptions {
     pub case: Option<PathBuf>,
     pub view: Option<ViewPreset>,
     pub theme: Option<ThemeKind>,
+    /// Roles of the startup scans to hide.
+    pub hide: Vec<ScanRole>,
+    /// Ribbon tab to show first.
+    pub tab: Option<RibbonTab>,
     pub screenshot: Option<PathBuf>,
     /// Exit code of a screenshot run, read by `main` once the window has closed.
     pub exit_code: Arc<Mutex<Option<u8>>>,
@@ -136,7 +140,7 @@ impl DentCraftApp {
             doc: Document::untitled(&case),
             confirm_discard: None,
             window_title: String::new(),
-            ribbon_tab: RibbonTab::default(),
+            ribbon_tab: start.tab.unwrap_or_default(),
             sections,
             case,
             objects: Vec::new(),
@@ -162,6 +166,9 @@ impl DentCraftApp {
             app.open_case(path);
         }
         app.import(start.files);
+        for role in start.hide {
+            objects::set_role_visible(&mut app.objects, role, false);
+        }
         app
     }
 

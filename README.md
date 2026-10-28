@@ -15,6 +15,17 @@
   with the guided, step-by-step workflow dental technicians already know: cleaner, faster and more precise.
 </p>
 
+## Screenshots
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshot-dark.png" />
+    <img src="docs/assets/screenshot-light.png" alt="DentCraft with an upper-jaw scan in occlusal view, the tooth chart of a 24–26 bridge and an 11 veneer, and the design workflow" width="100%" />
+  </picture>
+</p>
+
+<p align="center"><i>Anonymized intraoral scans. Design tools arrive in 0.2.</i></p>
+
 <p align="center">
   <a href="#the-design-workflow">Workflow</a> ·
   <a href="#build-from-source">Build</a> ·
