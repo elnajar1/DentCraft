@@ -17,9 +17,10 @@ use crate::chart::{self, ChartEdit};
 use crate::document::{self, Document};
 use crate::loader::Loader;
 use crate::objects::{self, ObjectState, SceneObject};
+use crate::ribbon::{self, Command, RibbonTab, RibbonView};
 use crate::theme::{self, Palette, RADIUS_LG, SIZE_SMALL, ThemeKind};
 use crate::viewport::Viewport;
-use crate::widgets::{self, Icon, Pill, icon_button, paint_icon, pill, section_label};
+use crate::widgets::{Icon, Pill, icon_button, paint_icon, pill, section_label};
 use crate::workflow_panel::{self, StepAction, WorkflowView};
 
 const THEME_KEY: &str = "theme";
@@ -82,6 +83,7 @@ pub struct DentCraftApp {
     doc: Document,
     confirm_discard: Option<Discard>,
     window_title: String,
+    ribbon_tab: RibbonTab,
 }
 
 /// The logo shipped with the app, decoded to RGBA.
@@ -129,6 +131,7 @@ impl DentCraftApp {
             doc: Document::untitled(&case),
             confirm_discard: None,
             window_title: String::new(),
+            ribbon_tab: RibbonTab::default(),
             case,
             objects: Vec::new(),
             next_id: 1,
@@ -482,20 +485,21 @@ impl DentCraftApp {
         }
     }
 
-    fn top_bar(&mut self, ui: &mut egui::Ui) {
+    /// Row 1: logo, app name, case name, view preset and theme toggle.
+    fn app_bar(&mut self, ui: &mut egui::Ui) {
         let p = self.palette();
         ui.horizontal_centered(|ui| {
             ui.add(
                 egui::Image::new(egui::load::SizedTexture::new(
                     self.logo_small.id(),
-                    [22.0, 22.0],
+                    [20.0, 20.0],
                 ))
-                .corner_radius(CornerRadius::same(5)),
+                .corner_radius(CornerRadius::same(4)),
             );
             ui.label(RichText::new("DentCraft").size(13.0).strong().color(p.text));
-            ui.add_space(12.0);
-            ui.add(egui::Separator::default().vertical().spacing(8.0));
             ui.add_space(8.0);
+            ui.add(egui::Separator::default().vertical().spacing(8.0));
+            ui.add_space(4.0);
             ui.add(
                 egui::Label::new(RichText::new(document::display_name(&self.case)).color(p.text))
                     .truncate(),
@@ -509,73 +513,79 @@ impl DentCraftApp {
                 ui.painter().circle_filled(dot.center(), 3.5, p.accent);
                 ui.label(RichText::new("Unsaved").size(SIZE_SMALL).color(p.text_dim));
             }
-            ui.add_space(8.0);
-            ui.add(egui::Separator::default().vertical().spacing(8.0));
-            ui.add_space(8.0);
-            if pill(ui, "New case", Pill::Secondary, true)
-                .on_hover_text("Start a new, empty case")
-                .clicked()
-            {
-                self.request_new();
-            }
-            if pill(ui, "Open case…", Pill::Secondary, true)
-                .on_hover_text("Open a .dentcraft case and its scans")
-                .clicked()
-            {
-                self.request_open();
-            }
-            let (label, tip) = match self.doc.path() {
-                Some(path) => ("Save case", format!("Save to {}", path.display())),
-                None => (
-                    "Save case…",
-                    "Save the case as a .dentcraft file".to_owned(),
-                ),
-            };
-            if pill(ui, label, Pill::Secondary, true)
-                .on_hover_text(tip)
-                .clicked()
-            {
-                self.save_case();
-            }
-            ui.add_space(4.0);
-            if pill(ui, "Import scans…", Pill::Primary, true)
-                .on_hover_text("Add STL, PLY or OBJ scans to the case")
-                .clicked()
-            {
-                self.pick_files();
-            }
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let icon = match self.theme {
                     ThemeKind::Dark => Icon::Sun,
                     ThemeKind::Light => Icon::Moon,
                 };
-                if icon_button(ui, icon, 26.0)
+                if icon_button(ui, icon, 24.0)
                     .on_hover_text("Switch between dark and light theme")
                     .clicked()
                 {
                     self.theme = self.theme.toggled();
                     ui.ctx().set_theme(self.theme.egui_theme());
                 }
-                if icon_button(ui, Icon::Fit, 26.0)
-                    .on_hover_text("Fit the scene in view  (F, or double-click)")
-                    .clicked()
-                {
-                    self.viewport.fit(self.bounds().as_ref());
-                }
-                ui.add_space(4.0);
-                let options: Vec<(ViewPreset, &str, String)> = ViewPreset::ALL
-                    .iter()
-                    .enumerate()
-                    .map(|(n, v)| (*v, v.label(), format!("{} view  ({})", v.label(), n + 1)))
-                    .rev()
-                    .collect();
-                // Right-to-left layout: pass the options reversed so they read left to right.
-                if let Some(preset) = widgets::segmented(ui, &options, self.viewport.preset) {
-                    self.viewport.go_to(preset, self.bounds().as_ref());
+                ui.add_space(6.0);
+                let mut chosen = None;
+                let current = self.viewport.preset.map_or("Custom", |v| v.label());
+                egui::ComboBox::from_id_salt("view_preset")
+                    .selected_text(current)
+                    .width(96.0)
+                    .show_ui(ui, |ui| {
+                        for (n, preset) in ViewPreset::ALL.into_iter().enumerate() {
+                            let on = self.viewport.preset == Some(preset);
+                            if ui
+                                .selectable_label(on, preset.label())
+                                .on_hover_text(format!("{} view  ({})", preset.label(), n + 1))
+                                .clicked()
+                            {
+                                chosen = Some(preset);
+                            }
+                        }
+                    })
+                    .response
+                    .on_hover_text("Camera view");
+                ui.label(RichText::new("View").size(SIZE_SMALL).color(p.text_dim));
+                if let Some(preset) = chosen {
+                    self.run(Command::View(preset));
                 }
             });
         });
+    }
+
+    /// Row 2: the ribbon.
+    fn ribbon(&mut self, ui: &mut egui::Ui) {
+        let has_jaw_scan = self.has_jaw_scan();
+        let command = RibbonView {
+            tab: &mut self.ribbon_tab,
+            session: &self.session,
+            has_jaw_scan,
+            save_path: self.doc.path().map(|p| p.display().to_string()),
+            preset: self.viewport.preset,
+            upper_visible: objects::role_visible(&self.objects, ScanRole::Upper),
+            lower_visible: objects::role_visible(&self.objects, ScanRole::Lower),
+        }
+        .show(ui);
+        if let Some(command) = command {
+            self.run(command);
+        }
+    }
+
+    /// Carries out a ribbon or app bar command with the app's existing actions.
+    fn run(&mut self, command: Command) {
+        match command {
+            Command::New => self.request_new(),
+            Command::Open => self.request_open(),
+            Command::Save => self.save_case(),
+            Command::Import => self.pick_files(),
+            Command::Step(action) => self.apply_step_action(action),
+            Command::View(preset) => self.viewport.go_to(preset, self.bounds().as_ref()),
+            Command::Fit => self.viewport.fit(self.bounds().as_ref()),
+            Command::ShowRole(role, visible) => {
+                objects::set_role_visible(&mut self.objects, role, visible);
+            }
+        }
     }
 
     fn case_panel(&mut self, ui: &mut egui::Ui) {
@@ -1091,10 +1101,14 @@ impl eframe::App for DentCraftApp {
         let p = self.palette();
         let bar = |m: Margin| egui::Frame::new().fill(p.panel).inner_margin(m);
 
-        egui::Panel::top("top_bar")
-            .frame(bar(Margin::symmetric(12, 6)).fill(p.app_bg))
-            .exact_size(40.0)
-            .show(ui, |ui| self.top_bar(ui));
+        egui::Panel::top("app_bar")
+            .frame(bar(Margin::symmetric(10, 0)).fill(p.app_bg))
+            .exact_size(32.0)
+            .show(ui, |ui| self.app_bar(ui));
+        egui::Panel::top("ribbon")
+            .frame(bar(Margin::ZERO))
+            .exact_size(ribbon::HEIGHT)
+            .show(ui, |ui| self.ribbon(ui));
         egui::Panel::bottom("status_bar")
             .frame(bar(Margin::symmetric(10, 0)).fill(p.panel_header))
             .exact_size(22.0)

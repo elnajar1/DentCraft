@@ -129,6 +129,21 @@ pub fn pick(objects: &[SceneObject], origin: DVec3, dir: DVec3) -> Option<(usize
         .map(|(i, hit)| (i, hit.point))
 }
 
+/// Whether the objects with `role` are shown: `None` when there are none, otherwise true when
+/// any of them is visible.
+pub fn role_visible(objects: &[SceneObject], role: ScanRole) -> Option<bool> {
+    let mut with_role = objects.iter().filter(|o| o.role == role).peekable();
+    with_role.peek()?;
+    Some(with_role.any(|o| o.visible))
+}
+
+/// Shows or hides every object with `role`.
+pub fn set_role_visible(objects: &mut [SceneObject], role: ScanRole, visible: bool) {
+    for obj in objects.iter_mut().filter(|o| o.role == role) {
+        obj.visible = visible;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,5 +230,23 @@ mod tests {
         assert_eq!(index, 1);
         assert!((point.z - 6.0).abs() < 0.05, "hit at {point}");
         assert!(pick(&objects, DVec3::new(9.0, 0.0, 20.0), DVec3::NEG_Z).is_none());
+    }
+
+    #[test]
+    fn role_visibility_covers_every_object_with_the_role() {
+        let mut objects = vec![
+            sphere_object(1, DVec3::ZERO, false),
+            sphere_object(2, DVec3::ZERO, true),
+            sphere_object(3, DVec3::ZERO, true),
+        ];
+        objects[0].role = ScanRole::Upper;
+        objects[1].role = ScanRole::Upper;
+        assert_eq!(role_visible(&objects, ScanRole::Upper), Some(true));
+        assert_eq!(role_visible(&objects, ScanRole::Lower), None);
+        set_role_visible(&mut objects, ScanRole::Upper, false);
+        assert_eq!(role_visible(&objects, ScanRole::Upper), Some(false));
+        assert!(objects[2].visible, "other roles are left alone");
+        set_role_visible(&mut objects, ScanRole::Upper, true);
+        assert!(objects[0].visible && objects[1].visible);
     }
 }

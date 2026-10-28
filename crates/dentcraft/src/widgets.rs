@@ -1,5 +1,6 @@
-//! Small branded widgets: pill buttons, segmented control, painted icons and section labels.
+//! Small branded widgets: pill and command buttons, painted line icons and section labels.
 
+use dentcraft_render::ViewPreset;
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, CursorIcon, FontId, Pos2, Rect, Response, RichText, Sense,
     Shape, Stroke, TextStyle, Ui, Vec2, WidgetText, epaint::PathShape, pos2, vec2,
@@ -73,71 +74,6 @@ pub fn pill(ui: &mut Ui, text: &str, kind: Pill, enabled: bool) -> Response {
     }
 }
 
-/// A row of mutually exclusive options in a pill-shaped track. Returns the clicked option.
-pub fn segmented<T: Copy + PartialEq>(
-    ui: &mut Ui,
-    options: &[(T, &str, String)],
-    selected: Option<T>,
-) -> Option<T> {
-    let p = palette(ui);
-    let mut clicked = None;
-    egui::Frame::new()
-        .fill(p.panel_header)
-        .stroke(Stroke::new(1.0, p.border))
-        .corner_radius(CornerRadius::same(RADIUS_SM))
-        .inner_margin(egui::Margin::same(3))
-        .show(ui, |ui| {
-            ui.spacing_mut().item_spacing.x = 2.0;
-            ui.horizontal(|ui| {
-                for (value, label, tooltip) in options {
-                    let on = selected == Some(*value);
-                    let galley = WidgetText::from(*label).into_galley(
-                        ui,
-                        Some(egui::TextWrapMode::Extend),
-                        f32::INFINITY,
-                        TextStyle::Button,
-                    );
-                    let size = vec2(galley.size().x + 16.0, 22.0);
-                    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
-                    let fill = if on {
-                        if ui.visuals().dark_mode {
-                            p.border
-                        } else {
-                            p.panel
-                        }
-                    } else if response.hovered() {
-                        p.hover
-                    } else {
-                        Color32::TRANSPARENT
-                    };
-                    let stroke = if on && !ui.visuals().dark_mode {
-                        Stroke::new(1.0, p.border)
-                    } else {
-                        Stroke::NONE
-                    };
-                    let painter = ui.painter();
-                    painter.rect(
-                        rect,
-                        CornerRadius::same(RADIUS_SM),
-                        fill,
-                        stroke,
-                        egui::StrokeKind::Inside,
-                    );
-                    let ink = if on { p.text } else { p.text_dim };
-                    painter.galley(rect.center() - galley.size() * 0.5, galley, ink);
-                    if response
-                        .on_hover_cursor(CursorIcon::PointingHand)
-                        .on_hover_text(tooltip)
-                        .clicked()
-                    {
-                        clicked = Some(*value);
-                    }
-                }
-            });
-        });
-    clicked
-}
-
 /// Small upper-case label that heads a section.
 pub fn section_label(ui: &mut Ui, text: &str) -> Response {
     let p = palette(ui);
@@ -163,6 +99,49 @@ pub enum Icon {
     Check,
     /// Warning triangle.
     Warning,
+    /// Blank page with a plus.
+    NewDoc,
+    FolderOpen,
+    /// Floppy disk.
+    Save,
+    /// Arrow down into a tray.
+    Import,
+    /// Arrow pointing left.
+    Back,
+    /// Arrow pointing right.
+    Next,
+    /// Two chevrons and a bar.
+    Skip,
+    /// Molar outline, for design tools.
+    Tooth,
+    /// Cube with the face the view looks at filled in.
+    View(ViewPreset),
+}
+
+/// Fill and ink of a flat command button in its current state.
+pub fn button_colors(
+    p: &Palette,
+    response: &Response,
+    enabled: bool,
+    selected: bool,
+) -> (Color32, Color32) {
+    if !enabled {
+        let fill = if selected {
+            p.accent_soft.gamma_multiply(0.5)
+        } else {
+            Color32::TRANSPARENT
+        };
+        return (fill, p.text_dim.gamma_multiply(0.55));
+    }
+    if response.is_pointer_button_down_on() {
+        (p.press, p.text)
+    } else if selected {
+        (p.accent_soft, p.selected_ink)
+    } else if response.hovered() {
+        (p.hover, p.text)
+    } else {
+        (Color32::TRANSPARENT, p.text)
+    }
 }
 
 /// Round, frameless icon button.
@@ -189,6 +168,16 @@ pub fn paint_icon(painter: &egui::Painter, icon: Icon, rect: Rect, ink: Color32,
     let c = rect.center();
     let r = rect.width().min(rect.height()) * 0.5;
     let stroke = Stroke::new(1.5, ink);
+    // Line paths in units of the icon's half size, centred on `c`.
+    let points = |pts: &[(f32, f32)]| -> Vec<Pos2> {
+        pts.iter().map(|&(x, y)| c + vec2(x, y) * r).collect()
+    };
+    let open = |pts: &[(f32, f32)]| {
+        painter.add(Shape::line(points(pts), stroke));
+    };
+    let closed = |pts: &[(f32, f32)]| {
+        painter.add(Shape::Path(PathShape::closed_line(points(pts), stroke)));
+    };
     match icon {
         Icon::Eye | Icon::EyeOff => {
             // Lens outline from two arcs, and the iris.
@@ -272,7 +261,114 @@ pub fn paint_icon(painter: &egui::Painter, icon: Icon, rect: Rect, ink: Color32,
             painter.line_segment([c + vec2(0.0, -r * 0.3), c + vec2(0.0, r * 0.25)], stroke);
             painter.circle_filled(c + vec2(0.0, r * 0.52), 0.9, ink);
         }
+        Icon::NewDoc => {
+            closed(&[
+                (-0.6, -0.9),
+                (0.25, -0.9),
+                (0.65, -0.5),
+                (0.65, 0.9),
+                (-0.6, 0.9),
+            ]);
+            open(&[(0.25, -0.9), (0.25, -0.5), (0.65, -0.5)]);
+            open(&[(-0.3, 0.3), (0.3, 0.3)]);
+            open(&[(0.0, 0.0), (0.0, 0.6)]);
+        }
+        Icon::FolderOpen => {
+            open(&[
+                (0.65, -0.1),
+                (0.65, -0.45),
+                (-0.2, -0.45),
+                (-0.35, -0.7),
+                (-0.9, -0.7),
+                (-0.9, 0.75),
+            ]);
+            closed(&[(-0.9, 0.75), (-0.6, -0.1), (0.95, -0.1), (0.65, 0.75)]);
+        }
+        Icon::Save => {
+            closed(&[
+                (-0.85, -0.85),
+                (0.5, -0.85),
+                (0.85, -0.5),
+                (0.85, 0.85),
+                (-0.85, 0.85),
+            ]);
+            open(&[(-0.45, -0.85), (-0.45, -0.35), (0.3, -0.35), (0.3, -0.85)]);
+            open(&[(-0.5, 0.85), (-0.5, 0.2), (0.5, 0.2), (0.5, 0.85)]);
+        }
+        Icon::Import => {
+            open(&[(0.0, -0.9), (0.0, 0.35)]);
+            open(&[(-0.4, -0.05), (0.0, 0.35), (0.4, -0.05)]);
+            open(&[(-0.85, 0.2), (-0.85, 0.85), (0.85, 0.85), (0.85, 0.2)]);
+        }
+        Icon::Back | Icon::Next => {
+            let s = if icon == Icon::Back { 1.0 } else { -1.0 };
+            open(&[(0.8 * s, 0.0), (-0.8 * s, 0.0)]);
+            open(&[(-0.25 * s, -0.55), (-0.8 * s, 0.0), (-0.25 * s, 0.55)]);
+        }
+        Icon::Skip => {
+            open(&[(-0.85, -0.6), (-0.25, 0.0), (-0.85, 0.6)]);
+            open(&[(-0.2, -0.6), (0.4, 0.0), (-0.2, 0.6)]);
+            open(&[(0.75, -0.65), (0.75, 0.65)]);
+        }
+        Icon::Tooth => closed(&[
+            (-0.75, -0.45),
+            (-0.6, -0.82),
+            (-0.25, -0.88),
+            (0.0, -0.72),
+            (0.25, -0.88),
+            (0.6, -0.82),
+            (0.75, -0.45),
+            (0.65, 0.0),
+            (0.5, 0.45),
+            (0.4, 0.88),
+            (0.2, 0.88),
+            (0.08, 0.3),
+            (-0.08, 0.3),
+            (-0.2, 0.88),
+            (-0.4, 0.88),
+            (-0.5, 0.45),
+            (-0.65, 0.0),
+        ]),
+        Icon::View(preset) => paint_view_cube(painter, preset, c, r, ink),
     }
+}
+
+/// Oblique cube with the front face at the lower left and the face `preset` looks at filled.
+fn paint_view_cube(painter: &egui::Painter, preset: ViewPreset, c: Pos2, r: f32, ink: Color32) {
+    let at = |x: f32, y: f32| c + vec2(x, y) * r;
+    // Front square, then the back square offset up and to the right.
+    let ftl = at(-0.85, -0.45);
+    let ftr = at(0.45, -0.45);
+    let fbr = at(0.45, 0.85);
+    let fbl = at(-0.85, 0.85);
+    let btl = at(-0.45, -0.85);
+    let btr = at(0.85, -0.85);
+    let bbr = at(0.85, 0.45);
+    let bbl = at(-0.45, 0.45);
+    let face = match preset {
+        ViewPreset::Occlusal => [ftl, ftr, btr, btl],
+        ViewPreset::Bottom => [fbl, fbr, bbr, bbl],
+        ViewPreset::Facial => [ftl, ftr, fbr, fbl],
+        ViewPreset::Lingual => [btl, btr, bbr, bbl],
+        ViewPreset::Left => [ftl, btl, bbl, fbl],
+        ViewPreset::Right => [ftr, btr, bbr, fbr],
+    };
+    painter.add(Shape::convex_polygon(
+        face.to_vec(),
+        ink.gamma_multiply(0.45),
+        Stroke::NONE,
+    ));
+    let hidden = Stroke::new(1.0, ink.gamma_multiply(0.4));
+    for end in [btl, bbr, fbl] {
+        painter.line_segment([bbl, end], hidden);
+    }
+    let stroke = Stroke::new(1.5, ink);
+    painter.add(Shape::Path(PathShape::closed_line(
+        vec![ftl, ftr, fbr, fbl],
+        stroke,
+    )));
+    painter.add(Shape::line(vec![ftl, btl, btr, bbr, fbr], stroke));
+    painter.line_segment([ftr, btr], stroke);
 }
 
 /// Text centred at `pos` in the small font.

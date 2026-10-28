@@ -6,6 +6,7 @@ mod chart;
 mod document;
 mod loader;
 mod objects;
+mod ribbon;
 mod theme;
 mod viewport;
 mod widgets;
