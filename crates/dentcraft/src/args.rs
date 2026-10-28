@@ -16,6 +16,10 @@ pub struct Args {
     /// Scan files to open (STL, PLY or OBJ).
     pub files: Vec<PathBuf>,
 
+    /// Case file to open at startup (.dentcraft); its scans load with their saved roles.
+    #[arg(long, value_name = "FILE.dentcraft")]
+    pub case: Option<PathBuf>,
+
     /// Initial view: occlusal, facial, lingual, left, right or bottom.
     #[arg(long, value_parser = parse_view)]
     pub view: Option<ViewPreset>,
@@ -96,6 +100,8 @@ mod tests {
             "dentcraft",
             "a.stl",
             "b.ply",
+            "--case",
+            "c.dentcraft",
             "--view",
             "facial",
             "--theme",
@@ -107,6 +113,7 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(args.files.len(), 2);
+        assert_eq!(args.case, Some(PathBuf::from("c.dentcraft")));
         assert_eq!(args.view, Some(ViewPreset::Facial));
         assert_eq!(args.theme, Some(ThemeArg::Light));
         assert_eq!(args.screenshot, Some(PathBuf::from("out.png")));

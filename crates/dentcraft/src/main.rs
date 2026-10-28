@@ -2,11 +2,14 @@
 
 mod app;
 mod args;
+mod chart;
+mod document;
 mod loader;
 mod objects;
 mod theme;
 mod viewport;
 mod widgets;
+mod workflow_panel;
 
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
@@ -49,6 +52,7 @@ fn main() -> ExitCode {
     let exit_code = Arc::new(Mutex::new(None));
     let start = StartOptions {
         files: args.files,
+        case: args.case,
         view: args.view,
         theme: args.theme.map(Into::into),
         screenshot: args.screenshot,

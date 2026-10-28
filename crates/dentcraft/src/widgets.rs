@@ -159,6 +159,10 @@ pub enum Icon {
     Moon,
     Fit,
     Plus,
+    /// Tick mark, for done or selected items.
+    Check,
+    /// Warning triangle.
+    Warning,
 }
 
 /// Round, frameless icon button.
@@ -246,6 +250,27 @@ pub fn paint_icon(painter: &egui::Painter, icon: Icon, rect: Rect, ink: Color32,
                 painter.line_segment([corner, corner - vec2(0.0, sy * l)], stroke);
             }
             painter.circle_filled(c, r * 0.18, ink);
+        }
+        Icon::Check => {
+            painter.line(
+                vec![
+                    c + vec2(-r * 0.75, r * 0.05),
+                    c + vec2(-r * 0.25, r * 0.55),
+                    c + vec2(r * 0.75, -r * 0.5),
+                ],
+                Stroke::new(1.8, ink),
+            );
+        }
+        Icon::Warning => {
+            let top = c + vec2(0.0, -r * 0.9);
+            let left = c + vec2(-r, r * 0.8);
+            let right = c + vec2(r, r * 0.8);
+            painter.add(Shape::Path(PathShape::closed_line(
+                vec![top, right, left],
+                Stroke::new(1.3, ink),
+            )));
+            painter.line_segment([c + vec2(0.0, -r * 0.3), c + vec2(0.0, r * 0.25)], stroke);
+            painter.circle_filled(c + vec2(0.0, r * 0.52), 0.9, ink);
         }
     }
 }

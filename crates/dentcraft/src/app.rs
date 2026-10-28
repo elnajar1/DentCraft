@@ -4,30 +4,35 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use dentcraft_case::{Case, Scan, ScanRole};
+use dentcraft_case::{Case, Material, Scan, ScanRole};
 use dentcraft_mesh::Aabb;
 use dentcraft_render::{MeshId, ViewPreset};
-use dentcraft_workflow::StepId;
+use dentcraft_workflow::{Session, plan};
 use eframe::egui::{
     self, Align, Align2, ColorImage, CornerRadius, Key, Layout, Margin, RichText, Stroke,
     TextureHandle, TextureOptions, vec2,
 };
 
+use crate::chart::{self, ChartEdit};
+use crate::document::{self, Document};
 use crate::loader::Loader;
 use crate::objects::{self, ObjectState, SceneObject};
 use crate::theme::{self, Palette, RADIUS_PANEL, SIZE_SMALL, ThemeKind};
 use crate::viewport::Viewport;
-use crate::widgets::{self, Icon, Pill, icon_button, pill, section_label};
+use crate::widgets::{self, Icon, Pill, icon_button, paint_icon, pill, section_label};
+use crate::workflow_panel::{self, StepAction, WorkflowView};
 
 const THEME_KEY: &str = "theme";
 const SCREENSHOT_TIMEOUT: Duration = Duration::from_secs(60);
 /// Frames to wait after loading and camera motion have settled before capturing.
 const SCREENSHOT_SETTLE_FRAMES: u32 = 6;
-const STUB_TOOLTIP: &str = "Arrives with the case panel";
+const UNTITLED: &str = "Untitled case";
 
 /// How the app starts, from the command line.
 pub struct StartOptions {
     pub files: Vec<PathBuf>,
+    /// Case file to open at startup.
+    pub case: Option<PathBuf>,
     pub view: Option<ViewPreset>,
     pub theme: Option<ThemeKind>,
     pub screenshot: Option<PathBuf>,
@@ -48,6 +53,12 @@ struct Toast {
     message: String,
 }
 
+/// An action that would throw away unsaved changes, waiting for the user to confirm it.
+enum Discard {
+    New,
+    Open(PathBuf),
+}
+
 pub struct DentCraftApp {
     theme: ThemeKind,
     case: Case,
@@ -63,6 +74,14 @@ pub struct DentCraftApp {
     logo_large: TextureHandle,
     hovered_row: Option<MeshId>,
     screenshot: Option<ScreenshotJob>,
+    session: Session,
+    /// Last refusal from the workflow session, shown under the step card.
+    workflow_error: Option<String>,
+    /// Height of the workflow step card last frame.
+    workflow_card_height: f32,
+    doc: Document,
+    confirm_discard: Option<Discard>,
+    window_title: String,
 }
 
 /// The logo shipped with the app, decoded to RGBA.
@@ -101,9 +120,16 @@ impl DentCraftApp {
         theme::install(&cc.egui_ctx, theme);
 
         let initial_view = start.view.unwrap_or(ViewPreset::Occlusal);
+        let case = Case::new(UNTITLED);
         let mut app = Self {
             theme,
-            case: Case::new("Untitled case"),
+            session: Session::for_case(&case),
+            workflow_error: None,
+            workflow_card_height: 260.0,
+            doc: Document::untitled(&case),
+            confirm_discard: None,
+            window_title: String::new(),
+            case,
             objects: Vec::new(),
             next_id: 1,
             loader: Loader::new(Some(cc.egui_ctx.clone())),
@@ -123,6 +149,9 @@ impl DentCraftApp {
                 exit_code: start.exit_code.clone(),
             }),
         };
+        if let Some(path) = start.case {
+            app.open_case(path);
+        }
         app.import(start.files);
         app
     }
@@ -132,16 +161,27 @@ impl DentCraftApp {
     }
 
     fn import(&mut self, paths: Vec<PathBuf>) {
-        if paths.is_empty() {
+        let scans = paths
+            .into_iter()
+            .map(|path| {
+                let role = objects::guess_role(&path);
+                (path, role)
+            })
+            .collect();
+        self.add_scans(scans);
+    }
+
+    /// Loads scan files into the scene with the given roles.
+    fn add_scans(&mut self, scans: Vec<(PathBuf, ScanRole)>) {
+        if scans.is_empty() {
             return;
         }
         if !self.objects.iter().any(|o| o.loaded().is_some()) {
             self.auto_fit = true;
         }
-        for path in paths {
+        for (path, role) in scans {
             let id = MeshId(self.next_id);
             self.next_id += 1;
-            let role = objects::guess_role(&path);
             let used: Vec<[u8; 3]> = self.objects.iter().map(|o| o.color).collect();
             self.objects.push(SceneObject {
                 id,
@@ -200,10 +240,10 @@ impl DentCraftApp {
         if self.objects.iter().all(|o| o.loaded().is_some()) && !self.objects.is_empty() {
             self.auto_fit = false;
         }
+        // Scans still loading belong to the case too, so opening a case does not mark it changed.
         self.case.scans = self
             .objects
             .iter()
-            .filter(|o| o.loaded().is_some())
             .map(|o| Scan {
                 role: o.role,
                 file: o.path.clone(),
@@ -217,6 +257,192 @@ impl DentCraftApp {
             set_exit(&job.exit_code, 1);
         }
         self.toasts.push(Toast { message });
+    }
+
+    fn is_dirty(&self) -> bool {
+        self.doc.is_dirty(&self.case)
+    }
+
+    /// Whether a jaw scan has loaded, which the Scans step needs.
+    fn has_jaw_scan(&self) -> bool {
+        self.objects
+            .iter()
+            .any(|o| o.loaded().is_some() && matches!(o.role, ScanRole::Upper | ScanRole::Lower))
+    }
+
+    /// Re-plans the workflow after the units or connectors changed, keeping finished steps.
+    fn replan(&mut self) {
+        self.session = self.session.replan(plan(&self.case));
+        self.workflow_error = None;
+    }
+
+    fn apply_chart_edit(&mut self, edit: ChartEdit) {
+        match edit {
+            ChartEdit::Set(tooth, Some(kind)) => self.case.set_unit(tooth, kind),
+            ChartEdit::Set(tooth, None) => self.case.remove_unit(tooth),
+            ChartEdit::Connect(a, b, on) => {
+                self.case.set_connected(a, b, on);
+            }
+        }
+        self.replan();
+    }
+
+    fn apply_step_action(&mut self, action: StepAction) {
+        let result = match action {
+            StepAction::Next => match self.session.current() {
+                Some(step) if !workflow_panel::can_complete(step.id, self.has_jaw_scan()) => {
+                    self.workflow_error = Some(workflow_panel::NEEDS_JAW_SCAN.to_owned());
+                    return;
+                }
+                _ => self.session.complete(),
+            },
+            StepAction::Back => self.session.back(),
+            StepAction::Skip => self.session.skip(),
+            StepAction::GoTo(index) => self.session.go_to(index),
+        };
+        self.workflow_error = result.err().map(|e| capitalize(&e.to_string()));
+    }
+
+    /// Clears the scene and makes `case` the open case.
+    fn reset(&mut self, case: Case) {
+        self.objects.clear();
+        self.viewport.hover = None;
+        self.hovered_row = None;
+        self.auto_fit = true;
+        self.session = Session::for_case(&case);
+        self.workflow_error = None;
+        self.case = case;
+    }
+
+    fn new_case(&mut self) {
+        self.reset(Case::new(UNTITLED));
+        self.doc = Document::untitled(&self.case);
+    }
+
+    fn request_new(&mut self) {
+        if self.is_dirty() {
+            self.confirm_discard = Some(Discard::New);
+        } else {
+            self.new_case();
+        }
+    }
+
+    fn request_open(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Open case")
+            .add_filter("DentCraft case", &[document::EXTENSION])
+            .pick_file()
+        else {
+            return;
+        };
+        if self.is_dirty() {
+            self.confirm_discard = Some(Discard::Open(path));
+        } else {
+            self.open_case(path);
+        }
+    }
+
+    /// Opens a case file and re-imports its scans with their saved roles.
+    fn open_case(&mut self, path: PathBuf) {
+        match document::load(&path) {
+            Ok(case) => {
+                let scans = case
+                    .scans
+                    .iter()
+                    .map(|s| (s.file.clone(), s.role))
+                    .collect();
+                self.reset(case);
+                self.doc = Document::at(path, &self.case);
+                self.add_scans(scans);
+            }
+            Err(err) => self.fail(err.to_string()),
+        }
+    }
+
+    fn save_case(&mut self) {
+        let path = match self.doc.path() {
+            Some(path) => path.to_path_buf(),
+            None => {
+                let Some(path) = rfd::FileDialog::new()
+                    .set_title("Save case")
+                    .add_filter("DentCraft case", &[document::EXTENSION])
+                    .set_file_name(document::suggested_file_name(&self.case))
+                    .save_file()
+                else {
+                    return;
+                };
+                document::with_case_extension(path)
+            }
+        };
+        match document::save(&self.case, &path) {
+            Ok(()) => self.doc.mark_saved(path, &self.case),
+            Err(err) => self.fail(err.to_string()),
+        }
+    }
+
+    fn confirm_discard_modal(&mut self, ctx: &egui::Context) {
+        let Some(pending) = &self.confirm_discard else {
+            return;
+        };
+        let p = self.palette();
+        let action = match pending {
+            Discard::New => "starting a new case",
+            Discard::Open(_) => "opening another case",
+        };
+        let name = document::display_name(&self.case).to_owned();
+        let mut choice = None;
+        let modal = egui::Modal::new(egui::Id::unique("discard_changes"))
+            .frame(
+                egui::Frame::new()
+                    .fill(p.surface)
+                    .stroke(Stroke::new(1.0, p.line))
+                    .corner_radius(CornerRadius::same(RADIUS_PANEL))
+                    .inner_margin(Margin::same(20)),
+            )
+            .show(ctx, |ui| {
+                ui.set_width(360.0);
+                ui.label(
+                    RichText::new("Discard unsaved changes?")
+                        .heading()
+                        .color(p.ink),
+                );
+                ui.label(
+                    RichText::new(format!(
+                        "\u{201c}{name}\u{201d} has changes that are not saved. \
+                         They will be lost by {action}."
+                    ))
+                    .color(p.muted),
+                );
+                ui.add_space(12.0);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if pill(ui, "Discard changes", Pill::Primary, true).clicked() {
+                        choice = Some(true);
+                    }
+                    if pill(ui, "Keep editing", Pill::Secondary, true).clicked() {
+                        choice = Some(false);
+                    }
+                });
+            });
+        if choice.is_none() && modal.should_close() {
+            choice = Some(false);
+        }
+        match choice {
+            Some(true) => match self.confirm_discard.take() {
+                Some(Discard::New) => self.new_case(),
+                Some(Discard::Open(path)) => self.open_case(path),
+                None => {}
+            },
+            Some(false) => self.confirm_discard = None,
+            None => {}
+        }
+    }
+
+    fn update_title(&mut self, ctx: &egui::Context) {
+        let title = document::window_title(&self.case, self.is_dirty());
+        if title != self.window_title {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.window_title = title;
+        }
     }
 
     fn handle_input(&mut self, ctx: &egui::Context) {
@@ -270,8 +496,46 @@ impl DentCraftApp {
             ui.add_space(12.0);
             ui.add(egui::Separator::default().vertical().spacing(8.0));
             ui.add_space(8.0);
-            for label in ["New case", "Open case…", "Save case…"] {
-                pill(ui, label, Pill::Secondary, false).on_disabled_hover_text(STUB_TOOLTIP);
+            ui.add(
+                egui::Label::new(RichText::new(document::display_name(&self.case)).color(p.ink))
+                    .truncate(),
+            )
+            .on_hover_text(match self.doc.path() {
+                Some(path) => path.display().to_string(),
+                None => "Not saved yet".to_owned(),
+            });
+            if self.is_dirty() {
+                let (dot, _) = ui.allocate_exact_size(vec2(8.0, 16.0), egui::Sense::hover());
+                ui.painter().circle_filled(dot.center(), 3.5, p.gold);
+                ui.label(RichText::new("Unsaved").size(SIZE_SMALL).color(p.muted));
+            }
+            ui.add_space(8.0);
+            ui.add(egui::Separator::default().vertical().spacing(8.0));
+            ui.add_space(8.0);
+            if pill(ui, "New case", Pill::Secondary, true)
+                .on_hover_text("Start a new, empty case")
+                .clicked()
+            {
+                self.request_new();
+            }
+            if pill(ui, "Open case…", Pill::Secondary, true)
+                .on_hover_text("Open a .dentcraft case and its scans")
+                .clicked()
+            {
+                self.request_open();
+            }
+            let (label, tip) = match self.doc.path() {
+                Some(path) => ("Save case", format!("Save to {}", path.display())),
+                None => (
+                    "Save case…",
+                    "Save the case as a .dentcraft file".to_owned(),
+                ),
+            };
+            if pill(ui, label, Pill::Secondary, true)
+                .on_hover_text(tip)
+                .clicked()
+            {
+                self.save_case();
             }
             ui.add_space(4.0);
             if pill(ui, "Import scans…", Pill::Primary, true)
@@ -324,7 +588,41 @@ impl DentCraftApp {
                 .desired_width(f32::INFINITY)
                 .margin(Margin::symmetric(10, 6)),
         );
-        ui.add_space(12.0);
+        ui.add_space(14.0);
+
+        ui.horizontal(|ui| {
+            section_label(ui, "Teeth");
+            let n = self.case.units.len();
+            if n > 0 {
+                ui.label(
+                    RichText::new(format!("{n} unit{}", if n == 1 { "" } else { "s" }))
+                        .size(SIZE_SMALL)
+                        .color(p.muted),
+                );
+            }
+        });
+        if let Some(edit) = chart::tooth_chart(ui, &self.case) {
+            self.apply_chart_edit(edit);
+        }
+        chart::legend(ui);
+        if self.case.units.is_empty() {
+            ui.label(
+                RichText::new("Click a tooth to add a restoration.")
+                    .size(SIZE_SMALL)
+                    .color(p.muted),
+            );
+        }
+        ui.add_space(14.0);
+
+        section_label(ui, "Material");
+        self.material_picker(ui, &p);
+        let issues = self.case.validate();
+        if !issues.is_empty() {
+            ui.add_space(10.0);
+            issues_box(ui, &issues, &p);
+        }
+        ui.add_space(14.0);
+
         ui.horizontal(|ui| {
             section_label(ui, "Objects");
             if !self.objects.is_empty() {
@@ -355,26 +653,22 @@ impl DentCraftApp {
 
         let mut remove = None;
         let mut hovered = None;
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, true])
-            .show(ui, |ui| {
-                for (index, obj) in self.objects.iter_mut().enumerate() {
-                    let is_hovered = self.hovered_row == Some(obj.id);
-                    let frame = egui::Frame::new()
-                        .fill(if is_hovered { p.raised_hover } else { p.raised })
-                        .corner_radius(CornerRadius::same(10))
-                        .inner_margin(Margin::symmetric(10, 8))
-                        .show(ui, |ui| {
-                            if object_row(ui, obj, is_hovered, &p) {
-                                remove = Some(index);
-                            }
-                        });
-                    if frame.response.contains_pointer() {
-                        hovered = Some(obj.id);
+        for (index, obj) in self.objects.iter_mut().enumerate() {
+            let is_hovered = self.hovered_row == Some(obj.id);
+            let frame = egui::Frame::new()
+                .fill(if is_hovered { p.raised_hover } else { p.raised })
+                .corner_radius(CornerRadius::same(10))
+                .inner_margin(Margin::symmetric(10, 8))
+                .show(ui, |ui| {
+                    if object_row(ui, obj, is_hovered, &p) {
+                        remove = Some(index);
                     }
-                    ui.add_space(2.0);
-                }
-            });
+                });
+            if frame.response.contains_pointer() {
+                hovered = Some(obj.id);
+            }
+            ui.add_space(2.0);
+        }
         if hovered != self.hovered_row {
             self.hovered_row = hovered;
             ui.ctx().request_repaint();
@@ -386,89 +680,70 @@ impl DentCraftApp {
     }
 
     fn workflow_panel(&mut self, ui: &mut egui::Ui) {
-        let p = self.palette();
-        ui.add_space(4.0);
-        section_label(ui, "Workflow");
-        egui::Frame::new()
-            .fill(p.raised)
-            .stroke(Stroke::new(1.0, p.line))
-            .corner_radius(CornerRadius::same(RADIUS_PANEL))
-            .inner_margin(Margin::same(16))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.label(
-                    RichText::new("GUIDED DESIGN")
-                        .size(SIZE_SMALL)
-                        .color(p.gold)
-                        .extra_letter_spacing(1.2)
-                        .strong(),
-                );
-                ui.label(
-                    RichText::new("Step by step, from scans to export")
-                        .heading()
-                        .color(p.ink),
-                );
-                ui.label(
-                    RichText::new(
-                        "Pick the teeth on the chart and DentCraft plans the steps for each \
-                         restoration. The guided workflow is coming next.",
-                    )
-                    .color(p.muted),
-                );
-                ui.add_space(8.0);
-                let has_scans = self.objects.iter().any(|o| o.loaded().is_some());
-                for (n, step) in StepId::ALL.iter().enumerate() {
-                    let current = n == 0;
-                    ui.horizontal(|ui| {
-                        let (rect, _) =
-                            ui.allocate_exact_size(vec2(22.0, 22.0), egui::Sense::hover());
-                        let done = current && has_scans;
-                        if current {
-                            ui.painter().circle_filled(rect.center(), 11.0, p.gold);
-                        } else {
-                            ui.painter().circle_stroke(
-                                rect.center(),
-                                10.5,
-                                Stroke::new(1.0, p.line),
-                            );
-                        }
-                        let ink = if current {
-                            egui::Color32::from_rgb(0x12, 0x12, 0x12)
-                        } else {
-                            p.muted
-                        };
-                        if done {
-                            // Painted tick: the default fonts have no check mark glyph.
-                            let c = rect.center();
-                            ui.painter().line(
-                                vec![
-                                    c + vec2(-4.5, 0.5),
-                                    c + vec2(-1.5, 3.5),
-                                    c + vec2(4.5, -3.5),
-                                ],
-                                Stroke::new(1.8, ink),
-                            );
-                        } else {
-                            ui.painter().text(
-                                rect.center(),
-                                Align2::CENTER_CENTER,
-                                (n + 1).to_string(),
-                                egui::FontId::proportional(SIZE_SMALL),
-                                ink,
-                            );
-                        }
-                        let title = RichText::new(step.title());
-                        ui.label(if current {
-                            title.color(p.ink).strong()
-                        } else {
-                            title.color(p.muted)
-                        });
-                    });
+        let has_jaw_scan = self.has_jaw_scan();
+        let action = WorkflowView {
+            session: &self.session,
+            case: &self.case,
+            has_jaw_scan,
+            error: self.workflow_error.as_deref(),
+            card_height: &mut self.workflow_card_height,
+        }
+        .show(ui);
+        if let Some(action) = action {
+            self.apply_step_action(action);
+        }
+    }
+
+    fn material_picker(&mut self, ui: &mut egui::Ui, p: &Palette) {
+        let mut chosen = None;
+        egui::ComboBox::from_id_salt("material")
+            .selected_text(&self.case.material.name)
+            .width(ui.available_width() - 8.0)
+            .show_ui(ui, |ui| {
+                for preset in Material::presets() {
+                    let on = preset == self.case.material;
+                    if ui.selectable_label(on, &preset.name).clicked() {
+                        chosen = Some(preset);
+                    }
                 }
-                ui.add_space(8.0);
-                pill(ui, "Start design", Pill::Primary, false)
-                    .on_disabled_hover_text("Arrives with the workflow panel");
             });
+        if let Some(material) = chosen {
+            self.case.material = material;
+        }
+        let m = &self.case.material;
+        let values = [
+            ("Cement gap", format!("{:.2} mm", m.cement_gap)),
+            (
+                "Min occlusal",
+                format!("{:.1} mm", m.min_occlusal_thickness),
+            ),
+            ("Min wall", format!("{:.1} mm", m.min_wall_thickness)),
+            ("Min connector", format!("{:.0} mm²", m.min_connector_area)),
+        ];
+        ui.add_space(4.0);
+        let width = (ui.available_width() - 6.0) * 0.5;
+        for row in values.chunks(2) {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                for (label, value) in row {
+                    egui::Frame::new()
+                        .fill(p.raised)
+                        .corner_radius(CornerRadius::same(8))
+                        .inner_margin(Margin::symmetric(10, 6))
+                        .show(ui, |ui| {
+                            ui.set_width(width - 20.0);
+                            ui.vertical(|ui| {
+                                ui.spacing_mut().item_spacing.y = 1.0;
+                                ui.label(
+                                    RichText::new(*label).size(SIZE_SMALL - 1.0).color(p.muted),
+                                );
+                                ui.label(RichText::new(value).color(p.ink).strong());
+                            });
+                        });
+                }
+            });
+            ui.add_space(-2.0);
+        }
     }
 
     fn status_bar(&self, ui: &mut egui::Ui, frame: &eframe::Frame) {
@@ -726,6 +1001,49 @@ fn object_row(ui: &mut egui::Ui, obj: &mut SceneObject, hovered: bool, p: &Palet
     remove
 }
 
+/// Case issues in a calm warning box.
+fn issues_box(ui: &mut egui::Ui, issues: &[dentcraft_case::CaseIssue], p: &Palette) {
+    egui::Frame::new()
+        .fill(p.danger.gamma_multiply(0.08))
+        .stroke(Stroke::new(1.0, p.danger.gamma_multiply(0.45)))
+        .corner_radius(CornerRadius::same(10))
+        .inner_margin(Margin::symmetric(10, 8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 4.0;
+            for issue in issues {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    let (rect, _) = ui.allocate_exact_size(vec2(14.0, 16.0), egui::Sense::hover());
+                    paint_icon(
+                        ui.painter(),
+                        Icon::Warning,
+                        egui::Rect::from_center_size(rect.center(), vec2(12.0, 12.0)),
+                        p.danger,
+                        *p,
+                    );
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(capitalize(&issue.to_string()))
+                                .size(SIZE_SMALL)
+                                .color(p.ink),
+                        )
+                        .wrap(),
+                    );
+                });
+            }
+        });
+}
+
+/// "pontic 15 …" → "Pontic 15 …".
+fn capitalize(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
 fn set_exit(slot: &Arc<Mutex<Option<u8>>>, code: u8) {
     if let Ok(mut c) = slot.lock() {
         c.get_or_insert(code);
@@ -781,17 +1099,24 @@ impl eframe::App for DentCraftApp {
         egui::Panel::left("case_panel")
             .frame(bar(Margin::same(16)))
             .default_size(320.0)
-            .min_size(260.0)
-            .show(ui, |ui| self.case_panel(ui));
+            .min_size(300.0)
+            .max_size(460.0)
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| self.case_panel(ui));
+            });
         egui::Panel::right("workflow_panel")
             .frame(bar(Margin::same(16)))
             .default_size(300.0)
-            .min_size(240.0)
+            .min_size(280.0)
             .show(ui, |ui| self.workflow_panel(ui));
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ui, |ui| self.central(ui));
 
+        self.confirm_discard_modal(&ctx);
+        self.update_title(&ctx);
         self.drive_screenshot(&ctx);
     }
 
@@ -816,6 +1141,12 @@ mod tests {
         assert_eq!(group_thousands(999), "999");
         assert_eq!(group_thousands(1000), "1,000");
         assert_eq!(group_thousands(1234567), "1,234,567");
+    }
+
+    #[test]
+    fn issues_are_capitalized() {
+        assert_eq!(capitalize("pontic 15 floats"), "Pontic 15 floats");
+        assert_eq!(capitalize(""), "");
     }
 
     #[test]
