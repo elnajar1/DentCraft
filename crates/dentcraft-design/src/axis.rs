@@ -11,14 +11,42 @@ use crate::{
     geometry::{Frame, Region, unit_axis},
 };
 
+/// Shared scan-noise threshold for visibility classification and margin seating.
+#[derive(Clone, Copy, Debug)]
+pub struct UndercutParams {
+    /// Minimum horizontal shadow depth in mm counted in area and axis ranking.
+    pub min_undercut_depth: f64,
+}
+
+impl Default for UndercutParams {
+    fn default() -> Self {
+        Self {
+            min_undercut_depth: 0.03,
+        }
+    }
+}
+
+impl UndercutParams {
+    pub(crate) fn validate(self) -> Result<(), DesignError> {
+        if !self.min_undercut_depth.is_finite() || !(0.0..=1.0).contains(&self.min_undercut_depth) {
+            return Err(DesignError::InvalidParameter(
+                "min_undercut_depth must be in [0, 1] mm",
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Block-out distances for vertices used by the requested region.
 #[derive(Clone, Debug)]
 pub struct UndercutMap {
     /// Original mesh vertex indices, sorted ascending, including vertices of zero-area faces.
     pub vertices: Vec<u32>,
-    /// Distance in mm along the normalized axis to the first non-grazing region hit;
-    /// zero for a reachable vertex. Indexed in parallel with `vertices`.
-    pub depths: Vec<f64>,
+    /// Horizontal surveyor depth in mm, perpendicular to the insertion axis.
+    /// Zero for visible points; shadowed depths are resolved to 1 µm and capped
+    /// at 1 mm. Raw depths below the classification threshold are retained.
+    /// Indexed in parallel with `vertices`.
+    pub horizontal_depths: Vec<f64>,
     /// Sum of areas in mm² of nondegenerate region triangles with occluded centroids.
     pub undercut_area: f64,
 }
@@ -66,6 +94,9 @@ pub fn average_normal(mesh: &TriMesh, region: &[u32]) -> Option<DVec3> {
 /// all-degenerate and invalid regions, and zero/nonfinite axes, return errors.
 /// Duplicate faces count once; isolated zero-area faces do not occlude or add area.
 /// Hits within `max(1e-9 mm, region_diagonal * 1e-8)` and tangent-wall hits are ignored.
+/// Shadowed points are displaced along their horizontal outward normal, then
+/// bracketed and bisected to 1 µm resolution (capped at 1 mm). The default
+/// classification threshold is 0.03 mm horizontally; raw depths are retained.
 /// Edge hits must cover a four-point projected neighbourhood at four times that
 /// tolerance, so a straight wall touching a chamfer silhouette is not classified as blocked.
 pub fn undercut_map(
@@ -73,21 +104,52 @@ pub fn undercut_map(
     region: &[u32],
     axis: DVec3,
 ) -> Result<UndercutMap, DesignError> {
+    undercut_map_with_params(mesh, region, axis, &UndercutParams::default())
+}
+
+/// Visibility map with an explicit horizontal noise threshold.
+pub fn undercut_map_with_params(
+    mesh: &TriMesh,
+    region: &[u32],
+    axis: DVec3,
+    params: &UndercutParams,
+) -> Result<UndercutMap, DesignError> {
+    params.validate()?;
     let axis = unit_axis(axis)?;
-    let prep = Region::new(mesh, region)?;
-    let depths = prep
+    let mut prep = Region::new(mesh, region)?;
+    prep.min_undercut_depth = params.min_undercut_depth;
+    // Normals, like occlusion, depend only on the selected preparation patch.
+    let mut normals = vec![DVec3::ZERO; mesh.positions.len()];
+    let mut faces = region.to_vec();
+    faces.sort_unstable();
+    faces.dedup();
+    for face in faces {
+        let cross = mesh.triangle_cross(face as usize);
+        for v in mesh.triangles[face as usize] {
+            normals[v as usize] += cross;
+        }
+    }
+    let horizontal_depths = prep
         .vertices
         .par_iter()
-        .map(|&i| prep.depth(mesh.positions[i as usize], axis))
+        .map(|&i| prep.horizontal_depth(mesh.positions[i as usize], axis, normals[i as usize]))
         .collect();
     let undercut_area = samples(&prep.mesh)
         .par_iter()
-        .filter(|s| prep.depth(s.point, axis) > 0.0)
-        .map(|s| s.area)
-        .sum();
+        .map(|s| {
+            if prep.is_undercut(s.point, axis, s.normal) {
+                s.area
+            } else {
+                0.0
+            }
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .sum::<f64>()
+        .max(0.0);
     Ok(UndercutMap {
         vertices: prep.vertices,
-        depths,
+        horizontal_depths,
         undercut_area,
     })
 }
@@ -109,12 +171,31 @@ pub fn best_insertion_axis(
     initial: Option<DVec3>,
     max_tilt_deg: f64,
 ) -> Result<AxisResult, DesignError> {
+    best_insertion_axis_with_params(
+        mesh,
+        region,
+        initial,
+        max_tilt_deg,
+        &UndercutParams::default(),
+    )
+}
+
+/// Axis search with an explicit horizontal noise threshold.
+pub fn best_insertion_axis_with_params(
+    mesh: &TriMesh,
+    region: &[u32],
+    initial: Option<DVec3>,
+    max_tilt_deg: f64,
+    params: &UndercutParams,
+) -> Result<AxisResult, DesignError> {
+    params.validate()?;
     if !max_tilt_deg.is_finite() || !(0.0..=90.0).contains(&max_tilt_deg) {
         return Err(DesignError::InvalidParameter(
             "max_tilt_deg must be in [0, 90]",
         ));
     }
-    let prep = Region::new(mesh, region)?;
+    let mut prep = Region::new(mesh, region)?;
+    prep.min_undercut_depth = params.min_undercut_depth;
     let average = average_normal(mesh, region);
     let initial = unit_axis(initial.or(average).ok_or(DesignError::InvalidAxis)?)?;
     let all = samples(&prep.mesh);
@@ -205,9 +286,17 @@ fn evaluate(prep: &Region, samples: &[Sample], axis: DVec3, initial: DVec3) -> A
     let mut result = draft_metrics(samples, axis, initial);
     result.undercut_area = samples
         .par_iter()
-        .filter(|s| prep.depth(s.point, axis) > 0.0)
-        .map(|s| s.area)
-        .sum();
+        .map(|s| {
+            if prep.is_undercut(s.point, axis, s.normal) {
+                s.area
+            } else {
+                0.0
+            }
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .sum::<f64>()
+        .max(0.0);
     result
 }
 
@@ -234,7 +323,7 @@ fn draft_metrics(samples: &[Sample], axis: DVec3, initial: DVec3) -> AxisResult 
         axis,
         undercut_area: 0.0,
         tilt_deg: axis.dot(initial).clamp(-1.0, 1.0).acos().to_degrees(),
-        min_draft_deg: draft,
+        min_draft_deg: if draft == 0.0 { 0.0 } else { draft },
     }
 }
 
@@ -268,7 +357,7 @@ fn choose(
             }
             let mut result = metric;
             for sample in samples {
-                if prep.depth(sample.point, metric.axis) > 0.0 {
+                if prep.is_undercut(sample.point, metric.axis, sample.normal) {
                     result.undercut_area += sample.area;
                     if result.undercut_area > baseline.undercut_area + tolerance {
                         break;
@@ -306,7 +395,7 @@ mod tests {
         let die = prepared_stump(&StumpParams::default()).unwrap();
         let map = undercut_map(&die.mesh, &die.region, DVec3::Z).unwrap();
         assert_eq!(map.undercut_area, 0.0);
-        assert!(map.depths.iter().all(|&d| d == 0.0));
+        assert!(map.horizontal_depths.iter().all(|&d| d == 0.0));
         assert!(
             average_normal(&die.mesh, &die.region)
                 .unwrap()
@@ -352,6 +441,7 @@ mod tests {
     fn divergent_stump_is_undercut_with_analytic_base_depth() {
         let params = StumpParams {
             top_radius: 3.5,
+            top_chamfer: 0.01,
             ..Default::default()
         };
         let die = prepared_stump(&params).unwrap();
@@ -376,9 +466,9 @@ mod tests {
                 .position(|&i| die.mesh.positions[i as usize] == *p)
                 .unwrap();
             assert!(
-                (map.depths[i] - params.height).abs() < 0.02,
+                (map.horizontal_depths[i] - (params.top_radius - params.base_radius)).abs() < 0.01,
                 "{}",
-                map.depths[i]
+                map.horizontal_depths[i]
             );
         }
         assert!(
@@ -394,7 +484,7 @@ mod tests {
         let die = prepared_stump(&StumpParams::default()).unwrap();
         let a = undercut_map(&die.mesh, &die.region, DVec3::Z).unwrap();
         let b = undercut_map(&die.mesh, &die.region, DVec3::Z * 7.0).unwrap();
-        assert_eq!(a.depths, b.depths);
+        assert_eq!(a.horizontal_depths, b.horizontal_depths);
         assert!(matches!(
             undercut_map(&die.mesh, &[], DVec3::Z),
             Err(DesignError::EmptyRegion)
@@ -435,7 +525,7 @@ mod tests {
         .unwrap();
         let map = undercut_map(&die.mesh, &die.region, die.axis).unwrap();
         assert_eq!(map.undercut_area, 0.0);
-        assert!(map.depths.iter().all(|&d| d == 0.0));
+        assert!(map.horizontal_depths.iter().all(|&d| d == 0.0));
     }
 
     #[test]
@@ -455,13 +545,13 @@ mod tests {
         );
         let exposed = undercut_map(&mesh, &[0, 1], DVec3::Z).unwrap();
         assert_eq!(exposed.undercut_area, 0.0);
-        assert!(exposed.depths.iter().all(|&d| d == 0.0));
+        assert!(exposed.horizontal_depths.iter().all(|&d| d == 0.0));
         let blocked = undercut_map(&mesh, &[0, 1, 2, 3, 0], DVec3::Z * 5.0).unwrap();
         assert_eq!(blocked.undercut_area, 1.0);
-        for &depth in &blocked.depths[..4] {
-            assert!((depth - 2.0).abs() < 1e-12);
+        for &depth in &blocked.horizontal_depths[..4] {
+            assert!((depth - 1.0).abs() < 1e-12);
         }
-        assert!(blocked.depths[4..].iter().all(|&d| d == 0.0));
+        assert!(blocked.horizontal_depths[4..].iter().all(|&d| d == 0.0));
         assert!(average_normal(&TriMesh::default(), &[]).is_none());
         assert!(matches!(
             undercut_map(&TriMesh::default(), &[], DVec3::Z),
@@ -496,6 +586,86 @@ mod tests {
             assert!((brute.undercut_area - pruned.undercut_area).abs() < tolerance);
             assert_eq!(brute.min_draft_deg, pruned.min_draft_deg);
         }
+    }
+
+    #[test]
+    fn horizontal_threshold_is_configurable_and_validated() {
+        let die = prepared_stump(&StumpParams {
+            top_radius: 3.05,
+            ..Default::default()
+        })
+        .unwrap();
+        let sensitive = UndercutParams {
+            min_undercut_depth: 0.0,
+        };
+        let insensitive = UndercutParams {
+            min_undercut_depth: 0.06,
+        };
+        let a = undercut_map_with_params(&die.mesh, &die.region, die.axis, &sensitive).unwrap();
+        let b = undercut_map_with_params(&die.mesh, &die.region, die.axis, &insensitive).unwrap();
+        assert!(a.undercut_area > 0.0);
+        assert_eq!(b.undercut_area, 0.0);
+        assert_eq!(a.horizontal_depths, b.horizontal_depths);
+        assert_eq!(
+            best_insertion_axis_with_params(
+                &die.mesh,
+                &die.region,
+                Some(die.axis),
+                0.0,
+                &insensitive
+            )
+            .unwrap()
+            .undercut_area,
+            0.0
+        );
+        for depth in [-0.01, f64::NAN, 1.01] {
+            assert!(
+                undercut_map_with_params(
+                    &die.mesh,
+                    &die.region,
+                    die.axis,
+                    &UndercutParams {
+                        min_undercut_depth: depth
+                    }
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn parallel_metrics_are_bit_deterministic() {
+        let die = prepared_stump(&StumpParams {
+            segments: 96,
+            wall_steps: 1,
+            top_radius: 3.1,
+            ..Default::default()
+        })
+        .unwrap();
+        let run = |threads| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap()
+                .install(|| {
+                    let map = undercut_map(&die.mesh, &die.region, die.axis).unwrap();
+                    let best =
+                        best_insertion_axis(&die.mesh, &die.region, Some(die.axis), 5.0).unwrap();
+                    (
+                        map.undercut_area.to_bits(),
+                        best.axis.to_array().map(f64::to_bits),
+                        best.undercut_area.to_bits(),
+                        best.min_draft_deg.to_bits(),
+                    )
+                })
+        };
+        let reference = run(1);
+        for threads in [3, 4] {
+            assert_eq!(reference, run(threads));
+        }
+        let normal = unit_axis(DVec3::new(-0.0, 0.0, 1.0)).unwrap();
+        assert_eq!(normal.x.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(normal.y.to_bits(), 0.0_f64.to_bits());
     }
 
     #[test]

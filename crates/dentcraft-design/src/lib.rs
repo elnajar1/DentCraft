@@ -9,7 +9,13 @@ pub mod synthetic;
 mod geometry;
 mod polygon;
 
-pub use axis::{AxisResult, UndercutMap, average_normal, best_insertion_axis, undercut_map};
+#[cfg(test)]
+mod review_regressions;
+
+pub use axis::{
+    AxisResult, UndercutMap, UndercutParams, average_normal, best_insertion_axis,
+    best_insertion_axis_with_params, undercut_map, undercut_map_with_params,
+};
 pub use error::DesignError;
 pub use inner::{InnerSurface, InnerSurfaceParams, inner_surface};
 pub use synthetic::{PreparedStump, StumpParams, prepared_stump};

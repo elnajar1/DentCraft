@@ -30,4 +30,10 @@ pub enum DesignError {
     /// Constrained triangulation failed.
     #[error("could not triangulate the projected margin")]
     Triangulation,
+    /// Geometry above the margin extends outside its projected outline.
+    #[error("margin undercut: worst horizontal overhang {depth:.6} mm")]
+    MarginUndercut { depth: f64 },
+    /// Adaptive sampling or clearance correction exceeded its bounded work budget.
+    #[error("inner surface refinement or clearance correction did not converge")]
+    RefinementLimit,
 }

@@ -12,7 +12,9 @@ pub(crate) fn unit_axis(axis: DVec3) -> Result<DVec3, DesignError> {
         return Err(DesignError::InvalidAxis);
     }
     // Scaling first also handles very large and subnormal finite vectors.
-    Ok((axis / axis.abs().max_element()).normalize())
+    Ok((axis / axis.abs().max_element())
+        .normalize()
+        .map(|v| if v == 0.0 { 0.0 } else { v }))
 }
 
 pub(crate) struct Region {
@@ -20,6 +22,7 @@ pub(crate) struct Region {
     pub vertices: Vec<u32>,
     pub bvh: Bvh,
     pub tolerance: f64,
+    pub min_undercut_depth: f64,
     diagonal: f64,
 }
 
@@ -65,11 +68,12 @@ impl Region {
             vertices: vertices.into_iter().collect(),
             bvh,
             tolerance,
+            min_undercut_depth: 0.03,
             diagonal,
         })
     }
 
-    pub fn depth(&self, point: DVec3, axis: DVec3) -> f64 {
+    fn axial_depth(&self, point: DVec3, axis: DVec3) -> f64 {
         // Starting beyond the exclusion interval ignores near self hits without letting
         // them hide a more distant occluder. Distances remain relative to the original point.
         let mut travel = self.tolerance;
@@ -86,6 +90,47 @@ impl Region {
             }
         }
         0.0
+    }
+
+    /// Surveyor depth perpendicular to the insertion axis, only for shadowed points.
+    /// Follow the horizontal outward normal; for axial normals use the direction
+    /// away from the region centre. Bracket in 2 µm increments doubled up to 1 mm,
+    /// then bisect to <= 1 µm. Values still shadowed at 1 mm saturate at 1 mm.
+    pub fn horizontal_depth(&self, point: DVec3, axis: DVec3, normal: DVec3) -> f64 {
+        if self.axial_depth(point, axis) == 0.0 {
+            return 0.0;
+        }
+        let mut outward = normal - axis * normal.dot(axis);
+        if outward.length_squared() < 1e-16 {
+            let radial = point - self.mesh.bounds().unwrap().center();
+            outward = radial - axis * radial.dot(axis);
+        }
+        let outward = outward
+            .try_normalize()
+            .unwrap_or_else(|| Frame::new(point, axis).u);
+        let mut lo = 0.0;
+        let mut hi = 0.002_f64;
+        while self.axial_depth(point + outward * hi, axis) > 0.0 {
+            if hi >= 1.0 {
+                return 1.0;
+            }
+            lo = hi;
+            hi = (hi * 2.0).min(1.0);
+        }
+        while hi - lo > 0.001 {
+            let mid = (lo + hi) * 0.5;
+            if self.axial_depth(point + outward * mid, axis) > 0.0 {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        hi
+    }
+
+    pub fn is_undercut(&self, point: DVec3, axis: DVec3, normal: DVec3) -> bool {
+        let depth = self.horizontal_depth(point, axis, normal);
+        depth > 0.0 && depth >= self.min_undercut_depth
     }
 
     fn covers_ray(&self, hit: RayHit, axis: DVec3) -> bool {
