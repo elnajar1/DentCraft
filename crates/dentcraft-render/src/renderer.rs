@@ -535,12 +535,20 @@ impl MeshRenderer {
             &[],
         )
         .create_view(&Default::default());
+        // A second view format needs DownlevelFlags::VIEW_FORMATS, which GL devices lack; ask for
+        // it only when the blit reads the scene through the non-sRGB view.
+        let raw_view_formats: &[wgpu::TextureFormat] =
+            if self.blit.as_ref().is_some_and(|blit| blit.raw_view) {
+                &[SCENE_FORMAT_RAW]
+            } else {
+                &[]
+            };
         let resolve = texture(
             "dentcraft scene",
             SCENE_FORMAT,
             1,
             attachment | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
-            &[SCENE_FORMAT_RAW],
+            raw_view_formats,
         );
         let resolve_view = resolve.create_view(&Default::default());
         let blit_bind_group = self.blit.as_ref().map(|blit| {
