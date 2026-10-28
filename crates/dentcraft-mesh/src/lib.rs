@@ -2,13 +2,18 @@
 //!
 //! Geometry is stored in `f64`. Units are millimetres.
 
+mod adjacency;
 mod bvh;
+mod curvature;
 mod measure;
 mod repair;
 mod shapes;
+mod smooth;
 mod topology;
 
+pub use adjacency::VertexAdjacency;
 pub use bvh::{Bvh, ClosestPoint, RayHit};
+pub use curvature::PrincipalCurvature;
 pub use topology::EdgeMap;
 
 use glam::DVec3;
