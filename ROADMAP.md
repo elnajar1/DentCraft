@@ -9,7 +9,8 @@
 - [x] PLY and OBJ import and export
 - [x] Mesh topology: welding, boundaries, components, repair
 - [x] Desktop app: themed shell, 3D viewer, scan import (STL, PLY, OBJ), objects list
-- [ ] Desktop app: FDI tooth chart, case open and save, guided workflow panel
+- [x] Desktop app: FDI tooth chart, case open and save, guided workflow panel
+- [x] SolidCraft-style interface: ribbon, browser panels, light and dark themes
 - [x] CLI: mesh info and conversion, case plan
 
 ## 0.2 — Single crown, manual
