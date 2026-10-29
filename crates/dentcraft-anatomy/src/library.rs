@@ -177,7 +177,9 @@ pub(crate) fn tooth_spec(fdi: Fdi) -> ToothSpec {
     match (upper, fdi.position()) {
         // ----- upper anteriors -------------------------------------------------
         (true, 1) => ToothSpec {
-            outline: outline(2.7, 2.2, 0.08, 0.02, 0.0),
+            // High facial exponent: the labial face is flat; the mesial-incisal corner is
+            // sharper than the rounded distal one (drop per mm mesial << distal).
+            outline: outline(3.2, 2.2, 0.08, 0.02, 0.0),
             z_hoc: [0.68, 0.60, 0.24, 0.26],
             kappa: [0.72, 0.66, 0.18, 0.50],
             cej_lingual: -1.35,
@@ -189,8 +191,8 @@ pub(crate) fn tooth_spec(fdi: Fdi) -> ToothSpec {
                     y0: 0.6,
                     c: 0.035,
                     tip_x: 0.0,
-                    slope_m: 0.025,
-                    slope_d: 0.045,
+                    slope_m: 0.012,
+                    slope_d: 0.06,
                 },
                 0.24,
                 [5.0, 1.8, 0.4],
@@ -249,8 +251,8 @@ pub(crate) fn tooth_spec(fdi: Fdi) -> ToothSpec {
                     y0: 0.7,
                     c: 0.03,
                     tip_x: 0.35,
-                    slope_m: 0.42,
-                    slope_d: 0.30,
+                    slope_m: 0.60,
+                    slope_d: 0.45,
                 },
                 0.26,
                 [4.6, 1.7, 0.5],
@@ -283,7 +285,7 @@ pub(crate) fn tooth_spec(fdi: Fdi) -> ToothSpec {
                     ridge([0.44, 0.16, 0.86], [0.36, -0.14, 0.72], 0.22, 0.50),
                     ridge([-0.44, 0.16, 0.80], [-0.44, -0.14, 0.68], 0.20, 0.50),
                 ],
-                vec![groove(0.60, 0.0, -0.55, 0.0, 0.32, 0.40)],
+                vec![groove(0.60, 0.0, -0.55, 0.0, 0.45, 0.40)],
                 vec![
                     blob([0.42, 0.01], -0.12, 0.6, 0.5),
                     blob([-0.45, 0.01], -0.12, 0.6, 0.5),
@@ -308,7 +310,7 @@ pub(crate) fn tooth_spec(fdi: Fdi) -> ToothSpec {
                     ridge([0.44, 0.15, 0.86], [0.38, -0.13, 0.76], 0.20, 0.50),
                     ridge([-0.44, 0.14, 0.80], [-0.42, -0.13, 0.72], 0.18, 0.50),
                 ],
-                vec![groove(0.55, 0.0, -0.50, 0.0, 0.28, 0.40)],
+                vec![groove(0.55, 0.0, -0.50, 0.0, 0.42, 0.40)],
                 vec![
                     blob([0.40, 0.0], -0.10, 0.55, 0.5),
                     blob([-0.42, 0.0], -0.10, 0.55, 0.5),
