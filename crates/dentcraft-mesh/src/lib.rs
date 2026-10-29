@@ -5,6 +5,7 @@
 mod adjacency;
 mod bvh;
 mod curvature;
+mod decimate;
 mod fill;
 mod measure;
 mod path;
@@ -17,6 +18,7 @@ mod topology;
 pub use adjacency::VertexAdjacency;
 pub use bvh::{Bvh, ClosestPoint, RayHit};
 pub use curvature::PrincipalCurvature;
+pub use decimate::{DecimateError, DecimateOptions, DecimateReport, decimate};
 pub use fill::{FillReport, fill_holes};
 pub use path::{SurfacePath, path_through, ridge_cost, shortest_path, smooth_polyline_on_surface};
 pub use region::{grow_region, inside_closed_path, region_triangles};
