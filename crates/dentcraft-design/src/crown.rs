@@ -356,6 +356,9 @@ fn bracket(loop_angles: &[(f64, u32)], angle: f64) -> (usize, usize) {
     ((b + loop_angles.len() - 1) % loop_angles.len(), b)
 }
 
+/// An angle-sorted (polar angle, loop vertex index) list.
+type AngleLoop = Vec<(f64, u32)>;
+
 /// Mitred outward offset of the projected margin loop, perpendicular to the
 /// insertion axis. Vertex i moves along the bisector of its two incident
 /// outward edge normals by `t·(n_a + n_b)/(1 + n_a·n_b)`, which shifts both
@@ -369,7 +372,7 @@ fn offset_margin(
     margin: &[DVec3],
     polar: Polar,
     thickness: f64,
-) -> Result<(Vec<DVec3>, Vec<(f64, u32)>), DesignError> {
+) -> Result<(Vec<DVec3>, AngleLoop), DesignError> {
     let flat = |p: DVec3| {
         let d = p - polar.origin;
         DVec2::new(d.dot(polar.x), d.dot(polar.y))
@@ -409,7 +412,7 @@ fn offset_margin(
         .collect();
     // Star-shaped about the polar origin, with no angular gap of π or more:
     // every template ray then meets the loop exactly once.
-    let mut angles: Vec<(f64, u32)> = offset3d
+    let mut angles: AngleLoop = offset3d
         .iter()
         .enumerate()
         .map(|(i, &q)| (polar.angle(q), i as u32))
