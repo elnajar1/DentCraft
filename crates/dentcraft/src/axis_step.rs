@@ -574,13 +574,17 @@ impl AxisStep {
         self.running = true;
         let tx = self.tx.clone();
         let repaint = self.repaint.clone();
-        std::thread::spawn(move || {
-            let key = job.key.clone();
-            let _ = tx.send(run(job).map_err(|e| (key, e)));
-            if let Some(ctx) = repaint {
-                ctx.request_repaint();
-            }
-        });
+        let key = job.key.clone();
+        crate::crash::spawn_worker(
+            "axis",
+            move || run(job),
+            move |result| {
+                let _ = tx.send(result.and_then(|r| r).map_err(|e| (key, e)));
+                if let Some(ctx) = repaint {
+                    ctx.request_repaint();
+                }
+            },
+        );
     }
 
     fn finish(

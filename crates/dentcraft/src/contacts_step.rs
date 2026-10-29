@@ -833,14 +833,18 @@ impl ContactsStep {
         };
         let tx = self.tx.clone();
         let repaint = self.repaint.clone();
-        std::thread::spawn(move || {
-            let tooth = job.shown.tooth;
-            let shown = job.adapt.is_none().then(|| job.shown.clone());
-            let _ = tx.send(run(job).map_err(|e| (tooth, shown, e)));
-            if let Some(ctx) = repaint {
-                ctx.request_repaint();
-            }
-        });
+        let tooth = job.shown.tooth;
+        let shown = job.adapt.is_none().then(|| job.shown.clone());
+        crate::crash::spawn_worker(
+            "contacts",
+            move || run(job),
+            move |result| {
+                let _ = tx.send(result.and_then(|r| r).map_err(|e| (tooth, shown, e)));
+                if let Some(ctx) = repaint {
+                    ctx.request_repaint();
+                }
+            },
+        );
     }
 }
 

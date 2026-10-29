@@ -139,6 +139,8 @@ pub fn open_folder(dir: &Path) -> Result<(), String> {
 enum Message {
     Progress(String),
     Done(Fdi, Result<Written, String>),
+    /// The worker stopped early; these teeth get the error unless they already have a result.
+    Crashed(Vec<Fdi>, String),
     Finished,
 }
 
@@ -241,13 +243,16 @@ impl ExportStep {
         self.dir = Some(dir);
         let simplify = self.simplify;
         let repaint = self.repaint.clone();
-        std::thread::spawn(move || {
+        let teeth: Vec<Fdi> = jobs.iter().map(|(tooth, _, _)| *tooth).collect();
+        let done = tx.clone();
+        let poke = move || {
+            if let Some(ctx) = &repaint {
+                ctx.request_repaint();
+            }
+        };
+        let poke_done = poke.clone();
+        let work = move || {
             let total = jobs.len();
-            let poke = || {
-                if let Some(ctx) = &repaint {
-                    ctx.request_repaint();
-                }
-            };
             for (n, (tooth, path, crown)) in jobs.into_iter().enumerate() {
                 let verb = if simplify { "Simplifying" } else { "Writing" };
                 let _ = tx.send(Message::Progress(format!(
@@ -257,8 +262,13 @@ impl ExportStep {
                 poke();
                 let _ = tx.send(Message::Done(tooth, write_crown(&crown, &path, simplify)));
             }
-            let _ = tx.send(Message::Finished);
-            poke();
+        };
+        crate::crash::spawn_worker("export", work, move |result| {
+            if let Err(e) = result {
+                let _ = done.send(Message::Crashed(teeth, e));
+            }
+            let _ = done.send(Message::Finished);
+            poke_done();
         });
     }
 
@@ -273,6 +283,11 @@ impl ExportStep {
                 Message::Progress(text) => self.progress = Some(text),
                 Message::Done(tooth, result) => {
                     self.results.insert(tooth, result);
+                }
+                Message::Crashed(teeth, e) => {
+                    for tooth in teeth {
+                        self.results.entry(tooth).or_insert_with(|| Err(e.clone()));
+                    }
                 }
                 Message::Finished => finished = true,
             }

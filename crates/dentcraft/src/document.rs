@@ -14,6 +14,8 @@ pub const EXTENSION: &str = "dentcraft";
 pub struct Document {
     path: Option<PathBuf>,
     saved: Case,
+    /// Restored from the recovery file: unsaved until the user saves it somewhere.
+    recovered: bool,
 }
 
 impl Document {
@@ -22,6 +24,15 @@ impl Document {
         Self {
             path: None,
             saved: case.clone(),
+            recovered: false,
+        }
+    }
+
+    /// A case restored from the recovery file: never saved, and dirty from the start.
+    pub fn recovered(case: &Case) -> Self {
+        Self {
+            recovered: true,
+            ..Self::untitled(case)
         }
     }
 
@@ -30,6 +41,7 @@ impl Document {
         Self {
             path: Some(path),
             saved: case.clone(),
+            recovered: false,
         }
     }
 
@@ -38,7 +50,7 @@ impl Document {
     }
 
     pub fn is_dirty(&self, case: &Case) -> bool {
-        *case != self.saved
+        self.recovered || *case != self.saved
     }
 
     /// Records that `case` was written to `path`.

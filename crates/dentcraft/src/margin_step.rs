@@ -941,16 +941,18 @@ impl MarginStep {
         self.tracers.insert(scan, Slot::Building);
         let tx = self.tx.clone();
         let repaint = self.repaint.clone();
-        std::thread::spawn(move || {
+        let work = move || {
             // The scan's occlusal direction is computed once per scan, with its tracer.
             let occlusal = dentcraft_design::occlusal_direction(&mesh).ok();
-            let result = MarginTracer::new(mesh).map(|t| (t, occlusal)).map_err(|e| {
+            MarginTracer::new(mesh).map(|t| (t, occlusal)).map_err(|e| {
                 eprintln!("dentcraft: margin tracer: {e}");
                 "This scan can't be traced: it has no usable surface. Check the scan, or \
                      load it again."
                     .to_owned()
-            });
-            let _ = tx.send(Message::Tracer(scan, result));
+            })
+        };
+        crate::crash::spawn_worker("margin tracer", work, move |result| {
+            let _ = tx.send(Message::Tracer(scan, result.and_then(|r| r)));
             if let Some(ctx) = repaint {
                 ctx.request_repaint();
             }
@@ -986,8 +988,9 @@ impl MarginStep {
         self.running = true;
         let tx = self.tx.clone();
         let repaint = self.repaint.clone();
-        std::thread::spawn(move || {
-            let result = match &job.kind {
+        let sent = job.clone();
+        let work = move || {
+            let traced = match &job.kind {
                 JobKind::Propose { seed, axis } => {
                     match proposal_axis(tracer.mesh(), *axis, occlusal, *seed) {
                         Some(axis) => tracer.propose(*seed, axis),
@@ -995,13 +998,15 @@ impl MarginStep {
                     }
                 }
                 JobKind::Trace(controls) => tracer.trace(controls),
-            }
-            .map_err(|e| {
+            };
+            traced.map_err(|e| {
                 // The technical reason goes to the log; the panel shows what to do next.
                 eprintln!("dentcraft: margin {:?} on {}: {e}", job.edit, job.tooth);
                 user_message(&job.kind, &e)
-            });
-            let _ = tx.send(Message::Job(job, result));
+            })
+        };
+        crate::crash::spawn_worker("margin", work, move |result| {
+            let _ = tx.send(Message::Job(sent, result.and_then(|r| r)));
             if let Some(ctx) = repaint {
                 ctx.request_repaint();
             }

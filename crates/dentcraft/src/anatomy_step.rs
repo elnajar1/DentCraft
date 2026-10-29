@@ -613,13 +613,17 @@ impl AnatomyStep {
         let repaint = self.repaint.clone();
         // The surface in the key was computed from the case as it is this frame.
         let stamp = Stamp::of(f.case, key.tooth);
-        std::thread::spawn(move || {
-            let k = key.clone();
-            let _ = tx.send(run(key, stamp).map_err(|e| (k, e)));
-            if let Some(ctx) = repaint {
-                ctx.request_repaint();
-            }
-        });
+        let k = key.clone();
+        crate::crash::spawn_worker(
+            "anatomy",
+            move || run(key, stamp),
+            move |result| {
+                let _ = tx.send(result.and_then(|r| r).map_err(|e| (k, e)));
+                if let Some(ctx) = repaint {
+                    ctx.request_repaint();
+                }
+            },
+        );
     }
 }
 

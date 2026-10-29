@@ -7,6 +7,7 @@ mod axis_step;
 mod browser;
 mod chart;
 mod contacts_step;
+mod crash;
 mod document;
 mod export_step;
 mod history;
@@ -17,6 +18,7 @@ mod margin_edit;
 mod margin_step;
 mod objects;
 mod orient_step;
+mod recovery;
 mod ribbon;
 mod theme;
 mod tools;
@@ -38,11 +40,18 @@ use crate::args::{Args, DEFAULT_SIZE, OpenArg};
 fn main() -> ExitCode {
     let args = Args::parse();
     let screenshot = args.screenshot.is_some();
+    // Crash logs are kept for every run; a screenshot run never touches the user's recovery file.
+    let data = crash::data_dir();
+    let recovery = data
+        .as_deref()
+        .filter(|_| !screenshot)
+        .map(recovery::recovery_path);
+    crash::install_panic_hook(data.as_deref().map(crash::crash_log_dir), recovery.clone());
     let [w, h] = args.size.unwrap_or(DEFAULT_SIZE);
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("DentCraft")
-        .with_app_id("dentcraft")
+        .with_app_id(crash::APP_ID)
         .with_inner_size([w as f32, h as f32])
         .with_min_inner_size([960.0, 600.0])
         .with_drag_and_drop(true);
@@ -82,6 +91,7 @@ fn main() -> ExitCode {
         tooth: args.tooth,
         section: args.section,
         export: args.export,
+        recovery,
         exit_code: exit_code.clone(),
     };
     let result = eframe::run_native(

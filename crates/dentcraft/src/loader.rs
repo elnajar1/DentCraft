@@ -1,13 +1,14 @@
 //! Background loading of scan files: parse, prepare render data and build the picking BVH off
 //! the UI thread.
 
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use dentcraft_mesh::{Bvh, TriMesh};
 use dentcraft_render::{MeshData, MeshId};
+
+use crate::crash::{LOAD_PREFIX, PANIC_MESSAGE, spawn_worker};
 
 /// A scan ready to show and pick.
 pub struct Loaded {
@@ -41,23 +42,24 @@ impl Loader {
     pub fn spawn(&self, id: MeshId, path: PathBuf) {
         let tx = self.tx.clone();
         let repaint = self.repaint.clone();
-        let name = format!("load {}", path.display());
-        let work = move || {
-            let result = catch_unwind(AssertUnwindSafe(|| load(&path)))
-                .unwrap_or_else(|_| Err("the loader crashed on this file".to_owned()));
+        let name = format!("{LOAD_PREFIX}{}", path.display());
+        let source = path.clone();
+        let deliver = move |result: Result<Result<Loaded, String>, String>| {
+            let result = result.and_then(|r| r).map_err(|e| {
+                if e == PANIC_MESSAGE {
+                    "the loader crashed on this file. Details were saved to the crash log."
+                        .to_owned()
+                } else {
+                    e
+                }
+            });
             // The receiver is gone only when the app is shutting down.
             let _ = tx.send(LoadMessage { id, path, result });
             if let Some(ctx) = repaint {
                 ctx.request_repaint();
             }
         };
-        if let Err(err) = std::thread::Builder::new().name(name).spawn(work) {
-            let _ = self.tx.send(LoadMessage {
-                id,
-                path: PathBuf::new(),
-                result: Err(format!("cannot start a loader thread: {err}")),
-            });
-        }
+        spawn_worker(&name, move || load(&source), deliver);
     }
 
     /// Results that arrived since the last call.

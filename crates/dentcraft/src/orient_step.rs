@@ -303,13 +303,16 @@ impl OrientStep {
         self.running = true;
         let tx = self.tx.clone();
         let repaint = self.repaint.clone();
-        std::thread::spawn(move || {
-            let result = orient_mesh(&mesh, hints);
-            let _ = tx.send(result);
-            if let Some(ctx) = repaint {
-                ctx.request_repaint();
-            }
-        });
+        crate::crash::spawn_worker(
+            "orient",
+            move || orient_mesh(&mesh, hints),
+            move |result| {
+                let _ = tx.send(result.and_then(|r| r));
+                if let Some(ctx) = repaint {
+                    ctx.request_repaint();
+                }
+            },
+        );
     }
 
     /// Clears the orientation.

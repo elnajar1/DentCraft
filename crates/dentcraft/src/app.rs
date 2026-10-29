@@ -20,6 +20,7 @@ use crate::axis_step::{self, AXIS, AxisStep};
 use crate::browser::{self, SECTIONS_KEY, Section, Sections};
 use crate::chart::{self, ChartEdit};
 use crate::contacts_step::{self, CONTACTS, ContactsStep};
+use crate::crash;
 use crate::document::{self, Document};
 use crate::export_step::{self, ExportStep, PlanItem};
 use crate::history::History;
@@ -28,6 +29,7 @@ use crate::loader::Loader;
 use crate::margin_step::{self, MARGIN, MarginStep, StepFrame};
 use crate::objects::{self, ObjectState, SceneObject};
 use crate::orient_step::{self, ORIENT, OrientStep};
+use crate::recovery::{self, Autosave};
 use crate::ribbon::{self, Command, RibbonTab, RibbonView, WorkspaceMenu};
 use crate::theme::{self, Palette, RADIUS_LG, SIZE_SMALL, ThemeKind};
 use crate::tools::{self, MEASURE, Measure, Tools};
@@ -72,6 +74,8 @@ pub struct StartOptions {
     pub section: bool,
     /// Folder to export every built crown to once the startup steps are done.
     pub export: Option<PathBuf>,
+    /// The recovery file; `None` when unsaved work is not kept (screenshot runs).
+    pub recovery: Option<PathBuf>,
     /// Exit code of a screenshot run, read by `main` once the window has closed.
     pub exit_code: Arc<Mutex<Option<u8>>>,
 }
@@ -119,6 +123,10 @@ pub struct DentCraftApp {
     /// Undo and redo of the case's design.
     history: History,
     confirm_discard: Option<Discard>,
+    /// Writes unsaved work to the recovery file.
+    autosave: Option<Autosave>,
+    /// The question of the start-up prompt to restore unsaved work left by a crash.
+    recovery_prompt: Option<String>,
     window_title: String,
     ribbon_tab: RibbonTab,
     workspace_menu: WorkspaceMenu,
@@ -205,6 +213,11 @@ impl DentCraftApp {
 
         let initial_view = start.view.unwrap_or(ViewPreset::Occlusal);
         let case = Case::new(UNTITLED);
+        let recovery_prompt = start
+            .recovery
+            .as_deref()
+            .and_then(|path| recovery::startup_prompt(path, start.screenshot.is_some()))
+            .map(recovery::prompt_text);
         let mut app = Self {
             theme,
             session: Session::for_case(&case),
@@ -213,6 +226,10 @@ impl DentCraftApp {
             doc: Document::untitled(&case),
             history: History::default(),
             confirm_discard: None,
+            autosave: start
+                .recovery
+                .map(|path| Autosave::new(path, crash::worker_panics())),
+            recovery_prompt,
             window_title: String::new(),
             ribbon_tab: start.tab.unwrap_or_default(),
             workspace_menu: WorkspaceMenu::new(start.workspace_menu_open),
@@ -943,16 +960,100 @@ impl DentCraftApp {
     fn open_case(&mut self, path: PathBuf) {
         match document::load(&path) {
             Ok(case) => {
-                let scans = case
-                    .scans
-                    .iter()
-                    .map(|s| (s.file.clone(), s.role))
-                    .collect();
-                self.reset(case);
+                self.show_case(case);
                 self.doc = Document::at(path, &self.case);
-                self.add_scans(scans);
             }
             Err(err) => self.fail(err.to_string()),
+        }
+    }
+
+    /// Makes `case` the open case and re-imports its scans with their saved roles.
+    fn show_case(&mut self, case: Case) {
+        let scans = case
+            .scans
+            .iter()
+            .map(|s| (s.file.clone(), s.role))
+            .collect();
+        self.reset(case);
+        self.add_scans(scans);
+    }
+
+    /// Opens the recovery file as an unsaved case.
+    fn restore_recovery(&mut self) {
+        let Some(path) = self.autosave.as_ref().map(|a| a.path().to_path_buf()) else {
+            return;
+        };
+        match recovery::read(&path) {
+            Ok(case) => {
+                self.show_case(case);
+                self.doc = Document::recovered(&self.case);
+            }
+            Err(err) => self.fail(err),
+        }
+    }
+
+    /// The start-up prompt to restore the unsaved case a crash left behind.
+    fn recovery_modal(&mut self, ctx: &egui::Context) {
+        let Some(question) = &self.recovery_prompt else {
+            return;
+        };
+        let p = self.palette();
+        let mut restore = None;
+        egui::Modal::new(egui::Id::unique("restore_unsaved_case"))
+            .frame(
+                egui::Frame::new()
+                    .fill(p.panel)
+                    .stroke(Stroke::new(1.0, p.border))
+                    .corner_radius(CornerRadius::same(RADIUS_LG))
+                    .inner_margin(Margin::same(20)),
+            )
+            .show(ctx, |ui| {
+                ui.set_width(360.0);
+                ui.label(
+                    RichText::new("DentCraft closed unexpectedly.")
+                        .heading()
+                        .color(p.text),
+                );
+                ui.label(RichText::new(question.as_str()).color(p.text_dim));
+                ui.add_space(12.0);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if small_button(ui, "Restore", true, true).clicked() {
+                        restore = Some(true);
+                    }
+                    if small_button(ui, "Discard", true, false).clicked() {
+                        restore = Some(false);
+                    }
+                });
+            });
+        // Escape or a click outside keeps the question: the file is only touched by a choice.
+        match restore {
+            Some(true) => {
+                self.recovery_prompt = None;
+                self.restore_recovery();
+            }
+            Some(false) => {
+                self.recovery_prompt = None;
+                if let Some(autosave) = &self.autosave {
+                    recovery::remove(autosave.path());
+                }
+            }
+            None => {}
+        }
+    }
+
+    /// Keeps unsaved work in the recovery file; held back while the start-up prompt still
+    /// guards the previous session's file.
+    fn autosave(&mut self, ctx: &egui::Context) {
+        if self.recovery_prompt.is_some() {
+            return;
+        }
+        let dirty = self.is_dirty();
+        let Some(autosave) = &mut self.autosave else {
+            return;
+        };
+        if let Some(wait) = autosave.tick(&self.case, dirty, Instant::now(), crash::worker_panics())
+        {
+            ctx.request_repaint_after(wait);
         }
     }
 
@@ -2157,6 +2258,8 @@ impl eframe::App for DentCraftApp {
             .show(ui, |ui| self.central(ui));
 
         self.confirm_discard_modal(&ctx);
+        self.recovery_modal(&ctx);
+        self.autosave(&ctx);
         self.update_title(&ctx);
         self.drive_screenshot(&ctx);
     }
@@ -2170,6 +2273,15 @@ impl eframe::App for DentCraftApp {
 
     fn persist_egui_memory(&self) -> bool {
         self.screenshot.is_none()
+    }
+
+    fn on_exit(&mut self) {
+        // An unanswered start-up prompt keeps its file for the next start.
+        if self.recovery_prompt.is_none()
+            && let Some(autosave) = &mut self.autosave
+        {
+            autosave.clean_exit();
+        }
     }
 }
 
