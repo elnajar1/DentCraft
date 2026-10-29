@@ -15,6 +15,12 @@ pub enum DesignError {
     /// The locked cervical edge or bounded correction could not satisfy thickness.
     #[error("crown thickness correction did not converge (worst deficit {deficit:.6} mm)")]
     CrownThickness { deficit: f64 },
+    /// The projected scan lacks a sufficiently symmetric complete arch.
+    #[error("partial arch: forward cannot be determined from this scan")]
+    PartialArch,
+    /// Geometry does not determine an unambiguous jaw orientation.
+    #[error("jaw orientation is ambiguous")]
+    OrientationAmbiguous,
     /// The region contains no triangles.
     #[error("the prep region is empty")]
     EmptyRegion,

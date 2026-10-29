@@ -1,9 +1,6 @@
 //! Convex-ridge margin tracing. Inputs must have outward consistent winding.
 use crate::DesignError;
-use dentcraft_mesh::{
-    Bvh, PrincipalCurvature, TriMesh, VertexAdjacency, inside_closed_path, path_through,
-    region_triangles, ridge_cost, smooth_polyline_on_surface,
-};
+use dentcraft_mesh::{Bvh, TriMesh, VertexAdjacency, path_through, smooth_polyline_on_surface};
 use glam::DVec3;
 use std::f64::consts::TAU;
 use std::sync::Arc;
@@ -21,8 +18,8 @@ pub struct Margin {
 pub struct MarginTracer {
     mesh: Arc<TriMesh>,
     adjacency: VertexAdjacency,
-    curvature: Vec<PrincipalCurvature>,
-    cost: Vec<f64>,
+    /// Smoothed, noise-scaled k1 evidence; this is not a physical curvature.
+    ridge_strength: Vec<f64>,
     bvh: Bvh,
 }
 
@@ -46,33 +43,58 @@ pub(crate) fn validate_mesh(mesh: &TriMesh) -> Result<(), DesignError> {
 }
 
 impl MarginTracer {
-    /// Precompute adjacency, signed principal curvatures, ridge cost and BVH.
-    /// The ridge sharpness is adaptive: `12 / sharpest k1`, so the strongest
-    /// convex edge lands just above the path toolkit's `MIN_COST` clamp
-    /// (`exp(-12) ≈ 6e-6`). A fixed sharpness either saturates that clamp —
-    /// which erases the contrast between the margin and its neighbouring
-    /// tessellation rings — or is too weak to glue the path to the ridge.
-    /// Empty, wholly degenerate and nonfinite meshes are rejected before toolkit calls.
+    /// Cache geometry and principal curvature, smoothing k1 over two one-rings.
+    /// Ridge costs are normalized locally for each trace or proposal, so unrelated
+    /// sharp model corners cannot flatten the contrast at a rounded margin.
+    /// Empty, wholly degenerate and nonfinite meshes are rejected.
     pub fn new(mesh: Arc<TriMesh>) -> Result<Self, DesignError> {
         validate_mesh(&mesh)?;
         let adjacency = mesh.vertex_adjacency();
-        let curvature = mesh.principal_curvatures();
-        let sharpest = curvature
+        let mut denoised = (*mesh).clone();
+        denoised.laplacian_smooth(2, 0.25, None, true);
+        let curvature = denoised.principal_curvatures();
+        // Displacement noise contributes curvature proportional to 1/h^2. Scale
+        // by squared cross-ridge support before averaging, so short edges on the
+        // ledge do not win merely by amplifying noise. Cap h at 0.1 mm: coarse
+        // base triangles must not gain unlimited influence. Geometry and the BVH
+        // stay on the original scan; the denoised copy supplies evidence only.
+        let mut ridge_strength: Vec<_> = curvature
             .iter()
-            .map(|pc| pc.k1.max(0.0))
-            .fold(0.0, f64::max);
-        let sharpness = if sharpest > 1e-9 {
-            (12.0 / sharpest).clamp(0.1, 6.0)
-        } else {
-            0.0
-        };
-        let cost = ridge_cost(&curvature, sharpness);
+            .enumerate()
+            .map(|(i, pc)| {
+                let neighbors = adjacency.neighbors(i as u32);
+                let support = neighbors
+                    .iter()
+                    .map(|&j| {
+                        (denoised.positions[j as usize] - denoised.positions[i])
+                            .dot(pc.dir1)
+                            .abs()
+                            .min(0.1)
+                    })
+                    .sum::<f64>();
+                if neighbors.is_empty() {
+                    0.0
+                } else {
+                    pc.k1 * (support / neighbors.len() as f64).powi(2)
+                }
+            })
+            .collect();
+        for _ in 0..2 {
+            let previous = ridge_strength.clone();
+            for (i, strength) in ridge_strength.iter_mut().enumerate() {
+                let neighbors = adjacency.neighbors(i as u32);
+                if !neighbors.is_empty() {
+                    *strength = 0.5 * previous[i]
+                        + 0.5 * neighbors.iter().map(|&j| previous[j as usize]).sum::<f64>()
+                            / neighbors.len() as f64;
+                }
+            }
+        }
         let bvh = Bvh::build(&mesh);
         Ok(Self {
             mesh,
             adjacency,
-            curvature,
-            cost,
+            ridge_strength,
             bvh,
         })
     }
@@ -110,6 +132,7 @@ impl MarginTracer {
             return Err(DesignError::InvalidMargin);
         }
         let mut waypoints = Vec::with_capacity(clicks.len());
+        let mut neighborhood = std::collections::HashSet::new();
         for &click in clicks {
             let v = self.snap(click)?;
             let center = self.mesh.positions[v as usize];
@@ -117,10 +140,15 @@ impl MarginTracer {
             let mut stack = vec![v];
             let mut seen = std::collections::HashSet::with_capacity(64);
             seen.insert(v);
-            let mut best = v;
+            let mut best: Option<u32> = None;
             while let Some(a) = stack.pop() {
-                if self.curvature[a as usize].k1 > self.curvature[best as usize].k1 {
-                    best = a;
+                if !self.adjacency.is_boundary(a) {
+                    neighborhood.insert(a);
+                    if best.is_none_or(|b| {
+                        self.ridge_strength[a as usize] > self.ridge_strength[b as usize]
+                    }) {
+                        best = Some(a);
+                    }
                 }
                 for &b in self.adjacency.neighbors(a) {
                     if self.mesh.positions[b as usize].distance_squared(center) <= 0.45_f64.powi(2)
@@ -130,28 +158,85 @@ impl MarginTracer {
                     }
                 }
             }
-            waypoints.push(best);
+            waypoints.push(best.ok_or(DesignError::InvalidMargin)?);
         }
-        self.connect(&waypoints)
+        let cost = self.local_cost(neighborhood.into_iter());
+        self.connect(&waypoints, &cost)
     }
 
-    fn connect(&self, waypoints: &[u32]) -> Result<Margin, DesignError> {
+    fn local_cost(&self, vertices: impl Iterator<Item = u32>) -> Vec<f64> {
+        let mut strengths: Vec<_> = vertices
+            .map(|i| self.ridge_strength[i as usize].max(0.0))
+            .collect();
+        strengths.sort_by(f64::total_cmp);
+        let scale = strengths
+            .get(strengths.len() * 95 / 100)
+            .copied()
+            .unwrap_or(0.0);
+        let sharpness = if scale > 1e-9 { 8.0 / scale } else { 0.0 };
+        // Keep the 95th percentile above the path toolkit's 1e-6 floor.
+        // Using exp(-8) leaves contrast between the ridge and its neighbours.
+        let mut costs: Vec<_> = self
+            .ridge_strength
+            .iter()
+            .map(|k| (-sharpness * k.max(0.0)).exp().max(1e-6))
+            .collect();
+        for (i, c) in costs.iter_mut().enumerate() {
+            if self.adjacency.is_boundary(i as u32) {
+                *c = 1.0;
+            }
+        }
+        costs
+    }
+
+    fn connect(&self, waypoints: &[u32], cost: &[f64]) -> Result<Margin, DesignError> {
         if waypoints.len() < 3 {
             return Err(DesignError::InvalidMargin);
         }
         let path = path_through(&self.mesh, &self.adjacency, waypoints, true, |v| {
-            self.cost[v as usize]
+            cost[v as usize]
         })
         .ok_or(DesignError::InvalidMargin)?;
         let mut vertices = path.vertices;
         vertices.pop();
         let unique: std::collections::HashSet<_> = vertices.iter().collect();
-        if vertices.len() < 3 || unique.len() != vertices.len() {
+        if vertices.len() < 3
+            || unique.len() != vertices.len()
+            || vertices.iter().any(|&i| self.adjacency.is_boundary(i))
+        {
             return Err(DesignError::InvalidMargin);
         }
+        // Centre broad ridge plateaus within one short edge, avoiding a full
+        // mesh-row jump when two samples have indistinguishable evidence.
         let points: Vec<_> = vertices
             .iter()
-            .map(|&v| self.mesh.positions[v as usize])
+            .map(|&v| {
+                let neighbors = self.adjacency.neighbors(v);
+                let peak = std::iter::once(v)
+                    .chain(neighbors.iter().copied())
+                    .map(|i| self.ridge_strength[i as usize])
+                    .fold(0.0, f64::max);
+                let mut sum = DVec3::ZERO;
+                let mut weight = 0.0;
+                for i in std::iter::once(v).chain(neighbors.iter().copied()) {
+                    let strength = self.ridge_strength[i as usize];
+                    if strength >= 0.85 * peak
+                        && strength > 0.0
+                        && !self.adjacency.is_boundary(i)
+                        && self.mesh.positions[i as usize]
+                            .distance_squared(self.mesh.positions[v as usize])
+                            < 0.2 * 0.2
+                    {
+                        sum += self.mesh.positions[i as usize] * strength;
+                        weight += strength;
+                    }
+                }
+                if weight > 0.0 {
+                    sum / weight
+                } else {
+                    self.mesh.positions[v as usize]
+                }
+            })
             .collect();
         let smooth = smooth_polyline_on_surface(&self.mesh, &self.bvh, &points, 1);
         let mut points = resample(&smooth, 0.1);
@@ -163,56 +248,177 @@ impl MarginTracer {
         Ok(Margin { points, vertices })
     }
 
-    /// Propose a single-tooth margin in 36 sectors. Search radius is 8 mm,
-    /// axial depth is 0.3..6 mm below the surface-snapped occlusal seed.
-    /// These limits intentionally exclude remote model bases; this is a proposal,
-    /// not a detector for arbitrary full-jaw geometry or preparations over 6 mm tall.
-    /// Reject radial outliers beyond 25% of the median and require 27 sectors.
+    /// Propose a single-tooth margin, then refine its centre and best-fit axis.
+    /// Select the most apical ridge at least half as strong as the best ridge in
+    /// each sector; reject radial and axial outliers before connecting the loop.
+    /// The axial window scales with the local preparation, capped at 12 mm.
     pub fn propose(&self, seed: DVec3, axis: DVec3) -> Result<Margin, DesignError> {
         if !axis.is_finite() || axis.length_squared() < 1e-24 {
             return Err(DesignError::InvalidAxis);
         }
         let axis = axis.normalize();
-        let center = self.mesh.positions[self.snap(seed)? as usize];
+        let seed_vertex = self.snap(seed)?;
+        let center = self.mesh.positions[seed_vertex as usize];
+        // Restrict to the clicked component: an adjacent tooth is never a ridge
+        // candidate even when it lies inside the search annulus.
+        let mut component = vec![false; self.mesh.positions.len()];
+        let mut stack = vec![seed_vertex];
+        component[seed_vertex as usize] = true;
+        while let Some(i) = stack.pop() {
+            for &j in self.adjacency.neighbors(i) {
+                if !component[j as usize] {
+                    component[j as usize] = true;
+                    stack.push(j);
+                }
+            }
+        }
+        let first = self.sector_ridges(center, axis, &component, None)?;
+        let first_cost = self.local_cost(
+            self.mesh
+                .positions
+                .iter()
+                .enumerate()
+                .filter(|(i, p)| {
+                    component[*i]
+                        && (**p - center).cross(axis).length() < 8.0
+                        && !self.adjacency.is_boundary(*i as u32)
+                        && first.iter().any(|&j| {
+                            (**p - self.mesh.positions[j as usize]).length_squared() < 0.5 * 0.5
+                        })
+                })
+                .map(|(i, _)| i as u32),
+        );
+        let first_margin = self.connect(&first, &first_cost)?;
+        let points = first_margin.points;
+        let centroid = points.iter().sum::<DVec3>() / points.len() as f64;
+        let mut cov = [[0.0; 3]; 3];
+        for p in &points {
+            let d = *p - centroid;
+            for r in 0..3 {
+                for c in 0..3 {
+                    cov[r][c] += d[r] * d[c];
+                }
+            }
+        }
+        let (values, vectors) = crate::orient::eigen3(cov);
+        if values[1] <= 1.5 * values[0].max(0.0) {
+            return Err(DesignError::InvalidMargin);
+        }
+        let mut refined = vectors[0];
+        if refined.dot(axis) < 0.0 {
+            refined = -refined;
+        }
+        if refined.dot(axis) < 0.5 {
+            return Err(DesignError::InvalidMargin);
+        }
+        let second = self.sector_ridges(centroid, refined, &component, Some(1.0))?;
+        let local = self
+            .mesh
+            .positions
+            .iter()
+            .enumerate()
+            .filter(|(i, p)| {
+                component[*i]
+                    && (**p - centroid).dot(refined).abs() < 0.5
+                    && (**p - centroid).cross(refined).length() <= 8.0
+                    && !self.adjacency.is_boundary(*i as u32)
+            })
+            .map(|(i, _)| i as u32);
+        let cost = self.local_cost(local);
+        self.connect(&second, &cost)
+    }
+
+    fn sector_ridges(
+        &self,
+        center: DVec3,
+        axis: DVec3,
+        component: &[bool],
+        band: Option<f64>,
+    ) -> Result<Vec<u32>, DesignError> {
         let u = axis.any_orthonormal_vector();
         let v = axis.cross(u);
-        let mut sectors: [Option<(u32, f64)>; 36] = [None; 36];
+        // The scan's axial extent gives a conservative window, leaving its base
+        // out; long dies may require the full 12 mm search.
+        let extent = self
+            .mesh
+            .positions
+            .iter()
+            .enumerate()
+            .filter(|(i, p)| component[*i] && (**p - center).cross(axis).length() < 8.0)
+            .map(|(_, p)| (center - *p).dot(axis))
+            .fold(0.0, f64::max);
+        let depth_limit = (0.75 * extent).clamp(6.0, 12.0);
+        let mut sectors: [Vec<(u32, f64, f64)>; 36] = std::array::from_fn(|_| Vec::new());
         for (i, &point) in self.mesh.positions.iter().enumerate() {
+            if !component[i] || self.adjacency.is_boundary(i as u32) {
+                continue;
+            }
             let d = point - center;
             let depth = -d.dot(axis);
             let radius = d.cross(axis).length();
-            if !(0.3..=6.0).contains(&depth) || !(0.5..=8.0).contains(&radius) {
-                continue;
-            }
-            let score = self.curvature[i].k1;
-            if score <= 0.0 || self.adjacency.is_boundary(i as u32) {
+            let axial_ok = band.map_or((0.3..=depth_limit).contains(&depth), |b| depth.abs() <= b);
+            if !axial_ok || !(0.5..=8.0).contains(&radius) || self.ridge_strength[i] <= 0.0 {
                 continue;
             }
             let angle = d.dot(v).atan2(d.dot(u)).rem_euclid(TAU);
             let sector = ((angle / TAU * 36.0) as usize).min(35);
-            if sectors[sector].is_none_or(|(old, _)| score > self.curvature[old as usize].k1) {
-                sectors[sector] = Some((i as u32, radius));
+            sectors[sector].push((i as u32, radius, depth));
+        }
+        let mut winners = Vec::new();
+        for sector in &mut sectors {
+            let strongest = sector
+                .iter()
+                .map(|&(i, _, _)| self.ridge_strength[i as usize])
+                .fold(0.0, f64::max);
+            sector.retain(|&(i, _, _)| self.ridge_strength[i as usize] >= 0.5 * strongest);
+            sector.sort_by(|a, b| a.2.total_cmp(&b.2));
+            // Adjacent samples above half-height form one ridge, not separate
+            // candidates. Use its peak; taking its apical flank biases the line.
+            let mut groups: Vec<(u32, f64, f64)> = Vec::new();
+            let mut last = f64::NEG_INFINITY;
+            for &candidate in sector.iter() {
+                if candidate.2 - last > 0.35 {
+                    groups.push(candidate);
+                } else if let Some(best) = groups.last_mut() {
+                    if self.ridge_strength[candidate.0 as usize]
+                        > self.ridge_strength[best.0 as usize]
+                    {
+                        *best = candidate;
+                    }
+                }
+                last = candidate.2;
+            }
+            if let Some(&winner) = groups.last() {
+                winners.push(winner);
             }
         }
-        let mut radii: Vec<_> = sectors.iter().flatten().map(|&(_, r)| r).collect();
-        if radii.len() < 27 {
+        if winners.len() < 27 {
             return Err(DesignError::InvalidMargin);
         }
-        radii.sort_by(f64::total_cmp);
-        let median = radii[radii.len() / 2];
-        let waypoints: Vec<_> = sectors
-            .into_iter()
-            .flatten()
-            .filter(|&(_, r)| (r - median).abs() <= median * 0.25)
-            .map(|(i, _)| i)
-            .collect();
-        if waypoints.len() < 27 {
+        let median = |mut values: Vec<f64>| {
+            values.sort_by(f64::total_cmp);
+            values[values.len() / 2]
+        };
+        let radius = median(winners.iter().map(|p| p.1).collect());
+        let depth = median(winners.iter().map(|p| p.2).collect());
+        // First-pass tolerances admit an offset seed and a tilted axis. The
+        // second pass is centred on the margin itself and is deliberately tight.
+        let radial_tolerance = if band.is_some() {
+            0.25 * radius
+        } else {
+            0.85 * radius
+        };
+        let axial_tolerance = if band.is_some() { 0.5 } else { 0.75 * radius };
+        winners.retain(|p| {
+            (p.1 - radius).abs() <= radial_tolerance && (p.2 - depth).abs() <= axial_tolerance
+        });
+        if winners.len() < 27 {
             return Err(DesignError::InvalidMargin);
         }
-        self.connect(&waypoints)
+        Ok(winners.into_iter().map(|p| p.0).collect())
     }
 
-    /// Triangles on the seed side of the vertex barrier. Invalid loops or seeds
+    /// Triangles on the seed side of the closed edge barrier. Invalid loops or seeds
     /// on the barrier return an empty region. The seed must be inside the prep.
     pub fn region(&self, margin: &Margin, seed: DVec3) -> Vec<u32> {
         let Ok(seed) = self.snap(seed) else {
@@ -233,9 +439,64 @@ impl MarginTracer {
         {
             return Vec::new();
         }
-        inside_closed_path(&self.mesh, &self.adjacency, &margin.vertices, seed)
-            .map(|inside| region_triangles(&self.mesh, &inside))
-            .unwrap_or_default()
+        use std::collections::{HashMap, HashSet};
+        let unique: HashSet<_> = margin.vertices.iter().copied().collect();
+        if unique.len() != margin.vertices.len() {
+            return Vec::new();
+        }
+        let key = |a: u32, b: u32| (a.min(b), a.max(b));
+        let barrier: HashSet<_> = (0..margin.vertices.len())
+            .map(|i| {
+                key(
+                    margin.vertices[i],
+                    margin.vertices[(i + 1) % margin.vertices.len()],
+                )
+            })
+            .collect();
+        let mut edges = HashMap::<(u32, u32), Vec<usize>>::new();
+        for (i, t) in self.mesh.triangles.iter().enumerate() {
+            for j in 0..3 {
+                edges.entry(key(t[j], t[(j + 1) % 3])).or_default().push(i);
+            }
+        }
+        if edges.values().any(|faces| faces.len() > 2) {
+            return Vec::new();
+        }
+        let Some(start) = self.mesh.triangles.iter().position(|t| t.contains(&seed)) else {
+            return Vec::new();
+        };
+        // Flood faces across NON-LOOP edges. This also classifies triangles with
+        // three barrier corners by their actual side, including zig-zag ears.
+        let mut inside = vec![false; self.mesh.triangles.len()];
+        let mut stack = vec![start];
+        inside[start] = true;
+        while let Some(i) = stack.pop() {
+            let t = self.mesh.triangles[i];
+            for j in 0..3 {
+                let edge = key(t[j], t[(j + 1) % 3]);
+                if barrier.contains(&edge) {
+                    continue;
+                }
+                for &next in &edges[&edge] {
+                    if !inside[next] {
+                        inside[next] = true;
+                        stack.push(next);
+                    }
+                }
+            }
+        }
+        if !barrier.iter().all(|edge| {
+            let faces = &edges[edge];
+            faces.len() == 2 && inside[faces[0]] != inside[faces[1]]
+        }) {
+            return Vec::new();
+        }
+        inside
+            .iter()
+            .enumerate()
+            .filter(|(_, yes)| **yes)
+            .map(|(i, _)| i as u32)
+            .collect()
     }
 }
 
@@ -331,6 +592,252 @@ mod tests {
         (0..count)
             .map(|k| margin[k * n / count] + rng.unit_vec3() * (0.3 * rng.unit()))
             .collect()
+    }
+
+    fn hausdorff(a: &[DVec3], b: &[DVec3]) -> f64 {
+        // Sample segment interiors too, in full 3D after an oblique rotation.
+        let samples = |p: &[DVec3]| -> Vec<DVec3> {
+            (0..p.len())
+                .flat_map(|i| [p[i], p[i].lerp(p[(i + 1) % p.len()], 0.5)])
+                .collect()
+        };
+        distance_to_curve(&samples(a), b).max(distance_to_curve(&samples(b), a))
+    }
+
+    fn check_proposal(p: ToothParams, tilt: f64, offset: f64, allow_error: bool) {
+        let clean = prepared_tooth(&ToothParams {
+            noise_mm: 0.0,
+            ..p.clone()
+        })
+        .unwrap();
+        let die = prepared_tooth(&p).unwrap();
+        let rotation = glam::DQuat::from_axis_angle(DVec3::new(1.0, 2.0, 3.0).normalize(), 0.71);
+        let mut mesh = die.mesh;
+        for v in &mut mesh.positions {
+            *v = rotation * *v;
+        }
+        let expected: Vec<_> = clean.margin.iter().map(|v| rotation * *v).collect();
+        let tracer = MarginTracer::new(Arc::new(mesh)).unwrap();
+        let seed =
+            rotation * (die.axis * ((12.0 + p.extra_wall) * p.height_scale) + DVec3::X * offset);
+        let axis = rotation * (glam::DQuat::from_rotation_y(tilt.to_radians()) * die.axis);
+        let result = tracer.propose(seed, axis);
+        if allow_error && result == Err(DesignError::InvalidMargin) {
+            eprintln!("tilt {tilt}: clear InvalidMargin rejection");
+            return;
+        }
+        assert!(
+            result.is_ok(),
+            "proposal {p:?}, tilt {tilt}, offset {offset}: {result:?}"
+        );
+        let error = hausdorff(&expected, &result.unwrap().points);
+        eprintln!("proposal {p:?}, tilt {tilt}, offset {offset}: Hausdorff {error:.6} mm");
+        assert!(
+            error <= 0.05,
+            "proposal Hausdorff {error} mm; {p:?}, tilt {tilt}, offset {offset}"
+        );
+    }
+
+    #[test]
+    fn regression_tall_prep_selects_apical_ridge() {
+        check_proposal(
+            ToothParams {
+                height_scale: 1.6,
+                ..Default::default()
+            },
+            0.0,
+            0.0,
+            false,
+        );
+        check_proposal(
+            ToothParams {
+                extra_wall: 4.0,
+                ..Default::default()
+            },
+            0.0,
+            0.0,
+            false,
+        );
+    }
+
+    #[test]
+    fn regression_rounded_noisy_margin() {
+        for finish in [FinishLine::Shoulder, FinishLine::Chamfer] {
+            for smooth_passes in [3, 8] {
+                for noise_mm in [0.015, 0.02] {
+                    check_proposal(
+                        ToothParams {
+                            finish,
+                            smooth_passes,
+                            noise_mm,
+                            ..Default::default()
+                        },
+                        0.0,
+                        0.0,
+                        false,
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn regression_tilted_axis_and_offset_seed() {
+        check_proposal(ToothParams::default(), 20.0, 0.0, false);
+        check_proposal(ToothParams::default(), 30.0, 0.0, true);
+        check_proposal(ToothParams::default(), 0.0, 2.0, false);
+    }
+
+    #[test]
+    fn regression_gingiva_and_neighbour() {
+        check_proposal(
+            ToothParams {
+                gingiva: true,
+                neighbour_gap: 0.4,
+                ..Default::default()
+            },
+            0.0,
+            0.0,
+            false,
+        );
+    }
+
+    #[test]
+    fn regression_trace_uses_local_ridge_strength() {
+        for finish in [FinishLine::Shoulder, FinishLine::Chamfer] {
+            let p = ToothParams {
+                finish,
+                smooth_passes: 8,
+                noise_mm: 0.02,
+                tilt_deg: 23.0,
+                ..Default::default()
+            };
+            let clean = prepared_tooth(&ToothParams {
+                noise_mm: 0.0,
+                ..p.clone()
+            })
+            .unwrap();
+            let die = prepared_tooth(&p).unwrap();
+            let tracer = MarginTracer::new(Arc::new(die.mesh)).unwrap();
+            let clicks: Vec<_> = clean
+                .margin
+                .iter()
+                .step_by(p.segments / 4)
+                .copied()
+                .collect();
+            let margin = tracer.trace(&clicks).unwrap();
+            let error = hausdorff(&clean.margin, &margin.points);
+            eprintln!("trace {finish:?}: Hausdorff {error:.6} mm");
+            assert!(error <= 0.05, "trace Hausdorff {error}");
+            // A remote, extremely sharp component must not set ridge sharpness.
+            let mut distant = TriMesh::uv_sphere(0.001, 16, 10);
+            for v in &mut distant.positions {
+                *v += DVec3::splat(100.0);
+            }
+            let mut augmented = (*tracer.mesh).clone();
+            augmented.merge(&distant);
+            let other = MarginTracer::new(Arc::new(augmented)).unwrap();
+            let other_margin = other.trace(&clicks).unwrap();
+            assert!(hausdorff(&margin.points, &other_margin.points) < 1e-6);
+        }
+    }
+
+    #[test]
+    fn regression_click_capture_ignores_boundary() {
+        let mut mesh = TriMesh::default();
+        mesh.positions.push(DVec3::ZERO);
+        for i in 0..16 {
+            let angle = TAU * i as f64 / 16.0;
+            mesh.positions
+                .push(DVec3::new(angle.cos(), angle.sin(), 0.0));
+            mesh.triangles.push([0, i + 1, (i + 1) % 16 + 1]);
+        }
+        let clicks: Vec<_> = [1, 5, 9, 13].map(|i| mesh.positions[i]).to_vec();
+        let tracer = MarginTracer::new(Arc::new(mesh)).unwrap();
+        if let Ok(margin) = tracer.trace(&clicks) {
+            assert!(
+                margin
+                    .vertices
+                    .iter()
+                    .all(|&i| !tracer.adjacency.is_boundary(i)),
+                "captured scan boundary"
+            );
+        }
+    }
+
+    #[test]
+    fn regression_zigzag_region_excludes_outside_barrier_triangle() {
+        let rotation = glam::DQuat::from_axis_angle(DVec3::new(1.0, 2.0, 0.5).normalize(), 1.2);
+        let mut rng = Lcg::new(781);
+        let positions = (0..49)
+            .map(|i| {
+                rotation
+                    * DVec3::new(
+                        (i % 7) as f64,
+                        (i / 7) as f64,
+                        0.02 * (2.0 * rng.unit() - 1.0),
+                    )
+            })
+            .collect();
+        let mut triangles = Vec::new();
+        for y in 0..6 {
+            for x in 0..6 {
+                let a = y * 7 + x;
+                triangles.extend([[a, a + 1, a + 8], [a, a + 8, a + 7]]);
+            }
+        }
+        let mesh = TriMesh::new(positions, triangles);
+        let outside = mesh
+            .triangles
+            .iter()
+            .position(|t| *t == [8, 16, 15])
+            .unwrap() as u32;
+        let tracer = MarginTracer::new(Arc::new(mesh)).unwrap();
+        let margin = Margin {
+            points: vec![],
+            vertices: vec![
+                8, 9, 10, 11, 12, 19, 26, 33, 40, 39, 38, 37, 36, 29, 22, 15, 16,
+            ],
+        };
+        let region = tracer.region(&margin, rotation * DVec3::new(3.0, 3.0, 0.0));
+        assert!(!region.is_empty());
+        assert!(
+            !region.contains(&outside),
+            "outside triangle {outside} has three barrier corners"
+        );
+        let complement = tracer.region(&margin, DVec3::ZERO);
+        assert!(complement.contains(&outside));
+        assert_eq!(region.len() + complement.len(), tracer.mesh.triangles.len());
+        let loop_points: Vec<_> = margin
+            .vertices
+            .iter()
+            .map(|&i| tracer.mesh.positions[i as usize])
+            .collect();
+        // Check face interiors and non-barrier edge midpoints, not just corners.
+        for (i, _) in tracer.mesh.triangles.iter().enumerate() {
+            let [a, b, c] = tracer.mesh.triangle(i);
+            for p in [
+                (a + b + c) / 3.0,
+                (a + b) / 2.0,
+                (b + c) / 2.0,
+                (c + a) / 2.0,
+            ] {
+                if distance_to_curve(&[p], &loop_points) < 1e-9 {
+                    continue;
+                }
+                let local = rotation.inverse() * p;
+                let expected = local.x > 1.0
+                    && local.x < 5.0
+                    && local.y > 1.0
+                    && local.y < 5.0
+                    && !(local.x < 2.0 && local.y < 2.0 && local.y > local.x);
+                assert_eq!(
+                    region.contains(&(i as u32)),
+                    expected,
+                    "face {i}, sample {p:?}"
+                );
+            }
+        }
     }
 
     #[test]

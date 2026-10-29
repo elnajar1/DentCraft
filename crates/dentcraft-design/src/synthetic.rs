@@ -1,6 +1,6 @@
 //! Independently generated demonstration dies; no scans or external tooth libraries.
 
-use std::f64::consts::TAU;
+use std::f64::consts::{PI, TAU};
 
 use dentcraft_mesh::TriMesh;
 use glam::{DQuat, DVec3};
@@ -260,13 +260,31 @@ pub enum FinishLine {
     Chamfer,
 }
 
-/// Sampling and orientation of a realistic rotational preparation, in millimetres.
+/// Sampling, finishing and scan environment of a realistic rotational preparation.
 #[derive(Clone, Debug)]
 pub struct ToothParams {
     pub finish: FinishLine,
     pub segments: usize,
     pub wall_steps: usize,
     pub tilt_deg: f64,
+    /// Vertical stretch of the whole die: the margin moves to `8 · height_scale` and
+    /// the occlusal top to `12 · height_scale` along the axis; radii stay unchanged.
+    /// A stretched finish line is a duller crease, like a tall preparation.
+    pub height_scale: f64,
+    /// Extra axial wall height in mm (a tall prep of `3.3 + extra_wall` mm), with the
+    /// margin still at height 8 and the finish line unstretched.
+    pub extra_wall: f64,
+    /// Laplacian smoothing passes over the whole die: a rounded finish-line crease.
+    pub smooth_passes: u32,
+    /// Amplitude in mm of deterministic normal noise, added after smoothing.
+    pub noise_mm: f64,
+    /// Replace the bare root and plate with a gingiva cuff around the root below the
+    /// margin: a rounded cuff crest 1.6 mm below the margin, a horizontal slab out to
+    /// radius 9.5 and an outer wall down to the base plane at height 0.3.
+    pub gingiva: bool,
+    /// Clear gap in mm to a neighbouring unprepared tooth centred mesially at height
+    /// 6.5; `0` adds no neighbour. The neighbour is a separate component.
+    pub neighbour_gap: f64,
 }
 
 impl Default for ToothParams {
@@ -276,6 +294,12 @@ impl Default for ToothParams {
             segments: 256,
             wall_steps: 64,
             tilt_deg: 0.0,
+            height_scale: 1.0,
+            extra_wall: 0.0,
+            smooth_passes: 0,
+            noise_mm: 0.0,
+            gingiva: false,
+            neighbour_gap: 0.0,
         }
     }
 }
@@ -288,32 +312,59 @@ impl Default for ToothParams {
 /// disc at height 12 mm. The margin is the convex outer edge of the finish line:
 /// the ring at radius 4 mm, height 8 mm, returned exactly (rotated by `tilt_deg`
 /// about X). The prep region contains every triangle at and above the margin ring
-/// (finish line, wall, occlusal cap) and nothing of the plate or root. Invalid
-/// sampling or tilt returns [`DesignError::InvalidParameter`].
+/// (finish line, wall, occlusal cap) and nothing of the plate or root. With
+/// `gingiva` the plate and bare root are replaced by a cuff, slab and outer wall;
+/// with `neighbour_gap` a separate ellipsoid tooth is merged beside the root. The
+/// mesh is closed, and [`ToothParams::smooth_passes`], [`ToothParams::noise_mm`]
+/// and [`ToothParams::height_scale`] are applied before the tilt, so `margin` holds
+/// the processed ring positions. Invalid sampling or parameters returns
+/// [`DesignError::InvalidParameter`].
 pub fn prepared_tooth(p: &ToothParams) -> Result<PreparedStump, DesignError> {
     if p.segments < 96
         || p.segments % 8 != 0
         || p.wall_steps < 2
         || !p.tilt_deg.is_finite()
+        || !(0.5..=3.0).contains(&p.height_scale)
+        || !(0.0..=6.0).contains(&p.extra_wall)
+        || p.smooth_passes > 16
+        || !(0.0..=0.05).contains(&p.noise_mm)
+        || !(0.0..=2.0).contains(&p.neighbour_gap)
         || p.segments
-            .checked_mul(p.wall_steps.saturating_add(160))
+            .checked_mul(p.wall_steps.saturating_add(200))
             .is_none_or(|n| n > 2_000_000)
     {
         return Err(DesignError::InvalidParameter("tooth sampling or tilt"));
     }
     let n = p.segments;
+    let root_radius = |z: f64| 4.0 + (8.0 - z) * 3.0_f64.to_radians().tan();
     let mut mesh = TriMesh::default();
-    add_ring(&mut mesh, n, 6.0, 0.0, true);
-    add_ring(&mut mesh, n, 6.0, 0.3, true);
-    for i in 0..=80 {
-        let z = 0.5 + 7.5 * i as f64 / 80.0;
-        add_ring(
-            &mut mesh,
-            n,
-            4.0 + (8.0 - z) * 3.0_f64.to_radians().tan(),
-            z,
-            false,
-        );
+    if p.gingiva {
+        add_ring(&mut mesh, n, 9.5, 0.3, false);
+        for i in 1..=6 {
+            add_ring(&mut mesh, n, 9.5, 0.3 + 5.7 * i as f64 / 6.0, false);
+        }
+        let foot = root_radius(6.4);
+        for i in (0..=8).rev() {
+            let a = std::f64::consts::FRAC_PI_2 * i as f64 / 8.0;
+            add_ring(
+                &mut mesh,
+                n,
+                foot + (4.5 - foot) * (1.0 - a.cos()),
+                6.4 - 0.4 * a.sin(),
+                false,
+            );
+        }
+        for i in 1..=24 {
+            let z = 6.4 + 1.6 * i as f64 / 24.0;
+            add_ring(&mut mesh, n, root_radius(z), z, false);
+        }
+    } else {
+        add_ring(&mut mesh, n, 6.0, 0.0, true);
+        add_ring(&mut mesh, n, 6.0, 0.3, true);
+        for i in 0..=80 {
+            let z = 0.5 + 7.5 * i as f64 / 80.0;
+            add_ring(&mut mesh, n, root_radius(z), z, false);
+        }
     }
     let margin_start = mesh.positions.len() - n;
     let prep_start = mesh.triangles.len();
@@ -349,34 +400,72 @@ pub fn prepared_tooth(p: &ToothParams) -> Result<PreparedStump, DesignError> {
         }
     };
     let slope = 6.0_f64.to_radians().tan();
+    let shoulder_z = 11.5 + p.extra_wall;
+    let apex_z = 12.0 + p.extra_wall;
     for i in 1..=p.wall_steps {
-        let z = wall_z + (11.5 - wall_z) * i as f64 / p.wall_steps as f64;
+        let z = wall_z + (shoulder_z - wall_z) * i as f64 / p.wall_steps as f64;
         add_ring(&mut mesh, n, 3.1 - (z - wall_z) * slope, z, false);
     }
-    let r = 3.1 - (11.5 - wall_z) * slope;
+    let r = 3.1 - (shoulder_z - wall_z) * slope;
     for i in 1..=16 {
         let a = std::f64::consts::FRAC_PI_2 * i as f64 / 16.0;
         add_ring(
             &mut mesh,
             n,
             r - 0.5 * (1.0 - a.cos()),
-            11.5 + 0.5 * a.sin(),
+            shoulder_z + 0.5 * a.sin(),
             false,
         );
     }
     let last = mesh.positions.len() - n;
     let top = mesh.positions.len() as u32;
-    mesh.positions.push(DVec3::Z * 12.0);
+    mesh.positions.push(DVec3::Z * apex_z);
     for i in 0..n {
         mesh.triangles
             .push([top, (last + i) as u32, (last + (i + 1) % n) as u32]);
     }
     let region = (prep_start as u32..mesh.triangles.len() as u32).collect();
+    // Base cap: a fan to the plate ring at height 0, or to the outer wall's foot.
     let bottom = mesh.positions.len() as u32;
-    mesh.positions.push(DVec3::ZERO);
-    for i in 0..n {
-        mesh.triangles
-            .push([bottom, ((i + 1) % n) as u32, i as u32]);
+    if p.gingiva {
+        mesh.positions.push(DVec3::new(0.0, 0.0, 0.3));
+        for i in 0..n {
+            mesh.triangles
+                .push([bottom, ((i + 1) % n) as u32, i as u32]);
+        }
+    } else {
+        mesh.positions.push(DVec3::ZERO);
+        for i in 0..n {
+            mesh.triangles
+                .push([bottom, ((i + 1) % n) as u32, i as u32]);
+        }
+    }
+    if p.neighbour_gap > 0.0 {
+        let distance = root_radius(6.5) + p.neighbour_gap + 3.5;
+        let mut neighbour = TriMesh::uv_sphere(1.0, 24, 12);
+        for q in &mut neighbour.positions {
+            *q = DVec3::new(q.x * 3.5, q.y * 3.5, q.z * 5.5) + DVec3::new(0.0, distance, 6.5);
+        }
+        mesh.merge(&neighbour);
+    }
+    if p.smooth_passes > 0 {
+        mesh.laplacian_smooth(p.smooth_passes, 0.5, None, true);
+    }
+    if p.height_scale != 1.0 {
+        for v in &mut mesh.positions {
+            *v = DVec3::new(v.x, v.y, v.z * p.height_scale);
+        }
+    }
+    if p.noise_mm > 0.0 {
+        let normals = mesh.vertex_normals();
+        let mut state = 0x5EED_51D0_5EED_51D0_u64;
+        for (v, normal) in mesh.positions.iter_mut().zip(&normals) {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let unit = ((state >> 11) as f64) / ((1_u64 << 53) as f64);
+            *v += normal * ((2.0 * unit - 1.0) * p.noise_mm);
+        }
     }
     let rotation = DQuat::from_rotation_x(p.tilt_deg.to_radians());
     for v in &mut mesh.positions {
@@ -389,6 +478,210 @@ pub fn prepared_tooth(p: &ToothParams) -> Result<PreparedStump, DesignError> {
         region,
         axis: rotation * DVec3::Z,
     })
+}
+
+/// A synthetic full arch: a horseshoe gingiva band with 14 ellipsoid teeth in
+/// mirror-symmetric stations. The open variant is the occlusal-side scan surface (the
+/// band's underside is missing, its mean normal points up); the closed variant is a
+/// stone model: the same band as a closed tube over a solid horseshoe base with a flat
+/// bottom, teeth sunk into it. Components overlap geometrically, like a merged scan;
+/// each is oriented outward.
+///
+/// All heights are scaled by `height_scale` (taller gingiva and teeth), and with
+/// `dense_molar` the most posterior right molar is meshed at higher density instead of
+/// being re-meshed coarsely, the way a re-scanned tooth appears in a merged model.
+fn build_arch(closed: bool, dense_molar: bool, height_scale: f64) -> TriMesh {
+    let mut mesh = TriMesh::default();
+    const STATIONS: usize = 40;
+    let phi = |k: usize| (-25.0 + 230.0 * k as f64 / (STATIONS - 1) as f64).to_radians();
+    let midline = |a: f64| DVec3::new(22.0 * a.cos(), 30.0 * a.sin(), 0.0);
+    let radial = |a: f64| DVec3::new(a.cos(), a.sin(), 0.0);
+    // Gingiva band: rings of cross-sections along the midline. The open variant keeps
+    // the upper half arc only (the scanned side); the closed variant uses the full
+    // ellipse and caps the two arm ends.
+    let sections: usize = if closed { 16 } else { 12 };
+    let cross = |j: usize| {
+        if closed {
+            let psi = TAU * j as f64 / sections as f64;
+            (4.0 * psi.cos(), 3.0 * psi.sin())
+        } else {
+            let psi = -std::f64::consts::FRAC_PI_2 + PI * j as f64 / (sections - 1) as f64;
+            (4.0 * psi.sin(), 3.0 * psi.cos())
+        }
+    };
+    let mut ring_start = Vec::with_capacity(STATIONS);
+    for k in 0..STATIONS {
+        let a = phi(k);
+        let center = midline(a);
+        let n = radial(a);
+        ring_start.push(mesh.positions.len());
+        for j in 0..sections {
+            let (along, up) = cross(j);
+            mesh.positions.push(center + n * along + DVec3::Z * up);
+        }
+    }
+    for k in 0..STATIONS - 1 {
+        for j in 0..sections {
+            let next = (j + 1) % sections;
+            if !closed && next == 0 {
+                continue;
+            }
+            let a = (ring_start[k] + j) as u32;
+            let b = (ring_start[k] + next) as u32;
+            let c = (ring_start[k + 1] + next) as u32;
+            let d = (ring_start[k + 1] + j) as u32;
+            mesh.triangles.extend([[a, b, c], [a, c, d]]);
+        }
+    }
+    if closed {
+        // Cap the tube's two arm ends with fans.
+        for k in [0, STATIONS - 1] {
+            let center_index = mesh.positions.len() as u32;
+            mesh.positions.push(midline(phi(k)));
+            for j in 0..sections {
+                mesh.triangles.push([
+                    center_index,
+                    (ring_start[k] + (j + 1) % sections) as u32,
+                    (ring_start[k] + j) as u32,
+                ]);
+            }
+        }
+        // Solid horseshoe base: prism over the annular footprint between an outer
+        // and inner half-ellipse, from z = -7 up to z = -1, so the band (bottom at
+        // z = -3) is buried in it. Flat bottom, curved top edges: a stone model base.
+        let outer = |a: f64| (27.5 * a.cos(), 35.5 * a.sin());
+        let inner = |a: f64| (16.5 * a.cos(), 24.5 * a.sin());
+        let boundary: Vec<(f64, f64)> = (0..STATIONS)
+            .map(|k| outer(phi(k)))
+            .chain((0..STATIONS).rev().map(|k| inner(phi(k))))
+            .collect();
+        let m = boundary.len();
+        let top_start = mesh.positions.len();
+        for p in &boundary {
+            mesh.positions.push(DVec3::new(p.0, p.1, -1.0));
+        }
+        let bottom_start = mesh.positions.len();
+        for p in &boundary {
+            mesh.positions.push(DVec3::new(p.0, p.1, -7.0));
+        }
+        for i in 0..m {
+            let a = (top_start + i) as u32;
+            let b = (top_start + (i + 1) % m) as u32;
+            let c = (bottom_start + (i + 1) % m) as u32;
+            let d = (bottom_start + i) as u32;
+            mesh.triangles.extend([[a, b, c], [a, c, d]]);
+        }
+        for i in 0..STATIONS - 1 {
+            let o0 = (top_start + i) as u32;
+            let o1 = (top_start + i + 1) as u32;
+            let i1 = (top_start + m - 2 - i) as u32;
+            let i0 = (top_start + m - 1 - i) as u32;
+            // Top cap: normal +Z; bottom cap: flipped.
+            mesh.triangles.extend([[o0, i0, i1], [o0, i1, o1]]);
+            let b_o0 = (bottom_start + i) as u32;
+            let b_o1 = (bottom_start + i + 1) as u32;
+            let b_i1 = (bottom_start + m - 2 - i) as u32;
+            let b_i0 = (bottom_start + m - 1 - i) as u32;
+            mesh.triangles
+                .extend([[b_o0, b_i1, b_i0], [b_o0, b_o1, b_i1]]);
+        }
+    }
+    // Teeth: 14 ellipsoids in mirror-symmetric stations, sunk into the band. The
+    // dense molar keeps its shape but is sampled at roughly 4x the vertex density.
+    for k in 0..7 {
+        for sign in [1.0, -1.0] {
+            let a = (90.0 + sign * (8.0 + 16.0 * k as f64)).to_radians();
+            let center = midline(a) + DVec3::Z * if closed { 0.0 } else { 1.0 };
+            let dense = dense_molar && k == 6 && sign > 0.0;
+            let mut tooth = if dense {
+                TriMesh::uv_sphere(1.0, 32, 24)
+            } else {
+                TriMesh::uv_sphere(1.0, 16, 10)
+            };
+            for p in &mut tooth.positions {
+                *p = DVec3::new(p.x * 3.5, p.y * 3.5, p.z * 5.5) + center;
+            }
+            mesh.merge(&tooth);
+        }
+    }
+    orient_components_outward(&mut mesh);
+    if height_scale != 1.0 {
+        for p in &mut mesh.positions {
+            *p = DVec3::new(p.x, p.y, p.z * height_scale);
+        }
+    }
+    mesh
+}
+
+/// The full arch of [`build_arch`] at unit height.
+pub fn arch(closed: bool) -> TriMesh {
+    build_arch(closed, false, 1.0)
+}
+
+/// The open arch with every height scaled by `height_scale`.
+pub fn open_arch_scaled(height_scale: f64) -> TriMesh {
+    build_arch(false, false, height_scale)
+}
+
+/// The open arch, heights scaled by `height_scale`, cut to the triangles fully beyond
+/// `keep_above` on X: a half arch (`keep_above` 0) or a quadrant (`keep_above` 8).
+pub fn open_arch_cut(height_scale: f64, keep_above: f64) -> TriMesh {
+    let mut mesh = build_arch(false, false, height_scale);
+    mesh.triangles
+        .retain(|t| t.iter().all(|&v| mesh.positions[v as usize].x > keep_above));
+    let mut remap = vec![u32::MAX; mesh.positions.len()];
+    let mut positions = Vec::new();
+    for t in &mut mesh.triangles {
+        for v in t {
+            let i = *v as usize;
+            if remap[i] == u32::MAX {
+                remap[i] = positions.len() as u32;
+                positions.push(mesh.positions[i]);
+            }
+            *v = remap[i];
+        }
+    }
+    mesh.positions = positions;
+    mesh
+}
+
+/// The open arch with the most posterior right molar meshed at higher density.
+pub fn open_arch_dense_molar() -> TriMesh {
+    build_arch(false, true, 1.0)
+}
+
+/// The open arch with every triangle's winding flipped, as an incorrectly
+/// re-oriented scan would be.
+pub fn inverted_arch() -> TriMesh {
+    let mut mesh = build_arch(false, false, 1.0);
+    for t in &mut mesh.triangles {
+        t.swap(1, 2);
+    }
+    mesh
+}
+
+/// Flip any component whose triangles point inward. For a closed component the sign
+/// of sum (centroid - component centroid) · normal is exact; for the open band it is
+/// strongly positive when outward.
+fn orient_components_outward(mesh: &mut TriMesh) {
+    for component in mesh.connected_components() {
+        let mut centroid_sum = DVec3::ZERO;
+        for &t in &component {
+            let [a, b, c] = mesh.triangles[t as usize].map(|v| mesh.positions[v as usize]);
+            centroid_sum += a + b + c;
+        }
+        let center = centroid_sum / (3.0 * component.len() as f64);
+        let mut signed = 0.0;
+        for &t in &component {
+            let [a, b, c] = mesh.triangles[t as usize].map(|v| mesh.positions[v as usize]);
+            signed += (b - a).cross(c - a).dot((a + b + c) / 3.0 - center);
+        }
+        if signed < 0.0 {
+            for &t in &component {
+                mesh.triangles[t as usize].swap(1, 2);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -509,5 +802,99 @@ mod tests {
             })
             .is_err()
         );
+        for bad in [
+            ToothParams {
+                height_scale: 0.4,
+                ..Default::default()
+            },
+            ToothParams {
+                extra_wall: 7.0,
+                ..Default::default()
+            },
+            ToothParams {
+                smooth_passes: 17,
+                ..Default::default()
+            },
+            ToothParams {
+                noise_mm: 0.06,
+                ..Default::default()
+            },
+            ToothParams {
+                neighbour_gap: 2.5,
+                ..Default::default()
+            },
+        ] {
+            assert!(prepared_tooth(&bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn tall_scaled_gingiva_and_neighbour_variants_stay_closed() {
+        let variants = [
+            ToothParams {
+                height_scale: 1.6,
+                ..Default::default()
+            },
+            ToothParams {
+                extra_wall: 4.0,
+                ..Default::default()
+            },
+            ToothParams {
+                smooth_passes: 8,
+                noise_mm: 0.02,
+                ..Default::default()
+            },
+            ToothParams {
+                gingiva: true,
+                ..Default::default()
+            },
+            ToothParams {
+                neighbour_gap: 0.4,
+                ..Default::default()
+            },
+        ];
+        for p in &variants {
+            let die = prepared_tooth(p).unwrap();
+            assert!(die.mesh.is_closed(), "{p:?}");
+            assert!(die.mesh.is_consistently_oriented(), "{p:?}");
+            let components = die.mesh.connected_components().len();
+            assert_eq!(components, usize::from(p.neighbour_gap > 0.0) + 1, "{p:?}");
+            assert_eq!(die.margin.len(), p.segments, "{p:?}");
+        }
+        // The scaled die keeps radius 4 and moves the margin to 12.8.
+        let scaled = prepared_tooth(&ToothParams {
+            height_scale: 1.6,
+            ..Default::default()
+        })
+        .unwrap();
+        for &point in &scaled.margin {
+            assert!((point.z - 12.8).abs() < 1e-9);
+            assert!((point.truncate().length() - 4.0).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn arch_variants_keep_expected_extent() {
+        let full = arch(false);
+        assert!(full.triangles.len() > 4000);
+        let quadrant = open_arch_cut(1.3, 8.0);
+        assert!(
+            quadrant.triangles.len() > 500,
+            "{}",
+            quadrant.triangles.len()
+        );
+        assert!(
+            quadrant
+                .triangles
+                .iter()
+                .all(|t| { t.iter().all(|&v| quadrant.positions[v as usize].x > 8.0) })
+        );
+        let half = open_arch_cut(1.6, 0.0);
+        assert!(half.triangles.len() > quadrant.triangles.len());
+        // The dense molar adds many vertices without changing the occupied footprint.
+        let dense = open_arch_dense_molar();
+        assert_eq!(dense.positions.len() - full.positions.len(), 592);
+        let inverted = inverted_arch();
+        assert_eq!(inverted.triangles.len(), full.triangles.len());
     }
 }
