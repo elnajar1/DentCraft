@@ -13,26 +13,27 @@
 - [x] SolidCraft-style interface: ribbon, browser panels, light and dark themes
 - [x] CLI: mesh info and conversion, case plan
 
-## 0.2 — Preparation tools (in progress)
+## 0.2 — Preparation tools
 
-- [ ] Workspace switcher: Crown & Bridge now; Model Builder, Implant, Splint, Denture and Smile
+- [x] Workspace switcher: Crown & Bridge now; Model Builder, Implant, Splint, Denture and Smile
       Design planned
-- [ ] Viewer: colour maps, overlay lines and handles, transparency, section plane, picking
-- [ ] Mesh toolkit: curvature, smoothing, shortest paths, region growing, hole filling
-- [ ] Orientation: occlusal plane and midline, automatic and adjustable
-- [ ] Margin line: curvature-guided tracing, editing and automatic proposal
-- [ ] Insertion axis: automatic best axis and undercut map
-- [ ] Inner surface: cement gap, margin seal and undercut block-out
-- [ ] Undo and redo for every design step
+- [x] Viewer: colour maps, overlay lines and handles, transparency, section plane, picking
+- [x] Mesh toolkit: curvature, smoothing, shortest paths, region growing, hole filling
+- [x] Orientation: occlusal plane and midline, automatic and adjustable
+- [x] Margin line: curvature-guided tracing, editing and automatic proposal
+- [x] Insertion axis: automatic best axis and undercut map
+- [x] Inner surface: cement gap, margin seal and undercut block-out
+- [x] Undo and redo for every design step
 
-## 0.3 — Single crown, end to end
+## 0.3 — Single crown, end to end (in progress)
 
-- [ ] Anatomy from DentCraft's own parametric tooth library
+- [x] Anatomy from DentCraft's own parametric tooth library
 - [ ] Anatomy by mirroring the contralateral tooth or copying the pre-op scan
-- [ ] Fit to margin, contacts and antagonist, with minimum thickness
+- [x] Fit to the margin with minimum material thickness
+- [ ] Contacts with neighbours and occlusion with the antagonist
 - [ ] Sculpt brushes: add, remove, smooth, flatten, morph
 - [ ] Distance maps: contacts, occlusion and thickness
-- [ ] Watertight STL export per unit
+- [x] Watertight STL export per unit
 
 ## 0.4 — Bridges and every restoration type
 
