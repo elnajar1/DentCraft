@@ -1,5 +1,6 @@
 //! DentCraft desktop application.
 
+mod anatomy_step;
 mod app;
 mod args;
 mod axis_step;

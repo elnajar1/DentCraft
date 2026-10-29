@@ -11,6 +11,7 @@ use eframe::egui::{
     text::LayoutJob, vec2,
 };
 
+use crate::anatomy_step::ANATOMY;
 use crate::axis_step::AXIS;
 use crate::inner_step::INNER;
 use crate::margin_step::MARGIN;
@@ -95,6 +96,8 @@ pub enum Command {
     Axis,
     /// Open the Inner surface step, or leave its tool.
     Inner,
+    /// Open the Anatomy step, or leave its tool.
+    Anatomy,
 }
 
 /// Label of the command that completes the active step.
@@ -278,6 +281,15 @@ impl RibbonView<'_> {
                 .clicked()
             {
                 *command = Some(Command::Inner);
+            }
+            let planned = session.steps().iter().any(|s| s.id == StepId::Anatomy);
+            let on = self.active_tool == Some(ANATOMY);
+            if command_button(ui, Icon::Anatomy, "Anatomy", planned, on)
+                .on_hover_text("Place and shape the crown of the current tooth  (Esc leaves)")
+                .on_disabled_hover_text("The case has no Anatomy step")
+                .clicked()
+            {
+                *command = Some(Command::Anatomy);
             }
         });
     }

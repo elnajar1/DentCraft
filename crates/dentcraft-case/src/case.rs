@@ -426,6 +426,9 @@ mod tests {
         tooth.insertion_axis = Some(glam::DVec3::new(0.0, 0.1, 0.995));
         tooth.inner_surface.cement_gap = Some(0.07);
         tooth.inner_surface.seal_width = Some(0.8);
+        tooth.anatomy.cusp_height = 0.8;
+        tooth.anatomy.rotation_deg = 7.5;
+        tooth.anatomy.offset = [0.1, 0.0, -0.3];
         case.design
             .teeth
             .entry(t(16))

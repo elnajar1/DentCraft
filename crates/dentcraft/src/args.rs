@@ -87,6 +87,7 @@ pub enum StepArg {
     Margin,
     Axis,
     Inner,
+    Anatomy,
 }
 
 impl From<StepArg> for StepId {
@@ -97,6 +98,7 @@ impl From<StepArg> for StepId {
             StepArg::Margin => StepId::Margin,
             StepArg::Axis => StepId::InsertionAxis,
             StepArg::Inner => StepId::InnerSurface,
+            StepArg::Anatomy => StepId::Anatomy,
         }
     }
 }
@@ -401,6 +403,6 @@ mod tests {
         }
         assert!(Args::try_parse_from(["dentcraft", "--margin", "99@0,0,0"]).is_err());
         assert!(Args::try_parse_from(["dentcraft", "--tooth", "50"]).is_err());
-        assert!(Args::try_parse_from(["dentcraft", "--step", "anatomy"]).is_err());
+        assert!(Args::try_parse_from(["dentcraft", "--step", "sculpt"]).is_err());
     }
 }

@@ -103,6 +103,8 @@ pub struct Palette {
     pub viewport_bottom: Color32,
     /// Tint of the restoration's inner surface over the die.
     pub inner_surface: Color32,
+    /// The designed crown: a light tooth colour.
+    pub crown: Color32,
 }
 
 const fn rgb(r: u8, g: u8, b: u8) -> Color32 {
@@ -132,6 +134,7 @@ impl Palette {
         viewport_top: rgb(46, 52, 64),
         viewport_bottom: rgb(46, 52, 64),
         inner_surface: rgb(72, 200, 176),
+        crown: rgb(238, 230, 212),
     };
 
     pub const LIGHT: Palette = Palette {
@@ -156,6 +159,7 @@ impl Palette {
         viewport_top: rgb(240, 243, 247),
         viewport_bottom: rgb(203, 210, 221),
         inner_surface: rgb(18, 150, 128),
+        crown: rgb(236, 226, 204),
     };
 
     /// Background and back-face look of the 3D viewport.

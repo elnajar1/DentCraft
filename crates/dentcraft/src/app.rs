@@ -15,6 +15,7 @@ use eframe::egui::{
     Modifiers, RichText, Stroke, TextureHandle, TextureOptions, vec2,
 };
 
+use crate::anatomy_step::{self, ANATOMY, AnatomyStep};
 use crate::axis_step::{self, AXIS, AxisStep};
 use crate::browser::{self, SECTIONS_KEY, Section, Sections};
 use crate::chart::{self, ChartEdit};
@@ -128,9 +129,11 @@ pub struct DentCraftApp {
     axis: AxisStep,
     /// The Inner surface step's jobs, surface and section toggle.
     inner: InnerStep,
-    /// `--step inner`: the start went through the Insertion axis step and moves on once the
-    /// tooth has an axis.
-    pending_inner: bool,
+    /// The Anatomy step's jobs and crown.
+    anatomy: AnatomyStep,
+    /// `--step inner` or `--step anatomy`: the start went through the Insertion axis step and
+    /// moves on to this step once the tooth has an axis.
+    pending_inner: Option<StepId>,
     /// `--orient`, waiting for the scans to load.
     pending_orient: bool,
     /// Tooth the per-tooth step works on.
@@ -202,7 +205,8 @@ impl DentCraftApp {
                 inner.set_section(start.section);
                 inner
             },
-            pending_inner: false,
+            anatomy: AnatomyStep::new(Some(cc.egui_ctx.clone())),
+            pending_inner: None,
             pending_orient: start.orient,
             tooth: None,
             pending_step: start.step,
@@ -384,7 +388,7 @@ impl DentCraftApp {
             .filter(|s| {
                 matches!(
                     s.id,
-                    StepId::Margin | StepId::InsertionAxis | StepId::InnerSurface
+                    StepId::Margin | StepId::InsertionAxis | StepId::InnerSurface | StepId::Anatomy
                 )
             })
             .map(|s| s.teeth.clone());
@@ -475,6 +479,41 @@ impl DentCraftApp {
                 }
                 return;
             }
+            StepAction::SetAnatomy(param, value, dragging) => {
+                if let Some(tooth) = self.tooth {
+                    self.anatomy.set_param(
+                        &mut self.case.design,
+                        &mut self.history,
+                        tooth,
+                        param,
+                        value,
+                        dragging,
+                    );
+                }
+                return;
+            }
+            StepAction::EndAnatomyDrag => {
+                self.anatomy.end_drag(&mut self.history);
+                return;
+            }
+            StepAction::NudgeAnatomy(axis, delta) => {
+                if let Some(tooth) = self.tooth {
+                    anatomy_step::nudge(
+                        &mut self.case.design,
+                        &mut self.history,
+                        tooth,
+                        axis,
+                        delta,
+                    );
+                }
+                return;
+            }
+            StepAction::ResetAnatomy => {
+                if let Some(tooth) = self.tooth {
+                    anatomy_step::reset(&mut self.case.design, &mut self.history, tooth);
+                }
+                return;
+            }
             StepAction::ToggleSection => {
                 self.inner.toggle_section();
                 return;
@@ -516,9 +555,13 @@ impl DentCraftApp {
             if self.tools.active_name() != Some(INNER) {
                 self.tools.activate(self.inner.tool());
             }
+        } else if step.is_some_and(|s| s.id == StepId::Anatomy) && self.tooth.is_some() {
+            if self.tools.active_name() != Some(ANATOMY) {
+                self.tools.activate(self.anatomy.tool());
+            }
         } else if matches!(
             self.tools.active_name(),
-            Some(MARGIN | ORIENT | AXIS | INNER)
+            Some(MARGIN | ORIENT | AXIS | INNER | ANATOMY)
         ) {
             self.tools.deactivate();
         }
@@ -541,14 +584,17 @@ impl DentCraftApp {
         }
     }
 
-    /// `--step inner`: once the Insertion axis step has set the tooth's axis, completes it and
-    /// opens the Inner surface step on the same tooth.
+    /// `--step inner` or `--step anatomy`: once the Insertion axis step has set the tooth's axis,
+    /// completes the steps up to the target and opens it on the same tooth.
     fn pending_inner_step(&mut self) {
-        if !self.pending_inner || self.axis.busy() || self.margin.busy() {
+        let Some(target) = self.pending_inner else {
+            return;
+        };
+        if self.axis.busy() || self.margin.busy() {
             return;
         }
         let Some(tooth) = self.tooth else {
-            self.pending_inner = false;
+            self.pending_inner = None;
             return;
         };
         let has_axis = self
@@ -573,12 +619,8 @@ impl DentCraftApp {
         {
             return; // The axis search has not started yet.
         }
-        self.pending_inner = false;
-        while self
-            .session
-            .current()
-            .is_some_and(|s| s.id != StepId::InnerSurface)
-        {
+        self.pending_inner = None;
+        while self.session.current().is_some_and(|s| s.id != target) {
             if self.session.complete().is_err() {
                 break;
             }
@@ -589,12 +631,18 @@ impl DentCraftApp {
     /// Opens `--step` for `--tooth` and proposes the `--margin` seeds, once the scans are in.
     fn start_design(&mut self) {
         if let Some(mut target) = self.pending_step.take() {
-            // The inner surface needs the tooth's axis: open the Insertion axis step first, which
-            // finds the best axis, and move on once it is set.
-            if target == StepId::InnerSurface && self.session.steps().iter().any(|s| s.id == target)
+            // The inner surface (and the crown on it) needs the tooth's axis: open the Insertion
+            // axis step first, which finds the best axis, and move on once it is set.
+            if matches!(target, StepId::InnerSurface | StepId::Anatomy)
+                && self.session.steps().iter().any(|s| s.id == target)
+                && self
+                    .session
+                    .steps()
+                    .iter()
+                    .any(|s| s.id == StepId::InsertionAxis)
             {
+                self.pending_inner = Some(target);
                 target = StepId::InsertionAxis;
-                self.pending_inner = true;
             }
             if self.session.steps().iter().any(|s| s.id == target) {
                 while self.session.current().is_some_and(|s| s.id != target) {
@@ -635,6 +683,7 @@ impl DentCraftApp {
         self.orient.reset();
         self.axis.reset();
         self.inner.reset();
+        self.anatomy.reset();
         self.tooth = None;
         self.case = case;
     }
@@ -1014,6 +1063,20 @@ impl DentCraftApp {
                     self.apply_step_action(StepAction::Tooth(index, tooth));
                 }
             }
+            Command::Anatomy => {
+                if self.tools.active_name() == Some(ANATOMY) {
+                    self.tools.deactivate();
+                } else if let Some(index) = self
+                    .session
+                    .steps()
+                    .iter()
+                    .position(|s| s.id == StepId::Anatomy)
+                {
+                    let teeth = &self.session.steps()[index].teeth;
+                    let tooth = self.tooth.filter(|t| teeth.contains(t)).unwrap_or(teeth[0]);
+                    self.apply_step_action(StepAction::Tooth(index, tooth));
+                }
+            }
             Command::Measure => {
                 if self.tools.active_name() == Some(MEASURE) {
                     self.tools.deactivate();
@@ -1166,6 +1229,15 @@ impl DentCraftApp {
             inner: self
                 .tooth
                 .map(|t| self.inner.card(&self.case.design, &self.case.material, t)),
+            anatomy: self.tooth.map(|t| {
+                let inner = self.inner.card(&self.case.design, &self.case.material, t);
+                self.anatomy.card(
+                    &self.case,
+                    t,
+                    inner.busy.is_some(),
+                    inner.error.filter(|_| inner.has_margin && inner.has_axis),
+                )
+            }),
         }
         .show(ui);
         if let Some(action) = action {
@@ -1317,7 +1389,7 @@ impl DentCraftApp {
         let tooth = self
             .session
             .current()
-            .filter(|s| s.id == StepId::InnerSurface)
+            .filter(|s| matches!(s.id, StepId::InnerSurface | StepId::Anatomy))
             .and(self.tooth);
         self.inner.update(inner_step::StepFrame {
             design: &self.case.design,
@@ -1325,6 +1397,17 @@ impl DentCraftApp {
             objects: &self.objects,
             margin: &mut self.margin,
             tooth,
+        });
+        // The crown is built on the inner surface, which the Inner step keeps computing here.
+        let tooth = self
+            .session
+            .current()
+            .filter(|s| s.id == StepId::Anatomy)
+            .and(self.tooth);
+        self.anatomy.update(anatomy_step::StepFrame {
+            case: &self.case,
+            tooth,
+            surface: tooth.and_then(|t| self.inner.surface(t)),
         });
         // Entering the step on a tooth: widen the view to take in the axis and its handle.
         if self.axis.take_new_prep()
@@ -1442,8 +1525,9 @@ impl DentCraftApp {
             || self.orient.busy()
             || self.margin.busy()
             || self.axis.busy()
-            || self.pending_inner
+            || self.pending_inner.is_some()
             || self.inner.busy()
+            || self.anatomy.busy()
             || self.viewport.camera.is_animating();
         let Some(job) = &mut self.screenshot else {
             return;

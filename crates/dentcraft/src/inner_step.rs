@@ -11,7 +11,9 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use dentcraft_case::{Design, Fdi, InnerSurfaceOverrides, Material, ToothDesign};
-use dentcraft_design::{DesignError, InnerSurfaceParams, MarginTracer, inner_surface};
+use dentcraft_design::{
+    DesignError, InnerSurface, InnerSurfaceParams, MarginTracer, inner_surface,
+};
 use dentcraft_mesh::TriMesh;
 use dentcraft_render::{Camera, ClipPlane, DrawItem, MeshData, MeshId};
 use eframe::egui;
@@ -231,6 +233,8 @@ struct Prep {
 #[derive(Default)]
 struct Shared {
     mesh: Option<Arc<MeshData>>,
+    /// The surface the mesh shows, for the Anatomy step.
+    surface: Option<Arc<InnerSurface>>,
     /// Centre and axis of the section, while the Section toggle is on.
     section: Option<(DVec3, DVec3)>,
 }
@@ -286,10 +290,11 @@ struct Outcome {
     key: Key,
     prep: Arc<Prep>,
     mesh: Arc<MeshData>,
+    surface: Arc<InnerSurface>,
 }
 
 /// One line for a failed computation.
-fn describe(e: DesignError) -> String {
+pub fn describe(e: DesignError) -> String {
     match e {
         DesignError::MarginUndercut { depth } => {
             format!("The margin is undercut by {depth:.3} mm along this axis")
@@ -331,6 +336,7 @@ fn run(job: Job) -> Result<Outcome, String> {
         key: job.key,
         prep,
         mesh: Arc::new(MeshData::from_mesh(&surface.mesh)),
+        surface: Arc::new(surface),
     })
 }
 
@@ -402,6 +408,15 @@ impl InnerStep {
     /// A job is running or the shown surface is out of date.
     pub fn busy(&self) -> bool {
         self.running || (self.wanted.is_some() && self.wanted != self.shown && !self.stuck())
+    }
+
+    /// The up-to-date inner surface of `tooth`, once computed.
+    pub fn surface(&self, tooth: Fdi) -> Option<Arc<InnerSurface>> {
+        let current = self.shown.as_ref().is_some_and(|k| k.tooth == tooth);
+        if !current || self.wanted != self.shown {
+            return None;
+        }
+        self.shared.borrow().surface.clone()
     }
 
     /// The wanted surface failed and waits for a change.
@@ -482,7 +497,10 @@ impl InnerStep {
                     self.prep = Some(o.prep);
                     if Some(&o.key) == self.wanted.as_ref() {
                         self.error = None;
-                        self.shared.borrow_mut().mesh = Some(o.mesh);
+                        let mut shared = self.shared.borrow_mut();
+                        shared.mesh = Some(o.mesh);
+                        shared.surface = Some(o.surface);
+                        drop(shared);
                         self.shown = Some(o.key);
                     }
                 }
@@ -498,7 +516,9 @@ impl InnerStep {
         if wanted.as_ref().map(|k| k.tooth) != self.shown.as_ref().map(|k| k.tooth) {
             // Another tooth (or none): drop the other tooth's surface now.
             self.shown = None;
-            self.shared.borrow_mut().mesh = None;
+            let mut shared = self.shared.borrow_mut();
+            shared.mesh = None;
+            shared.surface = None;
         }
         if wanted != self.wanted {
             self.error = None;

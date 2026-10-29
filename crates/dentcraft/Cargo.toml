@@ -9,6 +9,7 @@ rust-version.workspace = true
 
 [dependencies]
 clap = { version = "4.6", features = ["derive"] }
+dentcraft-anatomy = { workspace = true }
 dentcraft-case = { workspace = true }
 dentcraft-design = { workspace = true }
 dentcraft-io = { workspace = true }

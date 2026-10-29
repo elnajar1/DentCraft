@@ -507,6 +507,7 @@ name = "dentcraft"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "dentcraft-anatomy",
  "dentcraft-case",
  "dentcraft-design",
  "dentcraft-io",

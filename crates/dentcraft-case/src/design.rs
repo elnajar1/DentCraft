@@ -44,6 +44,45 @@ pub struct ToothDesign {
     /// Inner-surface parameters that differ from the material's defaults.
     #[serde(default, skip_serializing_if = "InnerSurfaceOverrides::is_empty")]
     pub inner_surface: InnerSurfaceOverrides,
+    /// Shape and placement of the crown's anatomy relative to the automatic fit.
+    #[serde(default, skip_serializing_if = "AnatomyDesign::is_default")]
+    pub anatomy: AnatomyDesign,
+}
+
+/// The user's adjustments of a tooth's crown anatomy. Shape factors scale the library tooth
+/// around its textbook average (1 = average); `wear` runs from 0 (unworn) to 1. `rotation_deg`
+/// turns the crown about the insertion axis and `offset` moves it, in millimetres in scan
+/// coordinates, after the automatic placement. The default changes nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AnatomyDesign {
+    pub mesiodistal: f64,
+    pub buccolingual: f64,
+    pub height: f64,
+    pub wear: f64,
+    pub cusp_height: f64,
+    pub rotation_deg: f64,
+    pub offset: [f64; 3],
+}
+
+impl Default for AnatomyDesign {
+    fn default() -> Self {
+        Self {
+            mesiodistal: 1.0,
+            buccolingual: 1.0,
+            height: 1.0,
+            wear: 0.0,
+            cusp_height: 1.0,
+            rotation_deg: 0.0,
+            offset: [0.0; 3],
+        }
+    }
+}
+
+impl AnatomyDesign {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// Per-tooth overrides of the inner-surface parameters, in millimetres. `None` keeps the
@@ -65,5 +104,49 @@ pub struct InnerSurfaceOverrides {
 impl InnerSurfaceOverrides {
     pub fn is_empty(&self) -> bool {
         *self == Self::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn anatomy_defaults_are_left_out_and_old_teeth_load() {
+        let tooth = ToothDesign {
+            insertion_axis: Some(DVec3::Z),
+            ..ToothDesign::default()
+        };
+        let text = serde_json::to_string(&tooth).unwrap();
+        assert!(!text.contains("anatomy"), "{text}");
+        // A tooth saved before the Anatomy step loads with the identity anatomy.
+        let old: ToothDesign = serde_json::from_str(r#"{"insertion_axis":[0.0,0.0,1.0]}"#).unwrap();
+        assert_eq!(old, tooth);
+        assert!(old.anatomy.is_default());
+    }
+
+    #[test]
+    fn anatomy_round_trips_and_missing_fields_keep_their_defaults() {
+        let tooth = ToothDesign {
+            anatomy: AnatomyDesign {
+                mesiodistal: 1.05,
+                wear: 0.3,
+                rotation_deg: -5.0,
+                offset: [0.1, -0.2, 0.0],
+                ..AnatomyDesign::default()
+            },
+            ..ToothDesign::default()
+        };
+        let text = serde_json::to_string(&tooth).unwrap();
+        assert!(text.contains("anatomy"), "{text}");
+        assert_eq!(serde_json::from_str::<ToothDesign>(&text).unwrap(), tooth);
+        let partial: ToothDesign = serde_json::from_str(r#"{"anatomy":{"height":1.2}}"#).unwrap();
+        assert_eq!(
+            partial.anatomy,
+            AnatomyDesign {
+                height: 1.2,
+                ..AnatomyDesign::default()
+            }
+        );
     }
 }

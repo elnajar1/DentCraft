@@ -7,6 +7,7 @@ use eframe::egui::{
     Sense, Shape, Stroke, Ui, Vec2, vec2,
 };
 
+use crate::anatomy_step::{AnatomyParam, NUDGE_MM};
 use crate::browser::{self, Section, Sections};
 use crate::chart::{ON_FILL, kind_color};
 use crate::inner_step::InnerParam;
@@ -47,7 +48,41 @@ pub enum StepAction {
     ResetInner,
     /// Turn the section view on or off.
     ToggleSection,
+    /// Set an anatomy slider of the current tooth (shown units); `true` while it is dragged.
+    SetAnatomy(AnatomyParam, f64, bool),
+    /// A drag of an anatomy slider ended.
+    EndAnatomyDrag,
+    /// Move the current tooth's crown along offset axis `usize` (mesial, facial, occlusal) by
+    /// the millimetres given.
+    NudgeAnatomy(usize, f64),
+    /// Put the current tooth's crown back to the library shape and automatic placement.
+    ResetAnatomy,
 }
+
+/// What the Anatomy step's card shows.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AnatomyCard {
+    pub tooth: Fdi,
+    pub pontic: bool,
+    pub has_margin: bool,
+    pub has_axis: bool,
+    /// The tooth's inner surface could not be computed.
+    pub inner_failed: bool,
+    /// Slider values in [`AnatomyParam::ALL`] order, in shown units.
+    pub values: [f64; 6],
+    /// Offset along mesial, facial and occlusal, in millimetres.
+    pub offset: [f64; 3],
+    /// The anatomy differs from the library shape and automatic placement.
+    pub adjusted: bool,
+    /// Minimum thickness (mm) and thickened area (mm²) of the shown crown.
+    pub report: Option<(f64, f64)>,
+    /// What the step is busy with.
+    pub busy: Option<&'static str>,
+    pub error: Option<String>,
+}
+
+/// Shown for a pontic in the Anatomy step.
+pub const PONTIC_NOTE: &str = "Pontics arrive with bridges";
 
 /// What the Inner surface step's card shows.
 #[derive(Clone, Debug, PartialEq)]
@@ -134,6 +169,8 @@ pub struct WorkflowView<'a> {
     pub axis: Option<AxisCard>,
     /// The Inner surface step's card, when that step is active.
     pub inner: Option<InnerCard>,
+    /// The Anatomy step's card, when that step is active.
+    pub anatomy: Option<AnatomyCard>,
 }
 
 impl WorkflowView<'_> {
@@ -529,6 +566,21 @@ fn active_card(
         if let Some(a) = inner_section(ui, card, margin_step, axis_step, p) {
             action = Some(a);
         }
+    } else if let Some(card) = view.anatomy.as_ref().filter(|_| id == StepId::Anatomy) {
+        let step = |want: StepId| {
+            session
+                .steps()
+                .iter()
+                .position(|s| s.id == want && s.teeth.contains(&card.tooth))
+        };
+        let steps = [
+            step(StepId::Margin),
+            step(StepId::InsertionAxis),
+            step(StepId::InnerSurface),
+        ];
+        if let Some(a) = anatomy_section(ui, card, steps, p) {
+            action = Some(a);
+        }
     } else {
         let note = if id == StepId::Scans {
             if ready {
@@ -826,6 +878,147 @@ fn inner_section(
                     action = Some(StepAction::ToggleSection);
                 }
             });
+        });
+    action
+}
+
+/// The Anatomy step's card. `steps` are the indices of the Margin, Insertion axis and Inner
+/// surface steps for the tooth, for the buttons to a missing step.
+fn anatomy_section(
+    ui: &mut Ui,
+    card: &AnatomyCard,
+    steps: [Option<usize>; 3],
+    p: &Palette,
+) -> Option<StepAction> {
+    let mut action = None;
+    let [margin_step, axis_step, inner_step] = steps;
+    egui::Frame::new()
+        .fill(p.panel)
+        .corner_radius(CornerRadius::same(8))
+        .inner_margin(Margin::symmetric(10, 7))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 4.0;
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(format!("Tooth {}", card.tooth))
+                        .strong()
+                        .color(p.text),
+                );
+                if let Some(busy) = card.busy.filter(|_| !card.pontic) {
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.label(RichText::new(busy).size(SIZE_SMALL).color(p.text_dim));
+                        ui.add(egui::Spinner::new().size(12.0).color(p.accent));
+                    });
+                }
+            });
+            if card.pontic {
+                ui.label(
+                    RichText::new(PONTIC_NOTE)
+                        .size(SIZE_SMALL)
+                        .color(p.text_dim),
+                );
+                return;
+            }
+            let missing = if !card.has_margin {
+                Some((AXIS_NEEDS_MARGIN, "Margin step", margin_step))
+            } else if !card.has_axis {
+                Some((INNER_NEEDS_AXIS, "Insertion axis step", axis_step))
+            } else {
+                None
+            };
+            if let Some((hint, button, index)) = missing {
+                ui.label(RichText::new(hint).size(SIZE_SMALL).color(p.text_dim));
+                if let Some(index) = index
+                    && small_button(ui, button, true, true).clicked()
+                {
+                    action = Some(StepAction::Tooth(index, card.tooth));
+                }
+                return;
+            }
+            ui.spacing_mut().slider_width = (ui.available_width() - 150.0).max(60.0);
+            for (param, &value) in AnatomyParam::ALL.into_iter().zip(&card.values) {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(param.name())
+                            .size(SIZE_SMALL)
+                            .color(p.text_dim),
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let mut v = value;
+                        let r = ui.add(
+                            egui::Slider::new(&mut v, param.range())
+                                .step_by(1.0)
+                                .fixed_decimals(0)
+                                .suffix(param.unit()),
+                        );
+                        if r.changed() {
+                            action = Some(StepAction::SetAnatomy(param, v, r.dragged()));
+                        } else if r.drag_stopped() {
+                            action = Some(StepAction::EndAnatomyDrag);
+                        }
+                    });
+                });
+            }
+            let axes = [
+                ("Mesial", "Distal", "Mesial"),
+                ("Facial", "Lingual", "Facial"),
+                ("Occlusal", "Cervical", "Occlusal"),
+            ];
+            for (axis, ((name, minus, plus), &value)) in axes.iter().zip(&card.offset).enumerate() {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(format!("{name} offset"))
+                            .size(SIZE_SMALL)
+                            .color(p.text_dim),
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if small_button(ui, "+", true, false)
+                            .on_hover_text(format!("{plus} {NUDGE_MM:.1} mm"))
+                            .clicked()
+                        {
+                            action = Some(StepAction::NudgeAnatomy(axis, NUDGE_MM));
+                        }
+                        ui.label(
+                            RichText::new(format!("{value:+.1} mm"))
+                                .size(SIZE_SMALL)
+                                .color(p.text),
+                        );
+                        if small_button(ui, "\u{2212}", true, false)
+                            .on_hover_text(format!("{minus} {NUDGE_MM:.1} mm"))
+                            .clicked()
+                        {
+                            action = Some(StepAction::NudgeAnatomy(axis, -NUDGE_MM));
+                        }
+                    });
+                });
+            }
+            if let Some((thickness, area)) = card.report {
+                ui.label(
+                    RichText::new(format!(
+                        "Min thickness {thickness:.2} mm \u{b7} thickened {area:.1} mm\u{b2}"
+                    ))
+                    .size(SIZE_SMALL)
+                    .color(p.text),
+                );
+            }
+            if let Some(error) = &card.error {
+                ui.label(RichText::new(error).size(SIZE_SMALL).color(p.danger));
+                if card.inner_failed
+                    && let Some(index) = inner_step
+                    && small_button(ui, "Inner surface step", true, false)
+                        .on_hover_text("Open the Inner surface step on this tooth")
+                        .clicked()
+                {
+                    action = Some(StepAction::Tooth(index, card.tooth));
+                }
+            }
+            if small_button(ui, "Reset", card.adjusted, false)
+                .on_hover_text("Back to the library shape and the automatic placement")
+                .clicked()
+            {
+                action = Some(StepAction::ResetAnatomy);
+            }
         });
     action
 }

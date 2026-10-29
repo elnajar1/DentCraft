@@ -102,6 +102,8 @@ pub enum Icon {
     Axis,
     /// Preparation under a cap that follows it at a gap, for the inner surface step.
     Inner,
+    /// A molar crown with cusps, for the anatomy step.
+    Anatomy,
     /// Arrow curving back to the left.
     Undo,
     /// Arrow curving on to the right.
@@ -359,6 +361,20 @@ pub fn paint_icon(painter: &egui::Painter, icon: Icon, rect: Rect, ink: Color32,
             // A tapered preparation and a cap over it, a gap apart.
             open(&[(-0.6, 0.9), (-0.42, -0.1), (0.42, -0.1), (0.6, 0.9)]);
             open(&[(-0.85, 0.9), (-0.65, -0.4), (0.65, -0.4), (0.85, 0.9)]);
+        }
+        Icon::Anatomy => {
+            // A molar crown: cervical base, bulging walls and three cusp tips.
+            closed(&[
+                (-0.55, 0.9),
+                (-0.85, 0.1),
+                (-0.7, -0.75),
+                (-0.35, -0.45),
+                (0.0, -0.8),
+                (0.35, -0.45),
+                (0.7, -0.75),
+                (0.85, 0.1),
+                (0.55, 0.9),
+            ]);
         }
         Icon::Undo | Icon::Redo => {
             // A hook: down the right side of an arc, then back along the top to the arrow tip.
