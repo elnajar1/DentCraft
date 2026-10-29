@@ -27,8 +27,11 @@ pub struct MarginOverhang {
 }
 
 /// Measure the same seating obstruction as `inner_surface`, including region
-/// vertices, triangle edge midpoints and centroids. This is a sampling metric,
-/// not a continuous maximum guarantee for arbitrary concave outlines.
+/// vertices, triangle edge midpoints and centroids. Samples within
+/// [`SEAL_BAND_MM`] of the margin line axially are ignored: that is the
+/// margin's own vicinity (the crossing zone of the barrier and the smooth
+/// curve), not an undercut. This is a sampling metric, not a continuous
+/// maximum guarantee for arbitrary concave outlines.
 pub fn margin_overhang(
     mesh: &TriMesh,
     region: &[u32],
@@ -49,6 +52,14 @@ pub(crate) fn measure(
     let polygon = Polygon::new(margin, frame)?;
     Ok(measure_polygon(prep, &polygon, frame))
 }
+
+/// Axial height relative to the margin within which seating samples count as
+/// the margin's own vicinity, not an undercut: the region barrier and the
+/// smooth margin curve cross each other within about one triangle on either
+/// side of the margin line, so a sample in this band is that crossing, not
+/// geometry the crown would have to ride over. Further below the margin a
+/// cervical skirt still obstructs seating and is measured.
+pub const SEAL_BAND_MM: f64 = 0.2;
 
 pub(crate) fn measure_polygon(prep: &Region, polygon: &Polygon, frame: Frame) -> MarginOverhang {
     let center = polygon.margin.iter().sum::<DVec3>() / polygon.margin.len() as f64;
@@ -80,7 +91,13 @@ pub(crate) fn measure_polygon(prep: &Region, polygon: &Polygon, frame: Frame) ->
             }
         }
         let depth = distance.sqrt();
-        if depth > worst.depth && depth > prep.tolerance {
+        // The seal band around the margin line (± SEAL_BAND_MM axially) is the
+        // margin's own vicinity; a skirt further below or an overhang above the
+        // band still counts as a seating obstruction.
+        if depth > worst.depth
+            && depth > prep.tolerance
+            && (p - nearest).dot(frame.w).abs() > SEAL_BAND_MM
+        {
             let d = p - center;
             worst = MarginOverhang {
                 depth,

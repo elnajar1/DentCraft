@@ -10,7 +10,7 @@ pub mod synthetic;
 mod geometry;
 mod margin_overhang;
 mod polygon;
-pub use margin_overhang::{MarginOverhang, margin_overhang};
+pub use margin_overhang::{MarginOverhang, SEAL_BAND_MM, margin_overhang};
 
 #[cfg(test)]
 mod review_regressions;

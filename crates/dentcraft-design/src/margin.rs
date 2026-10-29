@@ -240,7 +240,15 @@ impl MarginTracer {
         costs
     }
 
-    fn connect(&self, waypoints: &[u32], cost: &[f64]) -> Result<Margin, DesignError> {
+    /// Route a closed loop through `waypoints` over the surface: each leg takes
+    /// the `cost`-weighted corridor path, unless a much shorter geodesic exists
+    /// (a ridge detour that faded). Routed vertices are blocked for later legs.
+    /// Returns the barrier loop, its per-edge waypoint leg and the loop's frame.
+    fn route(
+        &self,
+        waypoints: &[u32],
+        cost: &[f64],
+    ) -> Result<(Vec<u32>, Vec<usize>, crate::geometry::Frame), DesignError> {
         if waypoints.len() < 3 {
             return Err(DesignError::InvalidMargin);
         }
@@ -319,6 +327,15 @@ impl MarginTracer {
             .collect();
         let frame = crate::geometry::Frame::new(center, axis);
         validate_trace_curve(&raw, frame, &raw, &edge_legs)?;
+        Ok((vertices, edge_legs, frame))
+    }
+
+    fn connect(&self, waypoints: &[u32], cost: &[f64]) -> Result<Margin, DesignError> {
+        let (vertices, edge_legs, frame) = self.route(waypoints, cost)?;
+        let raw: Vec<_> = vertices
+            .iter()
+            .map(|&i| self.mesh.positions[i as usize])
+            .collect();
         // Centre broad ridge plateaus within one short edge, avoiding a full
         // mesh-row jump when two samples have indistinguishable evidence.
         let points: Vec<_> = vertices
@@ -717,6 +734,44 @@ impl MarginTracer {
             radius = p.1;
         }
         Some((radius, end.0 + 0.5, bottom))
+    }
+
+    /// A barrier loop that follows an existing closed curve on the scan, such as a
+    /// stored margin: every point of the curve snaps to the nearest scan vertex —
+    /// nothing is re-captured onto ridges — and consecutive distinct vertices are
+    /// joined by shortest surface paths. The loop stays within about one triangle
+    /// of the curve, wherever later edits moved it, so the region it bounds is
+    /// consistent with the curve itself; the returned `points` are the input curve.
+    /// The curve must be simple, closed, at least three points long and lie on one
+    /// connected component of the mesh.
+    pub fn follow(&self, curve: &[DVec3]) -> Result<Margin, DesignError> {
+        if curve.len() < 3 {
+            return Err(DesignError::InvalidMargin);
+        }
+        let component = self.component(self.snap(curve[0])?);
+        let mut waypoints = Vec::with_capacity(curve.len());
+        for &point in curve {
+            let v = self.snap(point)?;
+            if !component[v as usize] {
+                return Err(DesignError::InvalidMargin);
+            }
+            if waypoints.last() != Some(&v) {
+                waypoints.push(v);
+            }
+        }
+        if waypoints.len() > 1 && waypoints[0] == waypoints[waypoints.len() - 1] {
+            waypoints.pop();
+        }
+        let unique: std::collections::HashSet<u32> = waypoints.iter().copied().collect();
+        if waypoints.len() < 3 || unique.len() != waypoints.len() {
+            return Err(DesignError::InvalidMargin);
+        }
+        let geodesic = vec![1.0; self.mesh.positions.len()];
+        let (vertices, _, _) = self.route(&waypoints, &geodesic)?;
+        Ok(Margin {
+            points: curve.to_vec(),
+            vertices,
+        })
     }
 
     /// Triangles on the seed side of the closed edge barrier. Invalid loops or seeds
