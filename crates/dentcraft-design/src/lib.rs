@@ -2,6 +2,7 @@
 //! distances are millimetres, and angles in the public API are degrees.
 
 pub mod axis;
+pub mod crown;
 pub mod error;
 pub mod inner;
 pub mod synthetic;
@@ -16,6 +17,7 @@ pub use axis::{
     AxisResult, UndercutMap, UndercutParams, average_normal, best_insertion_axis,
     best_insertion_axis_with_params, undercut_map, undercut_map_with_params,
 };
+pub use crown::{Crown, CrownParams, CrownPlacement, CrownReport, auto_placement, build_crown};
 pub use error::DesignError;
 pub use inner::{InnerSurface, InnerSurfaceParams, inner_surface};
 pub use synthetic::{PreparedStump, StumpParams, prepared_stump};

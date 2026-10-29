@@ -3,6 +3,18 @@
 /// Invalid input or an unsupported geometric configuration.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum DesignError {
+    /// Crown input must be a connected, oriented disk with its complete boundary.
+    #[error("invalid crown surface or cervical boundary")]
+    InvalidCrownSurface,
+    /// Polar matching requires a simple outline star-shaped about the margin centroid.
+    #[error("crown outline is not star-shaped about its placement origin")]
+    UnsupportedCrownOutline,
+    /// A deformation folded a face or the surfaces intersected.
+    #[error("crown deformation folds or intersects a surface")]
+    CrownIntersection,
+    /// The locked cervical edge or bounded correction could not satisfy thickness.
+    #[error("crown thickness correction did not converge (worst deficit {deficit:.6} mm)")]
+    CrownThickness { deficit: f64 },
     /// The region contains no triangles.
     #[error("the prep region is empty")]
     EmptyRegion,

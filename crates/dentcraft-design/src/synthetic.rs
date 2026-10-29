@@ -7,6 +7,74 @@ use glam::{DQuat, DVec3};
 
 use crate::DesignError;
 
+/// Independently generated anatomical cap in the +Z occlusal, +Y facial frame.
+/// The cervical ellipse is centered at zero. Four smooth Gaussian cusp bumps
+/// modulate an ellipsoidal dome; no external anatomy data is used. Returns the
+/// open cap and its counter-clockwise cervical loop. Dimensions are in mm.
+pub fn crown_template(
+    radius: f64,
+    height: f64,
+    segments: usize,
+    rings: usize,
+) -> Result<(TriMesh, Vec<u32>), DesignError> {
+    if !radius.is_finite()
+        || !height.is_finite()
+        || radius <= 0.0
+        || height <= 0.0
+        || segments < 16
+        || rings < 4
+        || segments.checked_mul(rings).is_none_or(|n| n > 100_000)
+    {
+        return Err(DesignError::InvalidParameter(
+            "crown template dimensions or sampling",
+        ));
+    }
+    let mut mesh = TriMesh::default();
+    for j in 0..rings {
+        let phi = std::f64::consts::FRAC_PI_2 * j as f64 / rings as f64;
+        let r = radius * phi.cos();
+        for i in 0..segments {
+            let angle = TAU * i as f64 / segments as f64;
+            let (x, y) = (r * angle.cos(), r * angle.sin());
+            let bump: f64 = [-1.0, 1.0]
+                .iter()
+                .flat_map(|&sx| {
+                    [-1.0, 1.0].iter().map(move |&sy| {
+                        let d2 =
+                            (x / radius - sx * 0.38).powi(2) + (y / radius - sy * 0.38).powi(2);
+                        0.35 * (-d2 / 0.065).exp()
+                    })
+                })
+                .sum();
+            mesh.positions.push(DVec3::new(
+                x,
+                y * 0.92,
+                height * phi.sin() + bump * phi.sin(),
+            ));
+        }
+        if j > 0 {
+            for i in 0..segments {
+                let a = ((j - 1) * segments + i) as u32;
+                let b = ((j - 1) * segments + (i + 1) % segments) as u32;
+                let c = (j * segments + (i + 1) % segments) as u32;
+                let d = (j * segments + i) as u32;
+                mesh.triangles.extend([[a, b, c], [a, c, d]]);
+            }
+        }
+    }
+    let top = mesh.positions.len() as u32;
+    mesh.positions
+        .push(DVec3::Z * (height + 4.0 * 0.35 * (-2.0 * 0.38_f64.powi(2) / 0.065).exp()));
+    for i in 0..segments {
+        mesh.triangles.push([
+            ((rings - 1) * segments + i) as u32,
+            ((rings - 1) * segments + (i + 1) % segments) as u32,
+            top,
+        ]);
+    }
+    Ok((mesh, (0..segments as u32).collect()))
+}
+
 /// Dimensions of a conical preparation with a top chamfer and shoulder below the margin.
 #[derive(Clone, Debug)]
 pub struct StumpParams {
