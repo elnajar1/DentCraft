@@ -39,6 +39,10 @@ pub enum DesignError {
     /// The margin has too few distinct projected points, overlaps or crosses itself.
     #[error("the projected margin must be a simple polygon with at least three points")]
     InvalidMargin,
+    /// The margin outline turns too sharply or too noisily for the requested
+    /// cervical ledge: the offset loop inverts or loses the ledge clearance.
+    #[error("the margin outline cannot carry a {thickness:.3} mm cervical ledge")]
+    UnsupportedMarginOffset { thickness: f64 },
     /// None of the interior grid rays intersect the prep region.
     #[error("no interior grid samples intersect the prep region")]
     NoSurfaceSamples,

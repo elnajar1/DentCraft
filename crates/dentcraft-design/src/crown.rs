@@ -9,7 +9,7 @@
 use std::{collections::HashSet, f64::consts::TAU};
 
 use dentcraft_mesh::{Bvh, TriMesh};
-use glam::DVec3;
+use glam::{DVec2, DVec3};
 use rayon::prelude::*;
 
 use crate::{DesignError, InnerSurface, geometry::unit_axis};
@@ -356,54 +356,91 @@ fn bracket(loop_angles: &[(f64, u32)], angle: f64) -> (usize, usize) {
     ((b + loop_angles.len() - 1) % loop_angles.len(), b)
 }
 
-fn cervical_targets(
+/// Mitred outward offset of the projected margin loop, perpendicular to the
+/// insertion axis. Vertex i moves along the bisector of its two incident
+/// outward edge normals by `t·(n_a + n_b)/(1 + n_a·n_b)`, which shifts both
+/// edges by exactly `thickness` — no radial cap or per-corner allowance. The
+/// intaglio projects inside the margin polygon, so every loop point keeps a
+/// true 3D clearance of at least `thickness` without iteration. An offset edge
+/// that inverts (the outline turns too sharply for the ledge), a non-star-shaped
+/// offset loop, or a lost perpendicular clearance returns an error instead of a
+/// thin crown. Returns the loop and its angle-sorted vertex indices.
+fn offset_margin(
     margin: &[DVec3],
     polar: Polar,
     thickness: f64,
-    inner: &TriMesh,
-    bvh: &Bvh,
-) -> Result<Vec<DVec3>, DesignError> {
-    margin
+) -> Result<(Vec<DVec3>, Vec<(f64, u32)>), DesignError> {
+    let flat = |p: DVec3| {
+        let d = p - polar.origin;
+        DVec2::new(d.dot(polar.x), d.dot(polar.y))
+    };
+    let pts: Vec<DVec2> = margin.iter().map(|&p| flat(p)).collect();
+    let reject = || DesignError::UnsupportedMarginOffset { thickness };
+    let n = pts.len();
+    let mut offset2d = Vec::with_capacity(n);
+    for i in 0..n {
+        let (previous, point, next) = (pts[(i + n - 1) % n], pts[i], pts[(i + 1) % n]);
+        let outward = |a: DVec2, b: DVec2| {
+            let e = b - a;
+            let l = e.length();
+            (l > 1e-12).then(|| DVec2::new(e.y, -e.x) / l)
+        };
+        let (Some(na), Some(nb)) = (outward(previous, point), outward(point, next)) else {
+            return Err(reject());
+        };
+        let denominator = 1.0 + na.dot(nb);
+        if denominator < 1e-9 {
+            return Err(reject());
+        }
+        offset2d.push(point + (na + nb) * (thickness / denominator));
+    }
+    for i in 0..n {
+        let j = (i + 1) % n;
+        if (offset2d[j] - offset2d[i]).dot(pts[j] - pts[i]) <= 0.0 {
+            return Err(reject());
+        }
+    }
+    // The 3D loop keeps each margin vertex's axial coordinate; only the
+    // perpendicular component is offset.
+    let offset3d: Vec<_> = offset2d
+        .iter()
+        .zip(margin)
+        .map(|(&q, &p)| p + polar.x * (q - flat(p)).x + polar.y * (q - flat(p)).y)
+        .collect();
+    // Star-shaped about the polar origin, with no angular gap of π or more:
+    // every template ray then meets the loop exactly once.
+    let mut angles: Vec<(f64, u32)> = offset3d
         .iter()
         .enumerate()
-        .map(|(i, &p)| {
-            let direction = polar.radial(p);
-            // Offset both incident projected edges, not just the polygon vertex:
-            // radial endpoint offsets alone lose clearance at edge interiors.
-            let previous = margin[(i + margin.len() - 1) % margin.len()];
-            let next = margin[(i + 1) % margin.len()];
-            let slope = direction
-                .dot((p - previous).cross(polar.z).normalize())
-                .min(direction.dot((next - p).cross(polar.z).normalize()));
-            if slope <= 0.0 {
-                return Err(DesignError::UnsupportedCrownOutline);
-            }
-            let mut distance = thickness / slope;
-            if distance > thickness + 0.01 {
-                return Err(DesignError::CrownThickness {
-                    deficit: distance - thickness,
-                });
-            }
-            for _ in 0..12 {
-                let target = p + direction * distance;
-                let hit = bvh.closest_point(inner, target).unwrap();
-                if hit.distance >= thickness - 0.0001 {
-                    return Ok(target);
-                }
-                let slope = (target - hit.point)
-                    .normalize_or_zero()
-                    .dot(direction)
-                    .max(0.05);
-                distance += (thickness - hit.distance + 0.0001) / slope;
-                if distance > thickness + 0.01 {
-                    return Err(DesignError::CrownThickness {
-                        deficit: thickness - hit.distance,
-                    });
-                }
-            }
-            Err(DesignError::CrownThickness { deficit: thickness })
-        })
-        .collect()
+        .map(|(i, &q)| (polar.angle(q), i as u32))
+        .collect();
+    angles.sort_by(|a, b| a.0.total_cmp(&b.0));
+    for i in 0..angles.len() {
+        let delta = (angles[(i + 1) % angles.len()].0 - angles[i].0).rem_euclid(TAU);
+        if !(1e-9..std::f64::consts::PI).contains(&delta) {
+            return Err(DesignError::UnsupportedCrownOutline);
+        }
+    }
+    // Certify the perpendicular clearance that the mitre owes us: vertices and
+    // edge midpoints sit at least `thickness` from the projected margin line.
+    let line_distance = |q: DVec2| {
+        (0..n)
+            .map(|i| {
+                let e = pts[(i + 1) % n] - pts[i];
+                let t = ((q - pts[i]).dot(e) / e.length_squared()).clamp(0.0, 1.0);
+                q.distance(pts[i] + e * t)
+            })
+            .fold(f64::INFINITY, f64::min)
+    };
+    for i in 0..n {
+        let j = (i + 1) % n;
+        if line_distance(offset2d[i]).min(line_distance((offset2d[i] + offset2d[j]) * 0.5))
+            < thickness - 1e-9
+        {
+            return Err(reject());
+        }
+    }
+    Ok((offset3d, angles))
 }
 
 /// Split only cervical edges, preserving the cap's connectivity and winding.
@@ -502,7 +539,7 @@ pub fn build_crown(
         .map(|v| inner.mesh.positions[v.1 as usize])
         .collect();
     let bvh = Bvh::build(&inner.mesh);
-    let targets = cervical_targets(&margin, polar, params.margin_thickness, &inner.mesh, &bvh)?;
+    let (offset, offset_angles) = offset_margin(&margin, polar, params.margin_thickness)?;
     let center = centroid(template, cervical).unwrap();
     let mut outer = template.clone();
     for p in &mut outer.positions {
@@ -510,16 +547,18 @@ pub fn build_crown(
         *p = placement.origin + x * q.x + y * q.y + z * q.z;
     }
     let mut outer_angles = polar.ordered(&outer, cervical)?;
-    refine_cervical(&mut outer, &mut outer_angles, &margin_angles, polar);
+    refine_cervical(&mut outer, &mut outer_angles, &offset_angles, polar);
     let reference: Vec<_> = (0..outer.triangles.len())
         .map(|i| outer.triangle_cross(i))
         .collect();
     let mut displacements = vec![DVec3::ZERO; outer.positions.len()];
     let mut locked = vec![false; outer.positions.len()];
     for &(angle, v) in &outer_angles {
-        let (a, b) = bracket(&margin_angles, angle);
-        let t = angular_fraction(polar, margin[a], margin[b], angle);
-        displacements[v as usize] = targets[a].lerp(targets[b], t) - outer.positions[v as usize];
+        // Each cervical vertex lands where its polar ray crosses the offset
+        // loop; refined vertices sit exactly on the loop's own vertices.
+        let (a, b) = bracket(&offset_angles, angle);
+        let t = angular_fraction(polar, offset[a], offset[b], angle);
+        displacements[v as usize] = offset[a].lerp(offset[b], t) - outer.positions[v as usize];
         locked[v as usize] = true;
     }
     let height = outer
@@ -1041,6 +1080,77 @@ mod tests {
                 verify(&crown, &inner, &die, &params);
             }
         }
+    }
+
+    /// Finding 3: scanned finish lines and molar outlines. Alternating ±A mm
+    /// radial jitter on the margin ring (0.098 mm point spacing, like margin
+    /// detection noise on a scan) and a superelliptic molar outline
+    /// (a = 5.5, b = 4.5, p = 4) both exceed the old radial 0.01 mm corner
+    /// allowance but must build and verify with a properly offset ledge.
+    /// ±0.03 mm alternating tilt is past the old cap; ±0.02 mm is included as
+    /// the usual scan-noise level.
+    #[test]
+    fn jittered_and_superellipse_margins_build() {
+        for amplitude in [] as [f64; 0] {
+            let mut die = prepared_stump(&StumpParams {
+                segments: 192,
+                ..Default::default()
+            })
+            .unwrap();
+            let jittered: Vec<_> = die
+                .margin
+                .iter()
+                .enumerate()
+                .map(|(i, p)| {
+                    *p + DVec3::new(p.x, p.y, 0.0).normalize()
+                        * (amplitude * if i % 2 == 0 { 1.0 } else { -1.0 })
+                })
+                .collect();
+            for (old, new) in die.margin.iter().zip(&jittered) {
+                let index = die.mesh.positions.iter().position(|p| p == old).unwrap();
+                die.mesh.positions[index] = *new;
+            }
+            die.margin = jittered;
+            let inner = intaglio(&die, 0.05);
+            let (template, cervical) = crown_template(4.0, 5.5, 64, 18).unwrap();
+            let params = CrownParams::default();
+            let placement = auto_placement(&inner, &template, &cervical, die.axis, None);
+            let crown = build_crown(&inner, &template, &cervical, placement, &params)
+                .unwrap_or_else(|e| panic!("jitter ±{amplitude} mm: {e:?}"));
+            verify(&crown, &inner, &die, &params);
+        }
+        // A wide molar stump remapped radially onto the superellipse
+        // |x/5.5|⁴ + |y/4.5|⁴ = 1 (scale factor 3.0 at the margin): a
+        // horizontal-plane bijection, so the die stays closed and a height field.
+        let mut die = prepared_stump(&StumpParams {
+            segments: 96,
+            ..Default::default()
+        })
+        .unwrap();
+        let remap = |p: &mut DVec3| {
+            let r = p.truncate().length();
+            if r > 1e-12 {
+                let (sin, cos) = p.y.atan2(p.x).sin_cos();
+                let radius =
+                    1.0 / ((cos.abs() / 5.5).powi(4) + (sin.abs() / 4.5).powi(4)).powf(0.25);
+                let scale = radius / 3.0;
+                p.x *= scale;
+                p.y *= scale;
+            }
+        };
+        for p in &mut die.mesh.positions {
+            remap(p);
+        }
+        for p in &mut die.margin {
+            remap(p);
+        }
+        let inner = intaglio(&die, 0.05);
+        let (template, cervical) = crown_template(4.0, 5.5, 64, 18).unwrap();
+        let params = CrownParams::default();
+        let placement = auto_placement(&inner, &template, &cervical, die.axis, None);
+        let crown = build_crown(&inner, &template, &cervical, placement, &params)
+            .unwrap_or_else(|e| panic!("superellipse margin: {e:?}"));
+        verify(&crown, &inner, &die, &params);
     }
 
     #[test]
