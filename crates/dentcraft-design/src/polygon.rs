@@ -99,7 +99,7 @@ impl Polygon {
     }
 }
 
-fn intersects(a: DVec2, b: DVec2, c: DVec2, d: DVec2, epsilon: f64) -> bool {
+pub(crate) fn intersects(a: DVec2, b: DVec2, c: DVec2, d: DVec2, epsilon: f64) -> bool {
     if a.max(b).x < c.min(d).x
         || c.max(d).x < a.min(b).x
         || a.max(b).y < c.min(d).y

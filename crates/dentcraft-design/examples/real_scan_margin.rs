@@ -8,8 +8,9 @@
 //! prepared stump stands out above its surroundings), then proposes a margin from each peak twice:
 //! with a horizontal axis, as the app did when it used a facial camera view, and with the occlusal
 //! direction. Prints the peak coordinates and, per proposal, the error or the margin's length,
-//! point count, height range along the axis and distance from the seed. Scans are never part of
-//! the repository; pass a local path.
+//! point count and depth/radius ranges relative to the seed. Also tries the six reported manual
+//! clicks on the local lower-jaw 33 preparation (these coordinates apply only to that scan).
+//! Scans are never part of the repository; pass a local path.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -55,6 +56,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
+    let seed = DVec3::new(7.989, -14.224, -2.515);
+    let clicks = [
+        DVec3::new(6.857, -10.748, -8.090),
+        DVec3::new(7.358, -12.831, -8.960),
+        DVec3::new(8.323, -13.442, -9.527),
+        DVec3::new(9.164, -13.592, -9.610),
+        DVec3::new(11.401, -13.404, -9.766),
+        DVec3::new(8.853, -9.166, -7.818),
+    ];
+    match tracer.trace(&clicks) {
+        Ok(margin) => println!("\n33 manual: {}", describe(&margin, seed, occlusal)),
+        Err(e) => println!("\n33 manual error: {e}"),
+    }
     Ok(())
 }
 
@@ -92,18 +106,24 @@ fn describe(margin: &Margin, seed: DVec3, axis: DVec3) -> String {
     let length: f64 = (0..n)
         .map(|i| margin.points[i].distance(margin.points[(i + 1) % n]))
         .sum();
-    let heights = margin.points.iter().map(|p| p.dot(axis));
+    let heights = margin.points.iter().map(|p| (seed - *p).dot(axis));
     let (lo, hi) = heights.fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), h| {
         (lo.min(h), hi.max(h))
     });
+    let (rlo, rhi) = margin
+        .points
+        .iter()
+        .map(|p| (*p - seed).cross(axis).length())
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), r| {
+            (lo.min(r), hi.max(r))
+        });
     let centroid = margin.points.iter().sum::<DVec3>() / n as f64;
     let off_axis = (centroid - seed).reject_from_normalized(axis).length();
     let below = (seed - centroid).dot(axis);
     format!(
-        "length {length:.1} mm, {n} points, {} loop vertices, height range {:.2} mm, \
+        "length {length:.1} mm, {n} points, {} loop vertices, depth {lo:.2}..{hi:.2} mm, radius {rlo:.2}..{rhi:.2} mm, \
          centroid {:.2} mm off the seed's axis and {below:.2} mm below it",
         margin.vertices.len(),
-        hi - lo,
         off_axis
     )
 }

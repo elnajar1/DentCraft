@@ -39,6 +39,9 @@ pub enum DesignError {
     /// The margin has too few distinct projected points, overlaps or crosses itself.
     #[error("the projected margin must be a simple polygon with at least three points")]
     InvalidMargin,
+    /// One-based waypoint leg that could not form a valid surface margin.
+    #[error("margin leg {leg}: {reason}")]
+    MarginLeg { leg: usize, reason: &'static str },
     /// The margin outline turns too sharply or too noisily for the requested
     /// cervical ledge: the offset loop inverts or loses the ledge clearance.
     #[error("the margin outline cannot carry a {thickness:.3} mm cervical ledge")]
