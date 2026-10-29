@@ -2,8 +2,8 @@
 //!
 //! Units are mm. Polar matching requires star-shaped cervical and margin outlines.
 //! The deformed cap must also be radially single-valued about the margin centroid
-//! shifted 0.01 mm apically. Thickness correction expands along those fixed rays,
-//! instead of normals, to preserve that parameterization on undersized templates.
+//! shifted 0.01 mm apically. Thickness correction uses fixed normal/radial
+//! directions with a guarded radial retry and rejects every step that folds.
 //! Unsupported geometry, folded faces and unmet clearance return errors.
 
 use std::{collections::HashSet, f64::consts::TAU};
@@ -29,9 +29,8 @@ pub struct CrownPlacement {
 /// ledge must not exceed either full thickness.
 #[derive(Clone, Copy, Debug)]
 pub struct CrownParams {
-    /// Horizontal radial ledge, default 0.08 mm. At coarse polygon corners a
-    /// radial correction of at most 0.01 mm preserves true 3D clearance; if
-    /// that allowance is insufficient, construction returns a thickness error.
+    /// Perpendicular, mitred margin offset, default 0.08 mm. An inverted
+    /// offset edge or insufficient true 3D clearance returns an error.
     pub margin_thickness: f64,
     pub min_occlusal: f64,
     pub min_wall: f64,
@@ -94,8 +93,9 @@ pub struct Crown {
 
 #[derive(Clone, Copy, Debug)]
 pub struct CrownReport {
-    /// Smallest true 3D clearance sampled on the OUTER cap (vertices, edge
-    /// midpoints and centroids). The closing ledge is excluded: it meets the
+    /// Smallest true 3D clearance sampled on the OUTER cap (a barycentric
+    /// grid at <= 0.1 mm spacing, plus edge midpoints and centroids). The
+    /// closing ledge is excluded: it meets the
     /// inner surface at zero distance by construction.
     pub min_thickness: f64,
     /// Area of pre-correction outer faces with at least one corrected vertex.
@@ -145,7 +145,10 @@ fn frame(axis: DVec3, hint: DVec3) -> Result<(DVec3, DVec3, DVec3), DesignError>
 }
 
 /// Fits the two projected cervical extents to margin extents plus 0.3 mm per
-/// side. Axial scale fits cap height to inner height plus 1 mm. The default
+/// side. Axial scale fits cap height to inner height plus 1 mm. For caps with
+/// cervical overhang, it also fits the upward-facing anatomy over the prep
+/// occlusal footprint (inner normals within 60 degrees of the insertion axis), so
+/// lower fossae do not enter the prep when tall cusps are present. The default
 /// mesial direction is projected world +X (world +Y near a parallel axis).
 /// Because the requested API is infallible, invalid inputs produce a placement
 /// with NaN scale; [`build_crown`] rejects it without panicking.
@@ -201,6 +204,45 @@ pub fn auto_placement(
             .fold(0.0, f64::max);
         if c > 0.0 && d > 0.0 && th > 0.0 {
             result.scale = DVec3::new((a + 0.6) / c, (b + 0.6) / d, (h + 1.0) / th);
+            let lo = cervical
+                .iter()
+                .map(|&v| template.positions[v as usize])
+                .fold(DVec3::INFINITY, DVec3::min);
+            let hi = cervical
+                .iter()
+                .map(|&v| template.positions[v as usize])
+                .fold(DVec3::NEG_INFINITY, DVec3::max);
+            let overhang = template.positions.iter().any(|p| {
+                p.x < lo.x - 1e-8 || p.x > hi.x + 1e-8 || p.y < lo.y - 1e-8 || p.y > hi.y + 1e-8
+            });
+            if overhang {
+                // Bulbous anatomical caps have cusps above a lower table. Fit
+                // that table across the prep's occlusal footprint: fitting only
+                // the tallest cusp embeds fossae and crushes shoulders during
+                // subsequent local thickness correction. Dome templates have
+                // no cervical overhang and retain their apex-height fit.
+                let bvh = Bvh::build(&inner.mesh);
+                let normals = template.vertex_normals();
+                for (p, n) in template.positions.iter().zip(normals) {
+                    let q = *p - center;
+                    if n.z <= 0.0 || q.z <= 1e-8 {
+                        continue;
+                    }
+                    let probe = origin
+                        + x * (q.x * result.scale.x)
+                        + y * (q.y * result.scale.y)
+                        + z * (h + 1.0);
+                    if let Some(hit) = bvh.raycast(&inner.mesh, probe, -z) {
+                        let normal = inner.mesh.triangle_cross(hit.triangle as usize).normalize();
+                        if normal.dot(z) < -0.5 {
+                            result.scale.z = result
+                                .scale
+                                .z
+                                .max(((hit.point - origin).dot(z) + 1.0) / q.z);
+                        }
+                    }
+                }
+            }
         }
     }
     result
@@ -453,45 +495,82 @@ fn refine_cervical(
     angles: &[(f64, u32)],
     polar: Polar,
 ) {
+    // Index the original boundary's incident faces once, then split each edge
+    // in ray order. No full-mesh search or loop re-sort per inserted point.
+    let key = |a: u32, b: u32| (a.min(b), a.max(b));
+    let mut faces = std::collections::HashMap::new();
+    for (f, tri) in mesh.triangles.iter().enumerate() {
+        for k in 0..3 {
+            faces.insert(key(tri[k], tri[(k + 1) % 3]), f);
+        }
+    }
+    let mut splits = vec![Vec::new(); boundary.len()];
     for &(angle, _) in angles {
-        if boundary
-            .iter()
-            .any(|v| (v.0 - angle).abs().min(TAU - (v.0 - angle).abs()) < 1e-8)
-        {
+        let (a, b) = bracket(boundary, angle);
+        if [a, b].iter().any(|&i| {
+            let d = (boundary[i].0 - angle).abs();
+            d.min(TAU - d) < 1e-8
+        }) {
             continue;
         }
-        let (a, b) = bracket(boundary, angle);
-        let (va, vb) = (boundary[a].1, boundary[b].1);
-        let t = angular_fraction(
-            polar,
-            mesh.positions[va as usize],
-            mesh.positions[vb as usize],
-            angle,
-        );
-        let point = mesh.positions[va as usize].lerp(mesh.positions[vb as usize], t);
-        let new = mesh.positions.len() as u32;
-        mesh.positions.push(point);
-        let face = mesh
-            .triangles
-            .iter()
-            .position(|f| f.contains(&va) && f.contains(&vb))
-            .unwrap();
+        splits[a].push(angle);
+    }
+    let original = boundary.clone();
+    for (i, angles) in splits.iter().enumerate() {
+        if angles.is_empty() {
+            continue;
+        }
+        let (va, vb) = (original[i].1, original[(i + 1) % original.len()].1);
+        let face = faces[&key(va, vb)];
         let tri = mesh.triangles[face];
         let k = (0..3)
-            .find(|&k| {
-                (tri[k] == va && tri[(k + 1) % 3] == vb) || (tri[k] == vb && tri[(k + 1) % 3] == va)
-            })
+            .find(|&k| key(tri[k], tri[(k + 1) % 3]) == key(va, vb))
             .unwrap();
         let (a, b, c) = (tri[k], tri[(k + 1) % 3], tri[(k + 2) % 3]);
-        mesh.triangles[face] = [a, new, c];
-        mesh.triangles.push([new, b, c]);
-        boundary.push((angle, new));
-        boundary.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut points: Vec<_> = angles
+            .iter()
+            .map(|&angle| {
+                let t = angular_fraction(
+                    polar,
+                    mesh.positions[a as usize],
+                    mesh.positions[b as usize],
+                    angle,
+                );
+                (t, angle)
+            })
+            .collect();
+        points.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let first_new_face = mesh.triangles.len();
+        let mut last = a;
+        for (j, &(t, angle)) in points.iter().enumerate() {
+            let v = mesh.positions.len() as u32;
+            mesh.positions
+                .push(mesh.positions[a as usize].lerp(mesh.positions[b as usize], t));
+            let piece = [last, v, c];
+            if j == 0 {
+                mesh.triangles[face] = piece;
+            } else {
+                mesh.triangles.push(piece);
+            }
+            boundary.push((angle, v));
+            last = v;
+        }
+        mesh.triangles.push([last, b, c]);
+        // A corner triangle can contain two (or three) boundary edges. Keep
+        // the face lookup current for those edges after splitting the first.
+        for f in std::iter::once(face).chain(first_new_face..mesh.triangles.len()) {
+            let tri = mesh.triangles[f];
+            for k in 0..3 {
+                faces.insert(key(tri[k], tri[(k + 1) % 3]), f);
+            }
+        }
     }
+    boundary.sort_by(|a, b| a.0.total_cmp(&b.0));
 }
 
 /// Place, shape, thicken and close a cap. Minimum clearance is checked to 1 µm
-/// at every outer vertex, edge midpoint and centroid using exact BVH distances.
+/// on a barycentric grid at <= 0.1 mm spacing, plus vertices, edge midpoints
+/// and centroids, using exact BVH distances.
 /// Face samples use interpolated vertex normals. Iteration is bounded; an
 /// unmet target is an error, never a successful, under-thickness restoration.
 pub fn build_crown(
@@ -604,9 +683,21 @@ pub fn build_crown(
     outer.taubin_smooth(3, 0.15, -0.17, Some(&band_locks), false);
     check_faces(&outer, &reference, polar)?;
     let before = outer.clone();
-    let report = thicken(&mut outer, &locked, inner, &bvh, &margin, polar, params)?;
+    let report = thicken(
+        &mut outer,
+        &locked,
+        inner,
+        &bvh,
+        &margin,
+        (polar, &reference),
+        params,
+    )?;
     check_faces(&outer, &reference, polar)?;
-    check_crossings(&outer, &inner.mesh, &bvh)?;
+    let outer_edges = validate_surface(
+        &outer,
+        &outer_angles.iter().map(|v| v.1).collect::<Vec<_>>(),
+    )?;
+    check_crossings(&outer, &inner.mesh, &bvh, &outer_edges, &inner_edges)?;
     let mut report = report;
     report.thickened_area = before
         .triangles
@@ -631,10 +722,6 @@ pub fn build_crown(
     stitch(&mut mesh, &margin_angles, &outer_angles, offset);
     // Interior incidences were certified above and never change. Certify only
     // the seam: every source boundary and band edge must cancel its reverse.
-    let outer_edges = validate_surface(
-        &outer,
-        &outer_angles.iter().map(|v| v.1).collect::<Vec<_>>(),
-    )?;
     let mut seam: HashSet<_> = inner_edges
         .into_iter()
         .chain(outer_edges.into_iter().map(|e| e.map(|v| v + offset)))
@@ -680,15 +767,29 @@ fn check_faces(mesh: &TriMesh, reference: &[DVec3], polar: Polar) -> Result<(), 
     Ok(())
 }
 
-const SAMPLES: [[f64; 3]; 7] = [
-    [1.0, 0.0, 0.0],
-    [0.0, 1.0, 0.0],
-    [0.0, 0.0, 1.0],
-    [0.5, 0.5, 0.0],
-    [0.0, 0.5, 0.5],
-    [0.5, 0.0, 0.5],
-    [1.0 / 3.0; 3],
-];
+/// Triangular grid with at most 0.1 mm between adjacent samples.
+fn face_samples(p: [DVec3; 3]) -> impl Iterator<Item = [f64; 3]> {
+    let edge = (0..3)
+        .map(|i| p[i].distance(p[(i + 1) % 3]))
+        .fold(0.0, f64::max);
+    let n = (edge / 0.1).ceil().max(3.0) as usize;
+    [
+        [0.5, 0.5, 0.0],
+        [0.0, 0.5, 0.5],
+        [0.5, 0.0, 0.5],
+        [1.0 / 3.0; 3],
+    ]
+    .into_iter()
+    .chain((0..=n).flat_map(move |i| {
+        (0..=n - i).map(move |j| {
+            [
+                i as f64 / n as f64,
+                j as f64 / n as f64,
+                (n - i - j) as f64 / n as f64,
+            ]
+        })
+    }))
+}
 
 fn thicken(
     outer: &mut TriMesh,
@@ -696,37 +797,116 @@ fn thicken(
     inner: &InnerSurface,
     bvh: &Bvh,
     margin: &[DVec3],
-    polar: Polar,
+    geometry: (Polar, &[DVec3]),
     params: &CrownParams,
 ) -> Result<CrownReport, DesignError> {
+    let (polar, reference) = geometry;
+    let initial = outer.positions.clone();
+    let mut result = Err(DesignError::CrownIntersection);
+    // Normal directions help thin blades; radial rays remain the robust
+    // alternative on concave/scalloped caps. Both attempts obey the same guard.
+    for radial_only in [false, true] {
+        outer.positions.clone_from(&initial);
+        result = thicken_pass(
+            outer,
+            locked,
+            inner,
+            bvh,
+            margin,
+            (polar, reference, radial_only),
+            params,
+        );
+        if result.is_ok() {
+            break;
+        }
+    }
+    result
+}
+
+fn thicken_pass(
+    outer: &mut TriMesh,
+    locked: &[bool],
+    inner: &InnerSurface,
+    bvh: &Bvh,
+    margin: &[DVec3],
+    geometry: (Polar, &[DVec3], bool),
+    params: &CrownParams,
+) -> Result<CrownReport, DesignError> {
+    let (polar, reference, radial_only) = geometry;
     let adjacency = outer.vertex_adjacency();
-    // Fixed radial directions preserve spherical topology when nearest contacts
-    // switch between steep walls and the occlusal surface on undersized caps.
+    let initial_normals = outer.vertex_normals();
+    // Use the initial normals at grazing rays (thin incisors), blending to
+    // radial expansion where it has a useful outward component.
     let directions: Vec<_> = outer
         .positions
         .iter()
-        .map(|p| (*p - polar.origin + polar.z * 0.01).normalize())
+        .zip(&initial_normals)
+        .map(|(p, &normal)| {
+            let radial = (*p - polar.origin + polar.z * 0.01).normalize();
+            let blend = ((radial.dot(normal) - 0.5) * 2.0).clamp(0.0, 1.0);
+            if radial_only {
+                radial
+            } else {
+                normal.lerp(radial, blend).normalize()
+            }
+        })
         .collect();
+    // Cached face results remain valid unless a position or interpolated normal
+    // changes. Moving a vertex changes normals in its one-ring as well.
+    let mut active = vec![true; outer.triangles.len()];
+    let mut cached = vec![(0.0_f64, f64::INFINITY); outer.triangles.len()];
+    // Vertex samples recur in every incident face and in the grid. Their
+    // closest contact and inside status depend only on position, not normals.
+    let mut vertex_queries = vec![None; outer.positions.len()];
     let mut worst = f64::INFINITY;
     for _ in 0..160 {
         let normals = outer.vertex_normals();
+        vertex_queries
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(v, query)| {
+                if query.is_none() {
+                    let point = outer.positions[v];
+                    let hit = bvh.closest_point(&inner.mesh, point).unwrap();
+                    let inside = bvh
+                        .raycast(&inner.mesh, point + polar.z * 1e-8, polar.z)
+                        .is_some();
+                    *query = Some((hit, inside));
+                }
+            });
         let corrections: Vec<_> = outer
             .triangles
             .par_iter()
-            .map(|tri| {
+            .enumerate()
+            .map(|(f, tri)| {
+                if !active[f] {
+                    return ([0.0; 3], cached[f].0, cached[f].1);
+                }
                 let p = tri.map(|v| outer.positions[v as usize]);
                 let n = tri.map(|v| normals[v as usize]);
                 let mut moves = [0.0_f64; 3];
                 let mut deficit: f64 = 0.0;
                 let mut minimum = f64::INFINITY;
-                for weights in SAMPLES {
+                // Establish vertex requirements first; interior samples then
+                // distribute only the residual that these moves do not cover.
+                // Otherwise unequal barycentric weights amplify even a uniform
+                // deficit when their proposals are combined by a vertex maximum.
+                for weights in [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+                    .into_iter()
+                    .chain(face_samples(p))
+                {
                     let point = p[0] * weights[0] + p[1] * weights[1] + p[2] * weights[2];
                     let normal =
                         (n[0] * weights[0] + n[1] * weights[1] + n[2] * weights[2]).normalize();
-                    let hit = bvh.closest_point(&inner.mesh, point).unwrap();
-                    let inside = bvh
-                        .raycast(&inner.mesh, point + polar.z * 1e-8, polar.z)
-                        .is_some();
+                    let (hit, inside) = if let Some(i) = weights.iter().position(|&w| w == 1.0) {
+                        vertex_queries[tri[i] as usize].unwrap()
+                    } else {
+                        let hit = bvh.closest_point(&inner.mesh, point).unwrap();
+                        let inside = bvh
+                            .raycast(&inner.mesh, point + polar.z * 1e-8, polar.z)
+                            .is_some();
+                        (hit, inside)
+                    };
                     let distance = if inside { -hit.distance } else { hit.distance };
                     let required = params.required_thickness(hit.point, normal, polar.z, margin);
                     minimum = minimum.min(distance);
@@ -747,23 +927,34 @@ fn thicken(
                     };
                     let movable: f64 = (0..3)
                         .filter(|&i| !locked[tri[i] as usize])
-                        .map(|i| weights[i])
+                        .map(|i| weights[i] * weights[i])
                         .sum();
                     if movable == 0.0 {
                         continue;
                     }
+                    let covered: f64 = (0..3)
+                        .map(|i| {
+                            weights[i]
+                                * moves[i]
+                                * direction.dot(directions[tri[i] as usize]).max(0.05)
+                        })
+                        .sum();
+                    let residual = (missing + 0.0001 - covered).max(0.0);
                     for i in 0..3 {
                         if locked[tri[i] as usize] || weights[i] == 0.0 {
                             continue;
                         }
                         let slope = direction.dot(directions[tri[i] as usize]).max(0.05);
-                        let step = ((missing + 0.003) / (movable * slope)).min(0.3);
+                        let step = (moves[i] + weights[i] * residual / (movable * slope)).min(0.3);
                         moves[i] = moves[i].max(step);
                     }
                 }
                 (moves, deficit, minimum)
             })
             .collect();
+        for (cache, correction) in cached.iter_mut().zip(&corrections) {
+            *cache = (correction.1, correction.2);
+        }
         worst = corrections.iter().map(|c| c.1).fold(0.0, f64::max);
         if worst <= 0.001 {
             return Ok(CrownReport {
@@ -793,14 +984,46 @@ fn thicken(
                 let neighbors = adjacency.neighbors(i as u32);
                 let mean: f64 = neighbors.iter().map(|&v| moves[v as usize]).sum::<f64>()
                     / neighbors.len() as f64;
-                d + mean * 0.2
+                d.max(mean)
             })
             .collect();
         if smooth.iter().all(|d| *d < 1e-10) {
             break;
         }
-        for ((p, d), direction) in outer.positions.iter_mut().zip(smooth).zip(&directions) {
-            *p += d * *direction;
+        let previous = outer.positions.clone();
+        let mut steps = smooth;
+        let mut accepted = false;
+        for _ in 0..32 {
+            for i in 0..previous.len() {
+                outer.positions[i] = if steps[i] == 0.0 {
+                    previous[i] // Retain even signed-zero bits outside the correction support.
+                } else {
+                    previous[i] + directions[i] * steps[i]
+                };
+            }
+            if check_faces(outer, reference, polar).is_ok() {
+                accepted = true;
+                break;
+            }
+            for step in &mut steps {
+                *step *= 0.5;
+            }
+        }
+        let mut dirty = vec![false; previous.len()];
+        for (i, p) in previous.iter().enumerate() {
+            if outer.positions[i] != *p {
+                vertex_queries[i] = None;
+                dirty[i] = true;
+                for &v in adjacency.neighbors(i as u32) {
+                    dirty[v as usize] = true;
+                }
+            }
+        }
+        for (f, tri) in outer.triangles.iter().enumerate() {
+            active[f] = tri.iter().any(|&v| dirty[v as usize]);
+        }
+        if !accepted {
+            return Err(DesignError::CrownIntersection);
         }
     }
     Err(DesignError::CrownThickness { deficit: worst })
@@ -808,18 +1031,40 @@ fn thicken(
 
 /// Exact edge/triangle crossing tests in both directions supplement the point
 /// samples: two triangle interiors can intersect even when all samples clear.
-fn check_crossings(outer: &TriMesh, inner: &TriMesh, inner_bvh: &Bvh) -> Result<(), DesignError> {
+fn check_crossings(
+    outer: &TriMesh,
+    inner: &TriMesh,
+    inner_bvh: &Bvh,
+    outer_edges: &[[u32; 2]],
+    inner_edges: &[[u32; 2]],
+) -> Result<(), DesignError> {
     let outer_bvh = Bvh::build(outer);
-    for (source, target, bvh) in [(outer, inner, inner_bvh), (inner, outer, &outer_bvh)] {
+    for (source, target, bvh, boundary) in [
+        (outer, inner, inner_bvh, outer_edges),
+        (inner, outer, &outer_bvh, inner_edges),
+    ] {
         let crossed = source.triangles.par_iter().any(|tri| {
             (0..3).any(|i| {
+                // Validated interior edges occur in both directions. Cast only
+                // the increasing-index half; cover remaining boundary edges below.
+                if tri[i] > tri[(i + 1) % 3] {
+                    return false;
+                }
                 let a = source.positions[tri[i] as usize];
                 let b = source.positions[tri[(i + 1) % 3] as usize];
                 bvh.raycast(target, a, b - a)
                     .is_some_and(|hit| hit.t >= 0.0 && hit.t <= 1.0)
             })
         });
-        if crossed {
+        let boundary_crossed = boundary.par_iter().any(|&[a, b]| {
+            if a < b {
+                return false;
+            }
+            let (a, b) = (source.positions[a as usize], source.positions[b as usize]);
+            bvh.raycast(target, a, b - a)
+                .is_some_and(|hit| hit.t >= 0.0 && hit.t <= 1.0)
+        });
+        if crossed || boundary_crossed {
             return Err(DesignError::CrownIntersection);
         }
     }
@@ -856,10 +1101,11 @@ fn stitch(mesh: &mut TriMesh, inner: &[(f64, u32)], outer: &[(f64, u32)], offset
 
 #[cfg(test)]
 mod tests {
+    include!("crown_clinical_tests.rs");
     use super::*;
     use crate::{
-        FinishLine, InnerSurfaceParams, StumpParams, ToothParams, inner_surface, prepared_stump,
-        prepared_tooth, synthetic::crown_template,
+        FinishLine, InnerSurfaceParams, PreparedStump, StumpParams, ToothParams, inner_surface,
+        prepared_stump, prepared_tooth, synthetic::crown_template,
     };
     use glam::DQuat;
 
@@ -877,107 +1123,10 @@ mod tests {
         .unwrap()
     }
 
-    fn verify(
-        crown: &Crown,
-        inner: &InnerSurface,
-        die: &crate::PreparedStump,
-        params: &CrownParams,
-    ) {
-        assert!(crown.mesh.is_closed());
-        assert!(crown.mesh.is_consistently_oriented());
-        assert!(crown.mesh.signed_volume() > 0.0);
-        assert_eq!(crown.mesh.connected_components().len(), 1);
-        for i in 0..crown.mesh.triangles.len() {
-            assert!(crown.mesh.triangle_cross(i).length_squared() > 1e-24);
-        }
-        for (&v, p) in crown.margin_vertices.iter().zip(&die.margin) {
-            assert_eq!(
-                crown.mesh.positions[v as usize]
-                    .to_array()
-                    .map(f64::to_bits),
-                p.to_array().map(f64::to_bits)
-            );
-        }
-        let offset = inner.mesh.positions.len() as u32;
-        let outer = TriMesh::new(
-            crown.mesh.positions[offset as usize..].to_vec(),
-            crown.mesh.triangles[inner.mesh.triangles.len()..]
-                .iter()
-                .filter(|t| t.iter().all(|v| *v >= offset))
-                .map(|t| t.map(|v| v - offset))
-                .collect(),
-        );
-        let boundary = outer.boundary_loops();
-        assert_eq!(boundary.len(), 1);
-        let origin = centroid(&inner.mesh, &inner.boundary).unwrap();
-        let horizontal_margin: Vec<_> = die
-            .margin
-            .iter()
-            .map(|p| *p - die.axis * (*p - origin).dot(die.axis))
-            .collect();
-        for &v in &boundary[0] {
-            let p = outer.positions[v as usize];
-            let p = p - die.axis * (p - origin).dot(die.axis);
-            let distance = polyline_distance(p, &horizontal_margin);
-            assert!(
-                (distance - params.margin_thickness).abs() <= 0.01,
-                "cervical ledge {distance}"
-            );
-            assert!((p - origin).length() > 0.0);
-        }
-        let bvh = Bvh::build(&inner.mesh);
-        let die_bvh = Bvh::build(&die.mesh);
-        let normals = outer.vertex_normals();
-        let (mut minimum, mut worst) = (f64::INFINITY, 0.0_f64);
-        for tri in &outer.triangles {
-            let p = tri.map(|v| outer.positions[v as usize]);
-            let n = tri.map(|v| normals[v as usize]);
-            for weights in SAMPLES {
-                let point = p[0] * weights[0] + p[1] * weights[1] + p[2] * weights[2];
-                let normal =
-                    (n[0] * weights[0] + n[1] * weights[1] + n[2] * weights[2]).normalize();
-                let hit = bvh.closest_point(&inner.mesh, point).unwrap();
-                // Independently compute the documented ramp and orientation blend.
-                let mut d = f64::INFINITY;
-                for i in 0..die.margin.len() {
-                    let a = die.margin[i];
-                    let b = die.margin[(i + 1) % die.margin.len()];
-                    let edge = b - a;
-                    d = d.min(hit.point.distance(
-                        a + edge
-                            * ((hit.point - a).dot(edge) / edge.length_squared()).clamp(0.0, 1.0),
-                    ));
-                }
-                let f = (normal.dot(die.axis) * 2.0).clamp(0.0, 1.0);
-                let full = params.min_wall
-                    + (params.min_occlusal - params.min_wall) * f * f * (3.0 - 2.0 * f);
-                let t = (d / params.thickness_ramp).clamp(0.0, 1.0);
-                let required = params.margin_thickness
-                    + (full - params.margin_thickness) * t * t * (3.0 - 2.0 * t);
-                minimum = minimum.min(hit.distance);
-                worst = worst.max(required - hit.distance);
-                assert!(
-                    hit.distance + 0.001 >= required,
-                    "clearance {} < {required} at {point:?}",
-                    hit.distance
-                );
-                // Cast from well above along -axis, including points outside the
-                // margin over the root: a hit above the sample would mean inside.
-                if let Some(hit) = die_bvh.raycast(&die.mesh, point + die.axis * 30.0, -die.axis) {
-                    assert!(
-                        hit.t >= 30.0 - 1e-7,
-                        "outer sample inside die by {}",
-                        30.0 - hit.t
-                    );
-                }
-            }
-        }
-        assert!((minimum - crown.report.min_thickness).abs() < 1e-10);
-        eprintln!(
-            "crown accuracy: min={minimum:.9} mm, worst deficit={worst:.9} mm, thickened area={:.6} mm², max move={:.6} mm",
-            crown.report.thickened_area, crown.report.max_thickening
-        );
+    mod verification {
+        include!("../tests/support/crown.rs");
     }
+    use verification::verify;
 
     #[test]
     fn crown_shoulder_chamfer_straight_tilted() {

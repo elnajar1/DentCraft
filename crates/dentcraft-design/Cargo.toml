@@ -15,6 +15,7 @@ spade.workspace = true
 thiserror = "2.0.21"
 
 [dev-dependencies]
+dentcraft-anatomy.workspace = true
 dentcraft-case.workspace = true
 dentcraft-io.workspace = true
 
