@@ -981,6 +981,139 @@ mod tests {
         }
     }
 
+    /// Wheeler's: the mesiolingual cusp is the largest of every upper molar, and the
+    /// mesial and distal marginal ridges join the buccal and lingual cusps along the
+    /// table border, standing above the fossa but below the cusps.
+    #[test]
+    fn upper_molars_carry_marginal_ridges_and_a_high_mesiolingual_cusp() {
+        for code in [16u8, 17, 18] {
+            let fdi = Fdi::new(code).unwrap();
+            let height = dimensions(fdi).crown_length;
+            let t = build_crown(fdi, &CrownParams::default());
+            let z = |name: &str| {
+                t.landmarks
+                    .cusps
+                    .iter()
+                    .find(|c| c.name == name)
+                    .map(|c| t.mesh.positions[c.vertex as usize].z)
+                    .unwrap()
+            };
+            assert!(z("mesiolingual") > z("mesiobuccal"), "{code}: ML below MB");
+            assert!(z("mesiolingual") > z("distolingual"), "{code}: ML below DL");
+            for c in &t.landmarks.cusps {
+                let zz = t.mesh.positions[c.vertex as usize].z;
+                assert!(zz > 0.75 * height, "{code}: cusp {} at {zz:.2}", c.name);
+            }
+            // The rim ring at the mesial and distal midlines carries the marginal ridges.
+            let s = raw(code);
+            let scale = height
+                / s.positions
+                    .iter()
+                    .map(|q| q.z)
+                    .fold(f64::NEG_INFINITY, f64::max);
+            let rim = |col: usize| row_vertex(&s, col, s.table_start).z * scale;
+            for (name, zz) in [
+                ("mesial", rim(3 * s.columns / 4)),
+                ("distal", rim(s.columns / 4)),
+            ] {
+                assert!(
+                    (0.66..=0.90).contains(&(zz / height)),
+                    "{code}: {name} marginal ridge at {:.2} of the crown height",
+                    zz / height
+                );
+                assert!(
+                    zz < z("mesiolingual") - 0.4,
+                    "{code}: {name} marginal ridge {zz:.2} too high"
+                );
+            }
+        }
+    }
+
+    /// A lower molar crown converges lingually: the mesial corner of the lingual third
+    /// sits clearly inside the buccal third (a lingual corner that overhangs the buccal
+    /// contour reads as a pear-shaped table).
+    #[test]
+    fn lower_molar_outlines_converge_lingually() {
+        for code in [36u8, 37, 38, 46] {
+            let fdi = Fdi::new(code).unwrap();
+            let mesial_sign = if matches!(fdi.quadrant(), 1 | 3) {
+                1.0
+            } else {
+                -1.0
+            };
+            let t = build_crown(fdi, &CrownParams::default());
+            let half_bl = t.mesh.bounds().unwrap().max.y;
+            let corner = |side: f64| {
+                t.mesh
+                    .positions
+                    .iter()
+                    .filter(|p| p.y * side > 0.5 * half_bl)
+                    .map(|p| p.x * mesial_sign)
+                    .fold(f64::NEG_INFINITY, f64::max)
+            };
+            let ratio = corner(-1.0) / corner(1.0);
+            assert!(
+                (0.85..=0.96).contains(&ratio),
+                "{code}: lingual mesial corner at {ratio:.3} of the buccal contour"
+            );
+        }
+    }
+
+    /// The mandibular first premolar is dominated by its buccal cusp; the small lingual
+    /// cusp tip stands near two thirds of the buccal height (Wheeler's).
+    #[test]
+    fn the_lingual_cusp_of_a_lower_first_premolar_is_small() {
+        for code in [34u8, 44] {
+            let t = build_crown(Fdi::new(code).unwrap(), &CrownParams::default());
+            let z = |name: &str| {
+                t.landmarks
+                    .cusps
+                    .iter()
+                    .find(|c| c.name == name)
+                    .map(|c| t.mesh.positions[c.vertex as usize].z)
+                    .unwrap()
+            };
+            let ratio = z("lingual") / z("buccal");
+            assert!(
+                (0.60..=0.85).contains(&ratio),
+                "{code}: lingual cusp at {ratio:.2} of the buccal cusp"
+            );
+            assert!(
+                z("buccal") - z("lingual") > 1.5,
+                "{code}: lingual cusp less than 1.5 mm below the buccal cusp"
+            );
+        }
+    }
+
+    /// A central incisor's mesial incisal angle is sharp (a right angle, the corner stays
+    /// high) while the distal angle is rounded (the crest drops earlier).
+    #[test]
+    fn the_mesial_incisal_angle_of_a_central_incisor_is_sharper_than_the_distal() {
+        for code in [11u8, 21] {
+            let fdi = Fdi::new(code).unwrap();
+            let mesial_sign = if matches!(fdi.quadrant(), 1 | 3) {
+                1.0
+            } else {
+                -1.0
+            };
+            let t = build_crown(fdi, &CrownParams::default());
+            let b = t.mesh.bounds().unwrap();
+            let half_md = b.max.x.max(-b.min.x);
+            let corner = |side: f64| {
+                t.mesh
+                    .positions
+                    .iter()
+                    .filter(|p| p.x * side > 0.7 * half_md && p.z > 0.66 * b.max.z)
+                    .map(|p| p.z)
+                    .fold(f64::NEG_INFINITY, f64::max)
+            };
+            assert!(
+                corner(mesial_sign) > corner(-mesial_sign) + 0.1,
+                "{code}: distal incisal corner as high as the mesial one"
+            );
+        }
+    }
+
     #[test]
     fn cervical_row_starts_at_the_mid_facial_cej() {
         // Column 0 sits exactly at the facial midline, where the CEJ datum is z = 0; the
