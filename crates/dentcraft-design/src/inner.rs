@@ -58,6 +58,9 @@ pub struct InnerSurface {
     /// Required normal clearance per vertex. Boundary targets are exactly zero;
     /// face/edge targets are their barycentric/linear interpolations.
     pub target_gaps: Vec<f64>,
+    /// Unit insertion axis over which `mesh` is a height field; crown assembly
+    /// uses it for every die-related test.
+    pub axis: DVec3,
 }
 
 /// Block out undercuts by first-hit rays from above the region, then offset the
@@ -914,6 +917,7 @@ fn triangulate(
             target_gaps: vec![0.0; mesh.positions.len()],
             mesh,
             boundary: (0..n as u32).collect(),
+            axis: frame.w,
         },
         distances,
     ))

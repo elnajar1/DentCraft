@@ -481,15 +481,19 @@ pub fn build_crown(
     {
         return Err(DesignError::InvalidParameter("crown placement"));
     }
+    // The placement only orients the template; every die-related test (height
+    // field, inside, ledge, polar frame) uses the intaglio's insertion axis.
     let (x, y, z) = frame(placement.occlusal, placement.mesial)?;
+    let axis = unit_axis(inner.axis).map_err(|_| DesignError::InvalidCrownSurface)?;
+    let (px, py, pz) = frame(axis, x).or_else(|_| frame(axis, y))?;
     let polar = Polar {
         origin: centroid(&inner.mesh, &inner.boundary).unwrap(),
-        x,
-        y,
-        z,
+        x: px,
+        y: py,
+        z: pz,
     };
     // The signed-side test below relies on the documented inner height field.
-    if (0..inner.mesh.triangles.len()).any(|i| inner.mesh.triangle_cross(i).dot(z) >= 0.0) {
+    if (0..inner.mesh.triangles.len()).any(|i| inner.mesh.triangle_cross(i).dot(pz) >= 0.0) {
         return Err(DesignError::InvalidCrownSurface);
     }
     let margin_angles = polar.ordered(&inner.mesh, &inner.boundary)?;
@@ -521,7 +525,7 @@ pub fn build_crown(
     let height = outer
         .positions
         .iter()
-        .map(|p| (*p - placement.origin).dot(z))
+        .map(|p| (*p - placement.origin).dot(pz))
         .fold(0.0, f64::max);
     if height <= 0.0 {
         return Err(DesignError::InvalidCrownSurface);
@@ -536,7 +540,7 @@ pub fn build_crown(
         let (va, vb) = (outer_angles[a].1 as usize, outer_angles[b].1 as usize);
         let t = angular_fraction(polar, outer.positions[va], outer.positions[vb], angle);
         let base = outer.positions[va].lerp(outer.positions[vb], t);
-        let w = 1.0 - smoothstep(((*p - base).dot(z) / (0.4 * height)).clamp(0.0, 1.0));
+        let w = 1.0 - smoothstep(((*p - base).dot(pz) / (0.4 * height)).clamp(0.0, 1.0));
         displacements[i] = displacements[va].lerp(displacements[vb], t) * w;
         band_locks[i] = w == 0.0;
     }
@@ -961,6 +965,28 @@ mod tests {
         }
     }
 
+    /// Finding 1: the template is tilted against the insertion axis, as a
+    /// clinician's crown axis rarely matches the path of insertion exactly.
+    #[test]
+    fn template_tilted_against_insertion_axis() {
+        let die = prepared_stump(&StumpParams {
+            segments: 96,
+            ..Default::default()
+        })
+        .unwrap();
+        let inner = intaglio(&die, 0.05);
+        let (template, cervical) = crown_template(4.0, 5.5, 64, 18).unwrap();
+        let params = CrownParams::default();
+        for degrees in [0.0_f64, 5.0, 10.0, 15.0] {
+            let mut placement = auto_placement(&inner, &template, &cervical, die.axis, None);
+            let tilt = DQuat::from_axis_angle(placement.mesial, degrees.to_radians());
+            placement.occlusal = tilt * placement.occlusal;
+            let crown = build_crown(&inner, &template, &cervical, placement, &params)
+                .unwrap_or_else(|e| panic!("tilt {degrees}°: {e:?}"));
+            verify(&crown, &inner, &die, &params);
+        }
+    }
+
     #[test]
     fn undersized_template_is_thickened() {
         let die = prepared_stump(&StumpParams {
@@ -986,6 +1012,7 @@ mod tests {
             target_gaps: vec![0.0; mesh.positions.len()],
             mesh,
             boundary,
+            axis: DVec3::Z,
         }
     }
 
