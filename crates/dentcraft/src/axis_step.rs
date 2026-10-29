@@ -132,7 +132,7 @@ pub fn prep_region(
 }
 
 /// Area-weighted centroid of the triangles `region` of `mesh`.
-fn region_centroid(mesh: &TriMesh, region: &[u32]) -> DVec3 {
+pub(crate) fn region_centroid(mesh: &TriMesh, region: &[u32]) -> DVec3 {
     let (mut sum, mut total) = (DVec3::ZERO, 0.0);
     for &t in region {
         let [a, b, c] = mesh.triangles[t as usize].map(|v| mesh.positions[v as usize]);

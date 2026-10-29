@@ -202,7 +202,7 @@ impl Viewport {
         rect: Rect,
         objects: &[SceneObject],
         bounds: Option<&Aabb>,
-        options: RenderOptions,
+        mut options: RenderOptions,
         tools: &mut Tools,
     ) -> ViewportOutput {
         let mut out = ViewportOutput::default();
@@ -327,11 +327,15 @@ impl Viewport {
 
         if self.gpu {
             let colors = tools.vertex_colors();
-            let items = objects
+            let palette = widgets::palette(ui);
+            // A tool's section plane cuts every scan and the tool's own meshes.
+            options.clip = tools.clip_plane(&self.camera);
+            let mut items: Vec<_> = objects
                 .iter()
                 .filter_map(|o| {
                     let l = o.loaded()?;
                     let mut item = o.draw_item();
+                    item.clip = options.clip.is_some();
                     Some(match &colors {
                         Some(c) if c.scan == o.id => {
                             item.vertex_colors = true;
@@ -341,12 +345,13 @@ impl Viewport {
                     })
                 })
                 .collect();
+            items.extend(tools.meshes(&palette));
             ui.painter().add(egui_wgpu::Callback::new_paint_callback(
                 rect,
                 SceneCallback {
                     camera: self.camera.clone(),
                     items,
-                    overlays: tools.overlays(&widgets::palette(ui)),
+                    overlays: tools.overlays(&palette),
                     options,
                     size_points: rect.size(),
                 },

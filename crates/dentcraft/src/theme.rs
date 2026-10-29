@@ -101,6 +101,8 @@ pub struct Palette {
     /// Viewport background gradient (sRGB).
     pub viewport_top: Color32,
     pub viewport_bottom: Color32,
+    /// Tint of the restoration's inner surface over the die.
+    pub inner_surface: Color32,
 }
 
 const fn rgb(r: u8, g: u8, b: u8) -> Color32 {
@@ -129,6 +131,7 @@ impl Palette {
         danger: rgb(236, 120, 108),
         viewport_top: rgb(46, 52, 64),
         viewport_bottom: rgb(46, 52, 64),
+        inner_surface: rgb(72, 200, 176),
     };
 
     pub const LIGHT: Palette = Palette {
@@ -152,6 +155,7 @@ impl Palette {
         danger: rgb(184, 58, 44),
         viewport_top: rgb(240, 243, 247),
         viewport_bottom: rgb(203, 210, 221),
+        inner_surface: rgb(18, 150, 128),
     };
 
     /// Background and back-face look of the 3D viewport.

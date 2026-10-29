@@ -9,6 +9,7 @@ use eframe::egui::{
 
 use crate::browser::{self, Section, Sections};
 use crate::chart::{ON_FILL, kind_color};
+use crate::inner_step::InnerParam;
 use crate::theme::{Palette, RADIUS_SM, SIZE_SMALL};
 use crate::widgets::{self, Icon, paint_icon, small_button};
 
@@ -18,7 +19,7 @@ pub const NOT_YET_NOTE: &str = "Design tools for this step arrive in DentCraft 0
 pub const NEEDS_JAW_SCAN: &str = "Import an upper or lower jaw scan to continue.";
 
 /// What the user asked the session to do.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum StepAction {
     Next,
     Back,
@@ -38,7 +39,34 @@ pub enum StepAction {
     BestAxis,
     /// Set the current tooth's insertion axis to the reversed view direction.
     AxisFromView,
+    /// Set an inner-surface parameter of the current tooth; `true` while its value is dragged.
+    SetInner(InnerParam, f64, bool),
+    /// A drag of an inner-surface parameter ended.
+    EndInnerDrag,
+    /// Remove the current tooth's inner-surface overrides.
+    ResetInner,
+    /// Turn the section view on or off.
+    ToggleSection,
 }
+
+/// What the Inner surface step's card shows.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InnerCard {
+    pub tooth: Fdi,
+    pub has_margin: bool,
+    pub has_axis: bool,
+    /// Parameter values in [`InnerParam::ALL`] order, in millimetres.
+    pub values: [f64; 4],
+    /// The tooth overrides the material.
+    pub overridden: bool,
+    pub section: bool,
+    /// What the step is busy with.
+    pub busy: Option<&'static str>,
+    pub error: Option<String>,
+}
+
+/// Shown for a tooth without an insertion axis in the Inner surface step.
+pub const INNER_NEEDS_AXIS: &str = "Set the insertion axis first";
 
 /// What the Insertion axis step's card shows.
 #[derive(Clone, Debug, PartialEq)]
@@ -104,6 +132,8 @@ pub struct WorkflowView<'a> {
     pub orient: Option<OrientCard>,
     /// The Insertion axis step's card, when that step is active.
     pub axis: Option<AxisCard>,
+    /// The Inner surface step's card, when that step is active.
+    pub inner: Option<InnerCard>,
 }
 
 impl WorkflowView<'_> {
@@ -488,6 +518,17 @@ fn active_card(
         if let Some(a) = axis_section(ui, card, margin_step, p) {
             action = Some(a);
         }
+    } else if let Some(card) = view.inner.as_ref().filter(|_| id == StepId::InnerSurface) {
+        let step = |want: StepId| {
+            session
+                .steps()
+                .iter()
+                .position(|s| s.id == want && s.teeth.contains(&card.tooth))
+        };
+        let (margin_step, axis_step) = (step(StepId::Margin), step(StepId::InsertionAxis));
+        if let Some(a) = inner_section(ui, card, margin_step, axis_step, p) {
+            action = Some(a);
+        }
     } else {
         let note = if id == StepId::Scans {
             if ready {
@@ -682,6 +723,107 @@ fn axis_section(
                     .clicked()
                 {
                     action = Some(StepAction::AxisFromView);
+                }
+            });
+        });
+    action
+}
+
+/// The Inner surface step's tooth, parameters, section toggle, busy state, error and commands.
+fn inner_section(
+    ui: &mut Ui,
+    card: &InnerCard,
+    margin_step: Option<usize>,
+    axis_step: Option<usize>,
+    p: &Palette,
+) -> Option<StepAction> {
+    let mut action = None;
+    egui::Frame::new()
+        .fill(p.panel)
+        .corner_radius(CornerRadius::same(8))
+        .inner_margin(Margin::symmetric(10, 7))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 4.0;
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(format!("Tooth {}", card.tooth))
+                        .strong()
+                        .color(p.text),
+                );
+                if let Some(busy) = card.busy {
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.label(RichText::new(busy).size(SIZE_SMALL).color(p.text_dim));
+                        ui.add(egui::Spinner::new().size(12.0).color(p.accent));
+                    });
+                }
+            });
+            let missing = if !card.has_margin {
+                Some((AXIS_NEEDS_MARGIN, "Margin step", margin_step))
+            } else if !card.has_axis {
+                Some((INNER_NEEDS_AXIS, "Insertion axis step", axis_step))
+            } else {
+                None
+            };
+            if let Some((hint, button, index)) = missing {
+                ui.label(RichText::new(hint).size(SIZE_SMALL).color(p.text_dim));
+                if let Some(index) = index
+                    && small_button(ui, button, true, true).clicked()
+                {
+                    action = Some(StepAction::Tooth(index, card.tooth));
+                }
+                return;
+            }
+            for (param, &value) in InnerParam::ALL.into_iter().zip(&card.values) {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(param.name())
+                            .size(SIZE_SMALL)
+                            .color(p.text_dim),
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let mut v = value;
+                        let step = 10f64.powi(-(param.decimals() as i32));
+                        let r = ui.add(
+                            egui::DragValue::new(&mut v)
+                                .range(param.range())
+                                .speed(step)
+                                .fixed_decimals(param.decimals())
+                                .suffix(" mm"),
+                        );
+                        if r.changed() {
+                            action = Some(StepAction::SetInner(param, v, r.dragged()));
+                        } else if r.drag_stopped() {
+                            action = Some(StepAction::EndInnerDrag);
+                        }
+                    });
+                });
+            }
+            if let Some(error) = &card.error {
+                ui.label(RichText::new(error).size(SIZE_SMALL).color(p.danger));
+                if let Some(index) = axis_step
+                    && small_button(ui, "Insertion axis step", true, false)
+                        .on_hover_text("Open the Insertion axis step on this tooth")
+                        .clicked()
+                {
+                    action = Some(StepAction::Tooth(index, card.tooth));
+                }
+            }
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                if small_button(ui, "Reset to material", card.overridden, false)
+                    .on_hover_text("Use the material's cement gap and seal")
+                    .clicked()
+                {
+                    action = Some(StepAction::ResetInner);
+                }
+                let mut on = card.section;
+                if ui
+                    .checkbox(&mut on, "Section")
+                    .on_hover_text("Cut the view through the preparation along the axis")
+                    .changed()
+                {
+                    action = Some(StepAction::ToggleSection);
                 }
             });
         });

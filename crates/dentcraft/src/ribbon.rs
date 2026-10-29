@@ -12,6 +12,7 @@ use eframe::egui::{
 };
 
 use crate::axis_step::AXIS;
+use crate::inner_step::INNER;
 use crate::margin_step::MARGIN;
 use crate::orient_step::ORIENT;
 use crate::theme::{RADIUS_LG, RADIUS_MD, RADIUS_SM, SIZE_BODY, SIZE_HEADING, SIZE_SMALL};
@@ -73,7 +74,7 @@ impl RibbonTab {
 }
 
 /// What a ribbon command asked the app to do.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Command {
     New,
     Open,
@@ -92,6 +93,8 @@ pub enum Command {
     Margin,
     /// Open the Insertion axis step, or leave its tool.
     Axis,
+    /// Open the Inner surface step, or leave its tool.
+    Inner,
 }
 
 /// Label of the command that completes the active step.
@@ -266,6 +269,15 @@ impl RibbonView<'_> {
                 .clicked()
             {
                 *command = Some(Command::Axis);
+            }
+            let planned = session.steps().iter().any(|s| s.id == StepId::InnerSurface);
+            let on = self.active_tool == Some(INNER);
+            if command_button(ui, Icon::Inner, "Inner", planned, on)
+                .on_hover_text("Build the inner surface of the current tooth  (Esc leaves)")
+                .on_disabled_hover_text("The case has no Inner surface step")
+                .clicked()
+            {
+                *command = Some(Command::Inner);
             }
         });
     }

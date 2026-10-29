@@ -100,6 +100,8 @@ pub enum Icon {
     Orient,
     /// Preparation with a tilted arrow rising out of it, for the insertion axis step.
     Axis,
+    /// Preparation under a cap that follows it at a gap, for the inner surface step.
+    Inner,
     /// Arrow curving back to the left.
     Undo,
     /// Arrow curving on to the right.
@@ -352,6 +354,11 @@ pub fn paint_icon(painter: &egui::Painter, icon: Icon, rect: Rect, ink: Color32,
             open(&[(-0.6, 0.9), (-0.45, 0.0), (0.15, 0.0), (0.3, 0.9)]);
             open(&[(-0.15, 0.45), (0.6, -0.85)]);
             open(&[(0.2, -0.75), (0.6, -0.85), (0.65, -0.45)]);
+        }
+        Icon::Inner => {
+            // A tapered preparation and a cap over it, a gap apart.
+            open(&[(-0.6, 0.9), (-0.42, -0.1), (0.42, -0.1), (0.6, 0.9)]);
+            open(&[(-0.85, 0.9), (-0.65, -0.4), (0.65, -0.4), (0.85, 0.9)]);
         }
         Icon::Undo | Icon::Redo => {
             // A hook: down the right side of an arc, then back along the top to the arrow tip.

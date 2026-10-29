@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use dentcraft_render::{Camera, MeshData, MeshId, Overlay};
+use dentcraft_render::{Camera, ClipPlane, DrawItem, MeshData, MeshId, Overlay};
 use eframe::egui::Color32;
 use glam::{DVec3, Vec2};
 
@@ -93,6 +93,14 @@ pub trait Tool {
     }
     /// Per-vertex colours for a scan.
     fn vertex_colors(&self) -> Option<ScanColors> {
+        None
+    }
+    /// Meshes of the tool's own to draw with the scans.
+    fn meshes(&self, _palette: &Palette) -> Vec<(DrawItem, Arc<MeshData>)> {
+        Vec::new()
+    }
+    /// A section plane that cuts the scans and the tool's meshes, for this camera.
+    fn clip_plane(&self, _camera: &Camera) -> Option<ClipPlane> {
         None
     }
 }
@@ -196,6 +204,17 @@ impl Tools {
 
     pub fn vertex_colors(&self) -> Option<ScanColors> {
         self.active.as_ref().and_then(|t| t.vertex_colors())
+    }
+
+    pub fn meshes(&self, palette: &Palette) -> Vec<(DrawItem, Arc<MeshData>)> {
+        self.active
+            .as_ref()
+            .map(|t| t.meshes(palette))
+            .unwrap_or_default()
+    }
+
+    pub fn clip_plane(&self, camera: &Camera) -> Option<ClipPlane> {
+        self.active.as_ref().and_then(|t| t.clip_plane(camera))
     }
 }
 

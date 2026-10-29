@@ -47,7 +47,7 @@ impl History {
 
     /// Records an edit that changed the design from `before` to `after`, named for the Undo
     /// tooltip ("Move margin point"). An edit in the same open `group` as the last one extends
-    /// it instead of adding a step. Any edit clears the redo stack; an edit that changed
+    /// it instead of adding a step, and takes its name. Any edit clears the redo stack; an edit that changed
     /// nothing is ignored.
     pub fn record(
         &mut self,
@@ -61,6 +61,7 @@ impl History {
             && last.group == group
         {
             last.after = after.clone();
+            label.clone_into(&mut last.label);
             self.redo.clear();
             return;
         }

@@ -74,6 +74,10 @@ pub struct Args {
     /// Tooth (FDI number, 11-48) the design steps work on.
     #[arg(long, value_name = "FDI", value_parser = parse_tooth)]
     pub tooth: Option<Fdi>,
+
+    /// Start the Inner surface step with its section view on.
+    #[arg(long)]
+    pub section: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]

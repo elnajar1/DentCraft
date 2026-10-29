@@ -7,6 +7,7 @@ mod browser;
 mod chart;
 mod document;
 mod history;
+mod inner_step;
 mod loader;
 mod margin_edit;
 mod margin_step;
@@ -73,6 +74,7 @@ fn main() -> ExitCode {
         margin: args.margin,
         step: args.step.map(Into::into),
         tooth: args.tooth,
+        section: args.section,
         exit_code: exit_code.clone(),
     };
     let result = eframe::run_native(
