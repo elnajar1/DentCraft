@@ -36,6 +36,8 @@ pub struct SurfaceHit {
 pub struct Pointer {
     pub pixel: Vec2,
     pub hit: Option<SurfaceHit>,
+    /// The world ray under the pointer (origin, unit direction), when the viewport knows it.
+    pub ray: Option<(DVec3, DVec3)>,
 }
 
 /// Text drawn in a pill next to a world point.
@@ -379,6 +381,7 @@ mod tests {
         Pointer {
             pixel: Vec2::ZERO,
             hit: Some(SurfaceHit { object: 0, point }),
+            ray: None,
         }
     }
 
@@ -456,6 +459,7 @@ mod tests {
         tools.drag(&Pointer {
             pixel: Vec2::ZERO,
             hit: None,
+            ray: None,
         });
         tools.drag_end(&pointer_at(DVec3::new(0.0, 0.0, 2.5)));
         assert_eq!(tools.dragging(), None);
@@ -479,6 +483,7 @@ mod tests {
         m.click(&Pointer {
             pixel: Vec2::ZERO,
             hit: None,
+            ray: None,
         });
         assert_eq!(m.labels()[0].text, "1.00 mm");
         let p = Palette::DARK;

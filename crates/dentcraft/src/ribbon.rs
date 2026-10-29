@@ -11,6 +11,7 @@ use eframe::egui::{
     text::LayoutJob, vec2,
 };
 
+use crate::axis_step::AXIS;
 use crate::margin_step::MARGIN;
 use crate::orient_step::ORIENT;
 use crate::theme::{RADIUS_LG, RADIUS_MD, RADIUS_SM, SIZE_BODY, SIZE_HEADING, SIZE_SMALL};
@@ -89,6 +90,8 @@ pub enum Command {
     Orient,
     /// Open the Margin step, or leave its tool.
     Margin,
+    /// Open the Insertion axis step, or leave its tool.
+    Axis,
 }
 
 /// Label of the command that completes the active step.
@@ -251,6 +254,18 @@ impl RibbonView<'_> {
                 .clicked()
             {
                 *command = Some(Command::Margin);
+            }
+            let planned = session
+                .steps()
+                .iter()
+                .any(|s| s.id == StepId::InsertionAxis);
+            let on = self.active_tool == Some(AXIS);
+            if command_button(ui, Icon::Axis, "Axis", planned, on)
+                .on_hover_text("Set the insertion axis of the current tooth  (Esc leaves)")
+                .on_disabled_hover_text("The case has no Insertion axis step")
+                .clicked()
+            {
+                *command = Some(Command::Axis);
             }
         });
     }

@@ -227,7 +227,8 @@ impl Viewport {
         {
             let pixel = px(origin);
             let hit = tools::surface_hit(objects, &self.camera, pixel, min, size);
-            tools.drag_start(handle, &Pointer { pixel, hit });
+            let ray = Some(ray_at(&self.camera, pixel, min, size));
+            tools.drag_start(handle, &Pointer { pixel, hit, ray });
         }
         let handle_drag = tools.dragging().is_some();
 
@@ -289,6 +290,7 @@ impl Viewport {
             let now = pointer.map(|p| Pointer {
                 pixel: px(p),
                 hit: self.hit,
+                ray: Some(ray_at(&self.camera, px(p), min, size)),
             });
             match (&now, handle_drag) {
                 (Some(p), true) => tools.drag(p),
@@ -300,6 +302,7 @@ impl Viewport {
             tools.drag_end(&Pointer {
                 pixel: pointer.map_or(Vec2::ZERO, px),
                 hit: self.hit,
+                ray: None,
             });
         } else if !handle_drag
             && response.clicked_by(PointerButton::Primary)
@@ -307,7 +310,8 @@ impl Viewport {
         {
             let pixel = px(p);
             let hit = tools::surface_hit(objects, &self.camera, pixel, min, size);
-            tools.click(&Pointer { pixel, hit });
+            let ray = Some(ray_at(&self.camera, pixel, min, size));
+            tools.click(&Pointer { pixel, hit, ray });
         }
 
         // Cursor: a hand over handles, a crosshair while a tool picks surfaces.
@@ -447,4 +451,10 @@ fn paint_axis_gizmo(ui: &Ui, rect: Rect, camera: &Camera) {
             Color32::from_rgb(0x12, 0x12, 0x12),
         );
     }
+}
+
+/// The world ray under a viewport pixel, in double precision.
+fn ray_at(camera: &Camera, pixel: Vec2, min: Vec2, size: Vec2) -> (DVec3, DVec3) {
+    let (origin, dir) = camera.pixel_ray(pixel, min, size);
+    (origin.as_dvec3(), dir.as_dvec3())
 }

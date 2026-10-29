@@ -46,6 +46,11 @@ pub fn camera_frame(frame: Option<&JawFrame>) -> Quat {
     camera.frame
 }
 
+/// Whether the case's restorations sit on the upper jaw (the arch of its first unit).
+pub fn is_upper_jaw(teeth: &[Fdi]) -> bool {
+    teeth.first().is_some_and(|t| t.arch() == Arch::Upper)
+}
+
 /// An arrow from `origin` along `dir` as one polyline: shaft to the tip, then two head strokes
 /// (each back from the tip and out to one side of `side`). Five points.
 pub fn arrow_points(origin: Vec3, dir: Vec3, side: Vec3, length: f32) -> Vec<Vec3> {

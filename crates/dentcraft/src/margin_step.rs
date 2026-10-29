@@ -576,6 +576,22 @@ impl MarginStep {
         }
     }
 
+    /// The tracer of `scan`, building it on a worker when there is none: `Ok(None)` while it is
+    /// being built.
+    pub fn tracer(
+        &mut self,
+        scan: MeshId,
+        objects: &[SceneObject],
+    ) -> Result<Option<Arc<MarginTracer>>, String> {
+        self.ensure_tracer(scan, objects);
+        match self.tracers.get(&scan) {
+            Some(Slot::Ready(t)) => Ok(Some(t.clone())),
+            Some(Slot::Failed(e)) => Err(e.clone()),
+            Some(Slot::Building) => Ok(None),
+            None => Err("The scan is no longer loaded".to_owned()),
+        }
+    }
+
     fn ensure_tracer(&mut self, scan: MeshId, objects: &[SceneObject]) {
         if self.tracers.contains_key(&scan) {
             return;
@@ -792,6 +808,7 @@ mod tests {
         let at = |point| Pointer {
             pixel: glam::Vec2::ZERO,
             hit: Some(SurfaceHit { object: 0, point }),
+            ray: None,
         };
         let seed = DVec3::new(0.0, 0.0, 12.0);
         // No tooth: clicks do nothing.

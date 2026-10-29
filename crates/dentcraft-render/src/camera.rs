@@ -110,6 +110,9 @@ pub struct Camera {
     /// Jaw frame to world rotation: view presets and the orbit axis are relative to it. Identity
     /// means the world axes are the jaw axes.
     pub frame: Quat,
+    /// The jaw is an upper arch: the side presets (Facial, Lingual, Left, Right) are rolled 180
+    /// degrees about the view direction so the crowns point down, as dentists see an upper arch.
+    pub upper: bool,
     transition: Option<Transition>,
 }
 
@@ -124,6 +127,7 @@ impl Default for Camera {
             scene_center: Vec3::ZERO,
             scene_radius: 20.0,
             frame: Quat::IDENTITY,
+            upper: false,
             transition: None,
         }
     }
@@ -142,6 +146,17 @@ impl Camera {
         if frame.is_finite() {
             self.frame = frame;
         }
+    }
+
+    /// Camera-to-world rotation of `preset` in the jaw frame, rolled for an upper jaw's sides.
+    pub fn preset_rotation(&self, preset: ViewPreset) -> Quat {
+        let side = !matches!(preset, ViewPreset::Occlusal | ViewPreset::Bottom);
+        let roll = if self.upper && side {
+            Quat::from_rotation_z(std::f32::consts::PI)
+        } else {
+            Quat::IDENTITY
+        };
+        (self.frame * preset.rotation() * roll).normalize()
     }
 
     pub fn eye(&self) -> Vec3 {
@@ -239,7 +254,7 @@ impl Camera {
     /// Jumps to a preset view, framing `bounds` when given.
     pub fn set_view(&mut self, preset: ViewPreset, bounds: Option<&Aabb>) {
         self.transition = None;
-        let rotation = self.frame * preset.rotation();
+        let rotation = self.preset_rotation(preset);
         let pose = match bounds {
             Some(b) => self.fit_pose(b, rotation),
             None => Pose {
@@ -253,7 +268,7 @@ impl Camera {
     /// Starts a smooth transition to a preset view, framing `bounds` when given. Drive it with
     /// [`Camera::update`].
     pub fn animate_to(&mut self, preset: ViewPreset, bounds: Option<&Aabb>, duration: f32) {
-        let rotation = self.frame * preset.rotation();
+        let rotation = self.preset_rotation(preset);
         let to = match bounds {
             Some(b) => self.fit_pose(b, rotation),
             None => Pose {
@@ -579,6 +594,33 @@ mod tests {
         let mut cam = Camera::default();
         cam.set_frame(Vec3::X, Vec3::NEG_Y, Vec3::NEG_Z);
         cam
+    }
+
+    #[test]
+    fn upper_jaw_side_presets_show_the_crowns_pointing_down() {
+        let mut cam = upper_frame_camera();
+        let occlusal = Vec3::NEG_Z;
+        for preset in ViewPreset::ALL {
+            cam.upper = false;
+            cam.set_view(preset, None);
+            let (plain_up, plain_forward) = (cam.up(), cam.forward());
+            cam.upper = true;
+            cam.set_view(preset, None);
+            assert!(
+                cam.forward().distance(plain_forward) < 1e-5,
+                "{preset:?} same direction"
+            );
+            match preset {
+                ViewPreset::Occlusal | ViewPreset::Bottom => {
+                    assert!(cam.up().distance(plain_up) < 1e-5, "{preset:?} unchanged");
+                }
+                _ => {
+                    // Screen up is away from the biting surface: the crowns point down.
+                    assert!(plain_up.dot(occlusal) > 0.99, "{preset:?}");
+                    assert!(cam.up().dot(occlusal) < -0.99, "{preset:?}");
+                }
+            }
+        }
     }
 
     #[test]

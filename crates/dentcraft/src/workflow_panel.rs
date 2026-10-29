@@ -34,7 +34,29 @@ pub enum StepAction {
     AutoOrient,
     /// Remove the jaw's orientation.
     ResetOrient,
+    /// Search the current tooth's best insertion axis again.
+    BestAxis,
+    /// Set the current tooth's insertion axis to the reversed view direction.
+    AxisFromView,
 }
+
+/// What the Insertion axis step's card shows.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AxisCard {
+    pub tooth: Fdi,
+    pub has_margin: bool,
+    /// Angle between the axis and the jaw's occlusal direction.
+    pub tilt_deg: Option<f64>,
+    /// Undercut area and minimum draft of the shown axis.
+    pub undercut_mm2: Option<f64>,
+    pub min_draft_deg: Option<f64>,
+    /// What the step is busy with.
+    pub busy: Option<&'static str>,
+    pub error: Option<String>,
+}
+
+/// Shown for a tooth without a margin in the Insertion axis step.
+pub const AXIS_NEEDS_MARGIN: &str = "Trace the margin first";
 
 /// What the Orientation step's card shows.
 #[derive(Clone, Debug, PartialEq)]
@@ -80,6 +102,8 @@ pub struct WorkflowView<'a> {
     pub margin: Option<MarginCard>,
     /// The Orientation step's card, when that step is active.
     pub orient: Option<OrientCard>,
+    /// The Insertion axis step's card, when that step is active.
+    pub axis: Option<AxisCard>,
 }
 
 impl WorkflowView<'_> {
@@ -193,7 +217,7 @@ struct ChipMark {
 
 /// Whether the step has per-tooth tools, so its chips pick the tooth to work on.
 fn has_tooth_tools(id: StepId) -> bool {
-    id == StepId::Margin
+    matches!(id, StepId::Margin | StepId::InsertionAxis)
 }
 
 fn chip_mark(
@@ -206,12 +230,11 @@ fn chip_mark(
     let tools = has_tooth_tools(id);
     ChipMark {
         current: tools && status == StepStatus::Active && current == Some(tooth),
-        done: id == StepId::Margin
-            && case
-                .design
-                .teeth
-                .get(&tooth)
-                .is_some_and(|d| d.margin.is_some()),
+        done: case.design.teeth.get(&tooth).is_some_and(|d| match id {
+            StepId::Margin => d.margin.is_some(),
+            StepId::InsertionAxis => d.insertion_axis.is_some(),
+            _ => false,
+        }),
         clickable: tools && status != StepStatus::Pending,
     }
 }
@@ -457,6 +480,14 @@ fn active_card(
         if let Some(a) = orient_section(ui, card, p) {
             action = Some(a);
         }
+    } else if let Some(card) = view.axis.as_ref().filter(|_| id == StepId::InsertionAxis) {
+        let margin_step = session
+            .steps()
+            .iter()
+            .position(|s| s.id == StepId::Margin && s.teeth.contains(&card.tooth));
+        if let Some(a) = axis_section(ui, card, margin_step, p) {
+            action = Some(a);
+        }
     } else {
         let note = if id == StepId::Scans {
             if ready {
@@ -567,6 +598,123 @@ fn margin_section(ui: &mut Ui, card: &MarginCard, case: &Case, p: &Palette) -> O
             });
         });
     action
+}
+
+/// The Insertion axis step's tooth, values, undercut legend, busy state, error and commands.
+fn axis_section(
+    ui: &mut Ui,
+    card: &AxisCard,
+    margin_step: Option<usize>,
+    p: &Palette,
+) -> Option<StepAction> {
+    let mut action = None;
+    egui::Frame::new()
+        .fill(p.panel)
+        .corner_radius(CornerRadius::same(8))
+        .inner_margin(Margin::symmetric(10, 7))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 4.0;
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(format!("Tooth {}", card.tooth))
+                        .strong()
+                        .color(p.text),
+                );
+                if let Some(busy) = card.busy {
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.label(RichText::new(busy).size(SIZE_SMALL).color(p.text_dim));
+                        ui.add(egui::Spinner::new().size(12.0).color(p.accent));
+                    });
+                }
+            });
+            if !card.has_margin {
+                ui.label(
+                    RichText::new(AXIS_NEEDS_MARGIN)
+                        .size(SIZE_SMALL)
+                        .color(p.text_dim),
+                );
+                if let Some(index) = margin_step
+                    && small_button(ui, "Margin step", true, true)
+                        .on_hover_text("Open the Margin step on this tooth")
+                        .clicked()
+                {
+                    action = Some(StepAction::Tooth(index, card.tooth));
+                }
+                return;
+            }
+            let value = |ui: &mut Ui, name: &str, text: Option<String>| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(name).size(SIZE_SMALL).color(p.text_dim));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let text = text.unwrap_or_else(|| "\u{2013}".to_owned());
+                        ui.label(RichText::new(text).color(p.text).strong());
+                    });
+                });
+            };
+            let degrees = |d: f64| format!("{d:.1}\u{b0}");
+            value(ui, "Tilt from occlusal", card.tilt_deg.map(degrees));
+            value(
+                ui,
+                "Undercut area",
+                card.undercut_mm2.map(|a| format!("{a:.2} mm\u{b2}")),
+            );
+            value(ui, "Min draft", card.min_draft_deg.map(degrees));
+            undercut_legend(ui, p);
+            ui.label(
+                RichText::new("Drag the arrow tip to tilt the axis.")
+                    .size(SIZE_SMALL)
+                    .color(p.text_dim),
+            );
+            if let Some(error) = &card.error {
+                ui.label(RichText::new(error).size(SIZE_SMALL).color(p.danger));
+            }
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                if small_button(ui, "Best axis", card.busy.is_none(), true)
+                    .on_hover_text("Find the axis with the least undercut and the most draft")
+                    .clicked()
+                {
+                    action = Some(StepAction::BestAxis);
+                }
+                if small_button(ui, "From view", true, false)
+                    .on_hover_text("Insert along the direction you are looking from")
+                    .clicked()
+                {
+                    action = Some(StepAction::AxisFromView);
+                }
+            });
+        });
+    action
+}
+
+/// A gradient bar of the undercut colour map with its range.
+fn undercut_legend(ui: &mut Ui, p: &Palette) {
+    use crate::axis_step::MAX_UNDERCUT_MM;
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new(format!("Undercut 0 \u{2013} {MAX_UNDERCUT_MM} mm"))
+                .size(SIZE_SMALL)
+                .color(p.text_dim),
+        );
+        let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 8.0), Sense::hover());
+        let steps = 24;
+        for i in 0..steps {
+            let t = i as f32 / (steps - 1) as f32;
+            let [r, g, b, _] = dentcraft_render::colormap::sequential(t, 0.0, 1.0);
+            let byte = |c: f32| (c * 255.0).round() as u8;
+            let x0 = rect.left() + rect.width() * i as f32 / steps as f32;
+            let x1 = rect.left() + rect.width() * (i + 1) as f32 / steps as f32;
+            ui.painter().rect_filled(
+                Rect::from_min_max(
+                    egui::pos2(x0, rect.top()),
+                    egui::pos2(x1 + 0.5, rect.bottom()),
+                ),
+                0.0,
+                egui::Color32::from_rgb(byte(r), byte(g), byte(b)),
+            );
+        }
+    });
 }
 
 /// The Orientation step's hint, busy state, error and commands.

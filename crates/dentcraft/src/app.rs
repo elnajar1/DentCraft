@@ -15,6 +15,7 @@ use eframe::egui::{
     Modifiers, RichText, Stroke, TextureHandle, TextureOptions, vec2,
 };
 
+use crate::axis_step::{self, AXIS, AxisStep};
 use crate::browser::{self, SECTIONS_KEY, Section, Sections};
 use crate::chart::{self, ChartEdit};
 use crate::document::{self, Document};
@@ -120,6 +121,8 @@ pub struct DentCraftApp {
     margin: MarginStep,
     /// The Orientation step's job and edits.
     orient: OrientStep,
+    /// The Insertion axis step's preparation, jobs and edits.
+    axis: AxisStep,
     /// `--orient`, waiting for the scans to load.
     pending_orient: bool,
     /// Tooth the per-tooth step works on.
@@ -185,6 +188,7 @@ impl DentCraftApp {
             pending_measure: start.measure,
             margin: MarginStep::new(Some(cc.egui_ctx.clone())),
             orient: OrientStep::new(Some(cc.egui_ctx.clone())),
+            axis: AxisStep::new(Some(cc.egui_ctx.clone())),
             pending_orient: start.orient,
             tooth: None,
             pending_step: start.step,
@@ -363,7 +367,7 @@ impl DentCraftApp {
         let walks_teeth = self
             .session
             .current()
-            .filter(|s| s.id == StepId::Margin)
+            .filter(|s| matches!(s.id, StepId::Margin | StepId::InsertionAxis))
             .map(|s| s.teeth.clone());
         let (result, tooth) = match action {
             StepAction::Next | StepAction::Back => {
@@ -415,6 +419,19 @@ impl DentCraftApp {
                 self.orient.clear(&mut self.case.design, &mut self.history);
                 return;
             }
+            StepAction::BestAxis => {
+                let occlusal = self.occlusal();
+                self.axis.best(occlusal);
+                return;
+            }
+            StepAction::AxisFromView => {
+                if let Some(tooth) = self.tooth {
+                    let dir = -self.viewport.camera.forward().as_dvec3();
+                    self.axis
+                        .set_from_view(&mut self.case.design, &mut self.history, tooth, dir);
+                }
+                return;
+            }
             StepAction::ClearMargin => {
                 if let Some(tooth) = self.tooth {
                     self.margin
@@ -444,9 +461,21 @@ impl DentCraftApp {
             if self.tools.active_name() != Some(ORIENT) {
                 self.tools.activate(self.orient.tool());
             }
-        } else if matches!(self.tools.active_name(), Some(MARGIN | ORIENT)) {
+        } else if step.is_some_and(|s| s.id == StepId::InsertionAxis) && self.tooth.is_some() {
+            if self.tools.active_name() != Some(AXIS) {
+                self.tools.activate(self.axis.tool());
+            }
+        } else if matches!(self.tools.active_name(), Some(MARGIN | ORIENT | AXIS)) {
             self.tools.deactivate();
         }
+    }
+
+    /// The jaw's occlusal direction, once the jaw is oriented.
+    fn occlusal(&self) -> Option<DVec3> {
+        self.case
+            .design
+            .jaw_frame
+            .map(|f| DVec3::from_array(f.occlusal))
     }
 
     /// Direction out of a preparation: the jaw's occlusal direction once it is set, else
@@ -498,6 +527,7 @@ impl DentCraftApp {
         self.history.clear();
         self.margin.reset();
         self.orient.reset();
+        self.axis.reset();
         self.tooth = None;
         self.case = case;
     }
@@ -849,6 +879,20 @@ impl DentCraftApp {
                     }
                 }
             }
+            Command::Axis => {
+                if self.tools.active_name() == Some(AXIS) {
+                    self.tools.deactivate();
+                } else if let Some(index) = self
+                    .session
+                    .steps()
+                    .iter()
+                    .position(|s| s.id == StepId::InsertionAxis)
+                {
+                    let teeth = &self.session.steps()[index].teeth;
+                    let tooth = self.tooth.filter(|t| teeth.contains(t)).unwrap_or(teeth[0]);
+                    self.apply_step_action(StepAction::Tooth(index, tooth));
+                }
+            }
             Command::Measure => {
                 if self.tools.active_name() == Some(MEASURE) {
                     self.tools.deactivate();
@@ -984,6 +1028,7 @@ impl DentCraftApp {
 
     fn workflow_panel(&mut self, ui: &mut egui::Ui) {
         let has_jaw_scan = self.has_jaw_scan();
+        let occlusal = self.occlusal();
         let action = WorkflowView {
             session: &self.session,
             case: &self.case,
@@ -994,6 +1039,9 @@ impl DentCraftApp {
             tooth: self.tooth,
             margin: self.tooth.map(|t| self.margin.card(t)),
             orient: Some(self.orient.card(self.case.design.jaw_frame.is_some())),
+            axis: self
+                .tooth
+                .map(|t| self.axis.card(&self.case.design, t, occlusal)),
         }
         .show(ui);
         if let Some(action) = action {
@@ -1092,8 +1140,11 @@ impl DentCraftApp {
         // The camera follows the jaw frame (undo, redo and case load included); a new frame
         // turns the current preset view to it.
         let frame = orient_step::camera_frame(self.case.design.jaw_frame.as_ref());
-        if self.viewport.camera.frame != frame {
+        let teeth: Vec<Fdi> = self.case.units.iter().map(|u| u.tooth).collect();
+        let upper = orient_step::is_upper_jaw(&teeth);
+        if self.viewport.camera.frame != frame || self.viewport.camera.upper != upper {
             self.viewport.camera.frame = frame;
+            self.viewport.camera.upper = upper;
             if let Some(preset) = self.viewport.preset {
                 self.viewport.go_to(preset, bounds.as_ref());
             }
@@ -1124,6 +1175,30 @@ impl DentCraftApp {
             axis,
         });
         self.orient.update(&mut self.case.design, &mut self.history);
+        let occlusal = self.occlusal();
+        let tooth = self
+            .session
+            .current()
+            .filter(|s| s.id == StepId::InsertionAxis)
+            .and(self.tooth);
+        self.axis.update(axis_step::StepFrame {
+            design: &mut self.case.design,
+            history: &mut self.history,
+            objects: &self.objects,
+            margin: &mut self.margin,
+            tooth,
+            occlusal,
+        });
+        // Entering the step on a tooth: widen the view to take in the axis and its handle.
+        if self.axis.take_new_prep()
+            && let Some(mut b) = self.bounds()
+        {
+            for h in self.tools.handles() {
+                b.min = b.min.min(h);
+                b.max = b.max.max(h);
+            }
+            self.viewport.fit(Some(&b));
+        }
         let p = self.palette();
         if self.objects.is_empty() {
             let mut clicked = false;
@@ -1229,6 +1304,7 @@ impl DentCraftApp {
             || self.pending_orient
             || self.orient.busy()
             || self.margin.busy()
+            || self.axis.busy()
             || self.viewport.camera.is_animating();
         let Some(job) = &mut self.screenshot else {
             return;

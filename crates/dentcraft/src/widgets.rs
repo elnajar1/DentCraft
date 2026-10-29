@@ -98,6 +98,8 @@ pub enum Icon {
     Margin,
     /// Occlusal plane with the occlusal and forward arrows, for the orientation step.
     Orient,
+    /// Preparation with a tilted arrow rising out of it, for the insertion axis step.
+    Axis,
     /// Arrow curving back to the left.
     Undo,
     /// Arrow curving on to the right.
@@ -344,6 +346,12 @@ pub fn paint_icon(painter: &egui::Painter, icon: Icon, rect: Rect, ink: Color32,
             open(&[(0.0, 0.5), (0.0, -0.85)]);
             open(&[(-0.3, -0.5), (0.0, -0.85), (0.3, -0.5)]);
             open(&[(0.0, 0.5), (0.7, 0.8)]);
+        }
+        Icon::Axis => {
+            // A tapered preparation and a tilted arrow rising from inside it.
+            open(&[(-0.6, 0.9), (-0.45, 0.0), (0.15, 0.0), (0.3, 0.9)]);
+            open(&[(-0.15, 0.45), (0.6, -0.85)]);
+            open(&[(0.2, -0.75), (0.6, -0.85), (0.65, -0.45)]);
         }
         Icon::Undo | Icon::Redo => {
             // A hook: down the right side of an arc, then back along the top to the arrow tip.

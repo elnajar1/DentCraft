@@ -77,6 +77,11 @@ impl MarginTracer {
         })
     }
 
+    /// The mesh the tracer was built for.
+    pub fn mesh(&self) -> &Arc<TriMesh> {
+        &self.mesh
+    }
+
     fn snap(&self, point: DVec3) -> Result<u32, DesignError> {
         if !point.is_finite() {
             return Err(DesignError::InvalidMargin);

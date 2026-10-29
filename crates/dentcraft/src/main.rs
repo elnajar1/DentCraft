@@ -2,6 +2,7 @@
 
 mod app;
 mod args;
+mod axis_step;
 mod browser;
 mod chart;
 mod document;
