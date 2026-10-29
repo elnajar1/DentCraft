@@ -36,6 +36,8 @@ for the project and released under the repository licence.
   triangle interiors (edge midpoints, centroids) as well as vertices, and include steep walls,
   directions that are not grid-aligned and scan-like noise. A vertices-only check on a flat test
   shape once hid a crown that bound on its walls and cut 11 µm into the die.
+- Every background job in the app goes through `crash::spawn_worker` (large stack, panics caught and
+  shown as the step's error, crash log written), never a bare `std::thread::spawn`.
 - Renderer changes run the offscreen tests once with `WGPU_BACKEND=gl` too: it is the local
   stand-in for CI's Linux llvmpipe, which lacks several downlevel features.
 
