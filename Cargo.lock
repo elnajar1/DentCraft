@@ -520,6 +520,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "dentcraft-anatomy"
+version = "0.1.0"
+dependencies = [
+ "dentcraft-case",
+ "dentcraft-mesh",
+ "dentcraft-render",
+ "glam",
+ "image",
+]
+
+[[package]]
 name = "dentcraft-case"
 version = "0.1.0"
 dependencies = [

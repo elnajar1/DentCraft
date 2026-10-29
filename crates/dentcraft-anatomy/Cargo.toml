@@ -1,0 +1,20 @@
+[package]
+name = "dentcraft-anatomy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Parametric tooth anatomy: crown templates generated from published average dimensions"
+
+[dependencies]
+dentcraft-mesh.workspace = true
+dentcraft-case.workspace = true
+glam = { version = "0.34.1", features = ["serde"] }
+
+[dev-dependencies]
+dentcraft-render.workspace = true
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+
+[lints]
+workspace = true

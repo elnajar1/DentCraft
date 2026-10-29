@@ -17,6 +17,7 @@ dentcraft-case = { path = "crates/dentcraft-case" }
 dentcraft-workflow = { path = "crates/dentcraft-workflow" }
 dentcraft-render = { path = "crates/dentcraft-render" }
 dentcraft-design = { path = "crates/dentcraft-design" }
+dentcraft-anatomy = { path = "crates/dentcraft-anatomy" }
 rayon = "1.12.0"
 spade = "2.15.1"
 
