@@ -8,13 +8,16 @@ pub mod inner;
 pub mod synthetic;
 
 mod geometry;
+mod margin_overhang;
 mod polygon;
+pub use margin_overhang::{MarginOverhang, margin_overhang};
 
 #[cfg(test)]
 mod review_regressions;
 
 pub use axis::{
     AxisResult, UndercutMap, UndercutParams, average_normal, best_insertion_axis,
+    best_insertion_axis_with_margin, best_insertion_axis_with_margin_and_params,
     best_insertion_axis_with_params, undercut_map, undercut_map_with_params,
 };
 pub use contacts::{AdaptParams, AdaptReport, adapt_to_neighbours, signed_distance_map};

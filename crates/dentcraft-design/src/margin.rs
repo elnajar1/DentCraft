@@ -8,10 +8,36 @@ use std::sync::Arc;
 /// Closed curve: neither list repeats the first entry at the end.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Margin {
-    /// Surface-projected smooth samples, with nominal spacing 0.1 mm.
+    /// Surface-projected smooth editing samples, with nominal spacing 0.1 mm.
+    /// Use `region_boundary` for geometry paired with the region barrier.
     pub points: Vec<DVec3>,
     /// Simple underlying edge loop, used as the region barrier.
     pub vertices: Vec<u32>,
+}
+
+impl Margin {
+    /// Exact surface boundary of the region barrier. Use this curve for axis
+    /// selection and inner-surface generation with `MarginTracer::region`.
+    /// `points` is a smoothed tracing/editing curve and can cross either side of
+    /// the barrier on noisy scans; it must not be substituted for this boundary.
+    /// Preserve `vertices` with the margin instead of tracing the display curve
+    /// again: ridge capture is deliberately allowed to move user clicks.
+    pub fn region_boundary(&self, mesh: &TriMesh) -> Result<Vec<DVec3>, DesignError> {
+        let unique: std::collections::HashSet<_> = self.vertices.iter().collect();
+        if self.vertices.len() < 3 || unique.len() != self.vertices.len() {
+            return Err(DesignError::InvalidMargin);
+        }
+        self.vertices
+            .iter()
+            .map(|&v| {
+                mesh.positions
+                    .get(v as usize)
+                    .copied()
+                    .filter(|p| p.is_finite())
+                    .ok_or(DesignError::InvalidMesh)
+            })
+            .collect()
+    }
 }
 
 /// Reusable immutable geometry cache. Rebuild after changing a mesh.
@@ -909,6 +935,93 @@ mod tests {
     use crate::testutil::Lcg;
     use crate::{InnerSurfaceParams, inner_surface};
     use std::collections::HashSet;
+
+    #[test]
+    fn design_boundary_keeps_the_region_barrier_on_a_scalloped_noisy_prep() {
+        let mut die = crate::prepared_stump(&crate::StumpParams {
+            wall_steps: 8,
+            ..Default::default()
+        })
+        .unwrap();
+        let vertices: Vec<_> = die
+            .margin
+            .iter()
+            .map(|p| die.mesh.positions.iter().position(|q| q == p).unwrap() as u32)
+            .collect();
+        let rotation = glam::DQuat::from_axis_angle(DVec3::new(2., 1., 3.).normalize(), 0.61);
+        for p in &mut die.mesh.positions {
+            let a = p.y.atan2(p.x);
+            p.z += 0.6 * (2. * a).cos() + 0.004 * (17. * a).sin();
+            *p = rotation * *p;
+        }
+        let axis = rotation * DVec3::Z;
+        let bvh = Bvh::build(&die.mesh);
+        // An editing curve captured further up the wall is still on the scan.
+        // Pairing it with the old edge barrier admits a cervical skirt outside
+        // that curve, especially where the margin rises between sectors.
+        let points = vertices
+            .iter()
+            .map(|&v| {
+                let p = die.mesh.positions[v as usize] + axis * 0.8;
+                bvh.closest_point(&die.mesh, p).unwrap().point
+            })
+            .collect();
+        let margin = Margin { points, vertices };
+        let boundary = margin.region_boundary(&die.mesh).unwrap();
+        assert!(
+            crate::margin_overhang(&die.mesh, &die.region, &margin.points, axis)
+                .unwrap()
+                .depth
+                > 0.03
+        );
+        assert_eq!(
+            crate::margin_overhang(&die.mesh, &die.region, &boundary, axis)
+                .unwrap()
+                .depth,
+            0.0
+        );
+        for (&v, &p) in margin.vertices.iter().zip(&boundary) {
+            assert_eq!(p, die.mesh.positions[v as usize]);
+        }
+        let inner = inner_surface(
+            &die.mesh,
+            &die.region,
+            &boundary,
+            axis,
+            &InnerSurfaceParams {
+                grid_step: 0.08,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        for (&v, &p) in inner.boundary.iter().zip(&boundary) {
+            assert_eq!(inner.mesh.positions[v as usize], p);
+        }
+        assert!(
+            Margin {
+                points: vec![],
+                vertices: vec![]
+            }
+            .region_boundary(&die.mesh)
+            .is_err()
+        );
+        assert!(
+            Margin {
+                points: vec![],
+                vertices: vec![0, 0, 1]
+            }
+            .region_boundary(&die.mesh)
+            .is_err()
+        );
+        assert!(
+            Margin {
+                points: vec![],
+                vertices: vec![0, 1, u32::MAX]
+            }
+            .region_boundary(&die.mesh)
+            .is_err()
+        );
+    }
 
     /// 1024 exact samples of the analytic margin ring: radius 4 mm at height 8 mm.
     fn ring(axis: DVec3) -> Vec<DVec3> {

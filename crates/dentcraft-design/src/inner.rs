@@ -92,10 +92,10 @@ pub fn inner_surface(
     let frame = Frame::new(*margin.first().ok_or(DesignError::InvalidMargin)?, axis);
     let polygon = Polygon::new(margin, frame)?;
     let prep = Region::new(mesh, region)?;
+    reject_margin_undercut(&polygon, frame, &prep, params.min_undercut_depth)?;
     let mut grid = Grid::new(&polygon, params)?;
     grid.cast(&polygon, frame, &prep);
     grid.fill_holes()?;
-    reject_margin_undercut(&polygon, frame, &prep, params.min_undercut_depth)?;
     let (mut result, distances) = triangulate(&polygon, frame, &grid, &prep)?;
     grid.set_distances(&result.mesh, &distances, frame);
     let heights = grid.offset(params);
@@ -504,8 +504,8 @@ fn refine(
                     .enumerate()
                     .map(|(rank, &k)| {
                         let (_, cut, initial_t) = edge_samples[k];
-                        let mut lo = previous + separation;
-                        let mut hi = 1.0 - separation * (count - rank) as f64;
+                        let (mut lo, mut hi) =
+                            ordered_parameter_bounds(previous, separation, count - rank);
                         let mut t = initial_t.clamp(lo, hi);
                         let mut point = start + edge * t;
                         let mut solved_t = t;
@@ -554,29 +554,26 @@ fn refine(
     Ok(())
 }
 
+fn ordered_parameter_bounds(previous: f64, separation: f64, remaining: usize) -> (f64, f64) {
+    let hi = 1.0 - separation * remaining as f64;
+    // Repeated addition and the reserved-tail multiplication can differ by an
+    // ulp when preceding roots reached their upper bound. Collapse that tiny
+    // interval; keep the same reserved space and ordering for later samples.
+    ((previous + separation).min(hi), hi)
+}
+
 fn reject_margin_undercut(
     polygon: &Polygon,
     frame: Frame,
     prep: &Region,
     threshold: f64,
 ) -> Result<(), DesignError> {
-    let floor = polygon
-        .margin
-        .iter()
-        .map(|&p| frame.height(p))
-        .fold(f64::INFINITY, f64::min);
-    let depth = prep
-        .mesh
-        .positions
-        .par_iter()
-        .filter_map(|&p| {
-            let q = frame.project(p);
-            (frame.height(p) > floor + prep.tolerance && !polygon.contains(q))
-                .then(|| polygon.distance(q))
+    let overhang = crate::margin_overhang::measure_polygon(prep, polygon, frame);
+    if overhang.depth > threshold + prep.tolerance {
+        Err(DesignError::MarginUndercut {
+            depth: overhang.depth,
+            sector_deg: overhang.sector_deg,
         })
-        .reduce(|| 0.0, f64::max);
-    if depth > threshold + prep.tolerance {
-        Err(DesignError::MarginUndercut { depth })
     } else {
         Ok(())
     }
@@ -926,6 +923,23 @@ fn triangulate(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cliff_roots_at_reserved_tail_do_not_invert_the_next_interval() {
+        for count in [16, 157, 800, 2048] {
+            let separation = 0.0001_f64.min(0.5 / (count + 1) as f64);
+            let mut previous = 0.0;
+            for rank in 0..count {
+                let (lo, hi) = ordered_parameter_bounds(previous, separation, count - rank);
+                assert!(lo <= hi && hi < 1.0 && lo > previous);
+                assert!(lo - previous >= separation - 1e-14);
+                // A discontinuous wall can drive consecutive roots to their
+                // upper bounds: formerly an ulp inversion panicked in clamp.
+                let t = 1.0_f64.clamp(lo, hi);
+                previous = t;
+            }
+        }
+    }
     use crate::{StumpParams, prepared_stump};
     use dentcraft_mesh::Bvh;
 
@@ -1013,7 +1027,7 @@ mod tests {
         };
         assert!(matches!(
             inner_surface(&die.mesh, &die.region, &die.margin, die.axis * 3.0, &params),
-            Err(DesignError::MarginUndercut { depth }) if depth > 0.4
+            Err(DesignError::MarginUndercut { depth, .. }) if depth > 0.4
         ));
     }
 

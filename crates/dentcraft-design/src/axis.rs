@@ -54,6 +54,9 @@ pub struct UndercutMap {
 /// The best sampled direction, with metrics recomputed using every region triangle.
 #[derive(Clone, Copy, Debug)]
 pub struct AxisResult {
+    /// Margin seating obstruction when a margin was supplied; `None` for the
+    /// legacy region-only search. Uses all region vertices, edges and centroids.
+    pub margin_overhang: Option<crate::MarginOverhang>,
     /// Unit insertion direction, pointing away from the preparation.
     pub axis: DVec3,
     /// Occluded centroid area in mm².
@@ -188,6 +191,51 @@ pub fn best_insertion_axis_with_params(
     max_tilt_deg: f64,
     params: &UndercutParams,
 ) -> Result<AxisResult, DesignError> {
+    search(mesh, region, None, initial, max_tilt_deg, params)
+}
+
+/// Search with margin seating as the first objective, then occluded area,
+/// draft and tilt. Invalid projected polygons are excluded. Overhang ties allow
+/// only the region's geometric roundoff tolerance, not the scan-noise threshold.
+/// The initial axis and a deterministic cone sampling are refined locally;
+/// this is not proof of feasibility or infeasibility over the entire cone.
+pub fn best_insertion_axis_with_margin(
+    mesh: &TriMesh,
+    region: &[u32],
+    margin: &[DVec3],
+    initial: Option<DVec3>,
+    max_tilt_deg: f64,
+) -> Result<AxisResult, DesignError> {
+    best_insertion_axis_with_margin_and_params(
+        mesh,
+        region,
+        margin,
+        initial,
+        max_tilt_deg,
+        &UndercutParams::default(),
+    )
+}
+
+/// Margin-aware search with an explicit visibility noise threshold.
+pub fn best_insertion_axis_with_margin_and_params(
+    mesh: &TriMesh,
+    region: &[u32],
+    margin: &[DVec3],
+    initial: Option<DVec3>,
+    max_tilt_deg: f64,
+    params: &UndercutParams,
+) -> Result<AxisResult, DesignError> {
+    search(mesh, region, Some(margin), initial, max_tilt_deg, params)
+}
+
+fn search(
+    mesh: &TriMesh,
+    region: &[u32],
+    margin: Option<&[DVec3]>,
+    initial: Option<DVec3>,
+    max_tilt_deg: f64,
+    params: &UndercutParams,
+) -> Result<AxisResult, DesignError> {
     params.validate()?;
     if !max_tilt_deg.is_finite() || !(0.0..=90.0).contains(&max_tilt_deg) {
         return Err(DesignError::InvalidParameter(
@@ -213,7 +261,14 @@ pub fn best_insertion_axis_with_params(
             directions.push(direction(frame, angle, i as f64 * 2.399_963_229_728_653));
         }
     }
-    let mut best = choose(&prep, &sampled, &directions, initial, area_tolerance);
+    let choose_batch = |directions: &[DVec3]| {
+        if let Some(margin) = margin {
+            choose_margin(&prep, &sampled, directions, initial, area_tolerance, margin)
+        } else {
+            Ok(choose(&prep, &sampled, directions, initial, area_tolerance))
+        }
+    };
+    let mut best = choose_batch(&directions)?;
     let mut step = limit / 5.0;
     for _ in 0..5 {
         if step == 0.0 {
@@ -229,10 +284,47 @@ pub fn best_insertion_axis_with_params(
                 }
             }
         }
-        best = choose(&prep, &sampled, &directions, initial, area_tolerance);
+        best = choose_batch(&directions)?;
         step *= 0.35;
     }
-    Ok(evaluate(&prep, &all, best.axis, initial))
+    let mut result = evaluate(&prep, &all, best.axis, initial);
+    result.margin_overhang = best.margin_overhang;
+    Ok(result)
+}
+
+fn choose_margin(
+    prep: &Region,
+    samples: &[Sample],
+    directions: &[DVec3],
+    initial: DVec3,
+    tolerance: f64,
+    margin: &[DVec3],
+) -> Result<AxisResult, DesignError> {
+    let measured: Vec<_> = directions
+        .par_iter()
+        .filter_map(|&axis| {
+            crate::margin_overhang::measure(prep, margin, axis)
+                .ok()
+                .map(|m| (axis, m))
+        })
+        .collect();
+    let minimum = measured
+        .iter()
+        .map(|(_, m)| m.depth)
+        .fold(f64::INFINITY, f64::min);
+    // Only tied seating candidates need the substantially more expensive ray casts.
+    measured
+        .par_iter()
+        .filter(|(_, m)| m.depth <= minimum + prep.tolerance)
+        .map(|&(axis, m)| {
+            let mut result = evaluate(prep, samples, axis, initial);
+            result.margin_overhang = Some(m);
+            result
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .reduce(|a, b| prefer(a, b, tolerance))
+        .ok_or(DesignError::InvalidMargin)
 }
 
 #[derive(Clone, Copy)]
@@ -320,6 +412,7 @@ fn draft_metrics(samples: &[Sample], axis: DVec3, initial: DVec3) -> AxisResult 
         }
     }
     AxisResult {
+        margin_overhang: None,
         axis,
         undercut_area: 0.0,
         tilt_deg: axis.dot(initial).clamp(-1.0, 1.0).acos().to_degrees(),

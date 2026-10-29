@@ -297,9 +297,9 @@ struct Outcome {
 /// One line for a failed computation.
 pub fn describe(e: DesignError) -> String {
     match e {
-        DesignError::MarginUndercut { depth } => {
+        DesignError::MarginUndercut { depth, sector_deg } => {
             format!(
-                "The margin is undercut by {} mm along this axis",
+                "The margin is undercut by {} mm along this axis at azimuth {sector_deg:.1} degrees",
                 crate::widgets::fmt_mm(depth, 3)
             )
         }
