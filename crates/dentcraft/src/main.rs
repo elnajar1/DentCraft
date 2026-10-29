@@ -7,6 +7,7 @@ mod chart;
 mod document;
 mod history;
 mod loader;
+mod margin_edit;
 mod objects;
 mod ribbon;
 mod theme;
@@ -65,6 +66,10 @@ fn main() -> ExitCode {
         workspace_menu_open: args.open == Some(OpenArg::WorkspaceMenu),
         screenshot: args.screenshot,
         measure: args.measure,
+        orient: args.orient,
+        margin: args.margin,
+        step: args.step.map(Into::into),
+        tooth: args.tooth,
         exit_code: exit_code.clone(),
     };
     let result = eframe::run_native(

@@ -107,6 +107,9 @@ pub struct Camera {
     /// Bounding sphere of the scene, used for clip planes and zoom limits.
     pub scene_center: Vec3,
     pub scene_radius: f32,
+    /// Jaw frame to world rotation: view presets and the orbit axis are relative to it. Identity
+    /// means the world axes are the jaw axes.
+    pub frame: Quat,
     transition: Option<Transition>,
 }
 
@@ -120,6 +123,7 @@ impl Default for Camera {
             aspect: 1.0,
             scene_center: Vec3::ZERO,
             scene_radius: 20.0,
+            frame: Quat::IDENTITY,
             transition: None,
         }
     }
@@ -128,6 +132,18 @@ impl Default for Camera {
 const ORBIT_RADIANS_PER_PIXEL: f32 = 0.008;
 
 impl Camera {
+    /// Sets the jaw frame from its axes in world coordinates: patient's right, anterior and
+    /// occlusal (unit, right-handed). Non-finite or degenerate input is ignored.
+    pub fn set_frame(&mut self, right: Vec3, forward: Vec3, occlusal: Vec3) {
+        if !(right.is_finite() && forward.is_finite() && occlusal.is_finite()) {
+            return;
+        }
+        let frame = Quat::from_mat3(&Mat3::from_cols(right, forward, occlusal)).normalize();
+        if frame.is_finite() {
+            self.frame = frame;
+        }
+    }
+
     pub fn eye(&self) -> Vec3 {
         self.target + self.rotation * Vec3::new(0.0, 0.0, self.distance)
     }
@@ -223,7 +239,7 @@ impl Camera {
     /// Jumps to a preset view, framing `bounds` when given.
     pub fn set_view(&mut self, preset: ViewPreset, bounds: Option<&Aabb>) {
         self.transition = None;
-        let rotation = preset.rotation();
+        let rotation = self.frame * preset.rotation();
         let pose = match bounds {
             Some(b) => self.fit_pose(b, rotation),
             None => Pose {
@@ -237,7 +253,7 @@ impl Camera {
     /// Starts a smooth transition to a preset view, framing `bounds` when given. Drive it with
     /// [`Camera::update`].
     pub fn animate_to(&mut self, preset: ViewPreset, bounds: Option<&Aabb>, duration: f32) {
-        let rotation = preset.rotation();
+        let rotation = self.frame * preset.rotation();
         let to = match bounds {
             Some(b) => self.fit_pose(b, rotation),
             None => Pose {
@@ -300,11 +316,14 @@ impl Camera {
         }
     }
 
-    /// Turntable rotation from a mouse drag in pixels: horizontal drags spin around the world
+    /// Turntable rotation from a mouse drag in pixels: horizontal drags spin around the jaw's
     /// occlusal axis, vertical drags tilt around the screen's horizontal axis.
     pub fn orbit(&mut self, drag_pixels: Vec2) {
         self.transition = None;
-        let yaw = Quat::from_rotation_z(-drag_pixels.x * ORBIT_RADIANS_PER_PIXEL);
+        let yaw = Quat::from_axis_angle(
+            self.frame * Vec3::Z,
+            -drag_pixels.x * ORBIT_RADIANS_PER_PIXEL,
+        );
         let pitch = Quat::from_rotation_x(-drag_pixels.y * ORBIT_RADIANS_PER_PIXEL);
         self.rotation = (yaw * self.rotation * pitch).normalize();
     }
@@ -541,5 +560,83 @@ mod tests {
         let target = camera.target;
         camera.pan(Vec2::new(100.0, 0.0), 500.0);
         assert!(camera.target.distance(target) > 0.1);
+    }
+
+    fn legacy_rotation(preset: ViewPreset) -> Quat {
+        let (back, up) = match preset {
+            ViewPreset::Occlusal => (Vec3::Z, Vec3::Y),
+            ViewPreset::Bottom => (Vec3::NEG_Z, Vec3::Y),
+            ViewPreset::Facial => (Vec3::Y, Vec3::Z),
+            ViewPreset::Lingual => (Vec3::NEG_Y, Vec3::Z),
+            ViewPreset::Left => (Vec3::NEG_X, Vec3::Z),
+            ViewPreset::Right => (Vec3::X, Vec3::Z),
+        };
+        Quat::from_mat3(&Mat3::from_cols(up.cross(back), up, back)).normalize()
+    }
+
+    /// An upper jaw as scanned: occlusal faces -Z, anterior is -Y.
+    fn upper_frame_camera() -> Camera {
+        let mut cam = Camera::default();
+        cam.set_frame(Vec3::X, Vec3::NEG_Y, Vec3::NEG_Z);
+        cam
+    }
+
+    #[test]
+    fn identity_frame_leaves_every_preset_unchanged() {
+        for preset in ViewPreset::ALL {
+            let mut cam = Camera::default();
+            assert_eq!(cam.frame, Quat::IDENTITY);
+            cam.set_view(preset, None);
+            assert!(
+                cam.rotation.angle_between(legacy_rotation(preset)) < 1e-5,
+                "{preset:?}"
+            );
+            cam.animate_to(preset, None, 0.0);
+            assert!(cam.rotation.angle_between(legacy_rotation(preset)) < 1e-5);
+        }
+    }
+
+    #[test]
+    fn upper_jaw_frame_looks_at_the_biting_surface() {
+        let mut cam = upper_frame_camera();
+        cam.set_view(ViewPreset::Occlusal, None);
+        assert!((cam.forward() - Vec3::Z).length() < 1e-5);
+        let mut animated = upper_frame_camera();
+        animated.animate_to(ViewPreset::Occlusal, None, 0.0);
+        assert!((animated.forward() - Vec3::Z).length() < 1e-5);
+    }
+
+    #[test]
+    fn presets_follow_the_frame() {
+        let mut cam = upper_frame_camera();
+        for preset in ViewPreset::ALL {
+            cam.set_view(preset, None);
+            let expected = cam.frame * (legacy_rotation(preset) * Vec3::NEG_Z);
+            assert!((cam.forward() - expected).length() < 1e-5, "{preset:?}");
+        }
+        // Facial looks from the anterior side towards the back of the jaw: world +Y here.
+        cam.set_view(ViewPreset::Facial, None);
+        assert!((cam.forward() - Vec3::Y).length() < 1e-5);
+    }
+
+    #[test]
+    fn yaw_orbit_keeps_the_frame_occlusal_axis() {
+        let mut cam = upper_frame_camera();
+        cam.set_view(ViewPreset::Facial, None);
+        let axis = cam.frame * Vec3::Z;
+        let before = cam.up().dot(axis);
+        cam.orbit(Vec2::new(90.0, 0.0));
+        assert!((cam.up().dot(axis) - before).abs() < 1e-5);
+        assert!(cam.forward().dot(axis).abs() < 1e-5);
+        assert!(cam.forward().dot(Vec3::Y) < 0.99, "the view turned");
+    }
+
+    #[test]
+    fn set_frame_ignores_non_finite_input() {
+        let mut cam = upper_frame_camera();
+        let frame = cam.frame;
+        cam.set_frame(Vec3::NAN, Vec3::Y, Vec3::Z);
+        cam.set_frame(Vec3::X, Vec3::INFINITY, Vec3::Z);
+        assert_eq!(cam.frame, frame);
     }
 }

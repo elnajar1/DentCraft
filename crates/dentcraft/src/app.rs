@@ -4,10 +4,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use dentcraft_case::{Case, Material, Scan, ScanRole};
+use dentcraft_case::{Case, Fdi, Material, Scan, ScanRole};
 use dentcraft_mesh::Aabb;
 use dentcraft_render::{MeshId, ViewPreset};
-use dentcraft_workflow::{Session, plan};
+use dentcraft_workflow::{Session, StepId, plan};
 use glam::DVec3;
 
 use eframe::egui::{
@@ -50,6 +50,19 @@ pub struct StartOptions {
     pub screenshot: Option<PathBuf>,
     /// Two points to measure between, snapped to the scans once they have loaded.
     pub measure: Option<[DVec3; 2]>,
+    // The next four are wired by the margin step (not read yet, in tests too).
+    /// Run the jaw orientation at startup.
+    #[allow(dead_code)]
+    pub orient: bool,
+    /// Margin clicks (tooth, point) to replay at startup.
+    #[allow(dead_code)]
+    pub margin: Vec<(Fdi, DVec3)>,
+    /// Design step to open.
+    #[allow(dead_code)]
+    pub step: Option<StepId>,
+    /// Tooth the design steps work on.
+    #[allow(dead_code)]
+    pub tooth: Option<Fdi>,
     /// Exit code of a screenshot run, read by `main` once the window has closed.
     pub exit_code: Arc<Mutex<Option<u8>>>,
 }

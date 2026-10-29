@@ -3,8 +3,9 @@
 use std::path::PathBuf;
 
 use clap::{Parser, ValueEnum};
-use dentcraft_case::ScanRole;
+use dentcraft_case::{Fdi, ScanRole};
 use dentcraft_render::ViewPreset;
+use dentcraft_workflow::StepId;
 use glam::DVec3;
 
 use crate::ribbon::RibbonTab;
@@ -56,6 +57,44 @@ pub struct Args {
     /// snaps to the nearest surface of the visible scans once they have loaded.
     #[arg(long, value_name = "X,Y,Z;X,Y,Z", value_parser = parse_measure, allow_hyphen_values = true)]
     pub measure: Option<[DVec3; 2]>,
+
+    /// Run the jaw orientation (occlusal plane and midline) automatically at startup.
+    #[arg(long)]
+    pub orient: bool,
+
+    /// Margin line click on a tooth: FDI tooth number and a point in millimetres, e.g.
+    /// "16@1.5,-3,12". Each point snaps to the nearest surface. Repeat for several clicks.
+    #[arg(long, value_name = "FDI@X,Y,Z", value_parser = parse_margin_click, allow_hyphen_values = true)]
+    pub margin: Vec<(Fdi, DVec3)>,
+
+    /// Design step to open: scans, orient, margin, axis or inner.
+    #[arg(long, value_enum)]
+    pub step: Option<StepArg>,
+
+    /// Tooth (FDI number, 11-48) the design steps work on.
+    #[arg(long, value_name = "FDI", value_parser = parse_tooth)]
+    pub tooth: Option<Fdi>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum StepArg {
+    Scans,
+    Orient,
+    Margin,
+    Axis,
+    Inner,
+}
+
+impl From<StepArg> for StepId {
+    fn from(arg: StepArg) -> Self {
+        match arg {
+            StepArg::Scans => StepId::Scans,
+            StepArg::Orient => StepId::Orient,
+            StepArg::Margin => StepId::Margin,
+            StepArg::Axis => StepId::InsertionAxis,
+            StepArg::Inner => StepId::InnerSurface,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -154,6 +193,26 @@ pub fn parse_measure(text: &str) -> Result<[DVec3; 2], String> {
         return Err(bad());
     };
     Ok([point(a)?, point(b)?])
+}
+
+fn parse_tooth(text: &str) -> Result<Fdi, String> {
+    let bad = || format!("invalid tooth `{text}` (expected an FDI number from 11 to 48)");
+    Fdi::new(text.trim().parse().map_err(|_| bad())?).map_err(|_| bad())
+}
+
+/// Parses `FDI@x,y,z`: a tooth and a point of finite numbers.
+pub fn parse_margin_click(text: &str) -> Result<(Fdi, DVec3), String> {
+    let bad = || format!("invalid margin click `{text}` (expected FDI@x,y,z, e.g. 16@1.5,-3,12)");
+    let (tooth, point) = text.split_once('@').ok_or_else(bad)?;
+    let tooth = parse_tooth(tooth)?;
+    let v: Vec<f64> = point
+        .split(',')
+        .map(|n| n.trim().parse::<f64>().map_err(|_| bad()))
+        .collect::<Result<_, _>>()?;
+    match v[..] {
+        [x, y, z] if v.iter().all(|c| c.is_finite()) => Ok((tooth, DVec3::new(x, y, z))),
+        _ => Err(bad()),
+    }
 }
 
 #[cfg(test)]
@@ -282,5 +341,62 @@ mod tests {
     #[test]
     fn unknown_view_is_an_error() {
         assert!(Args::try_parse_from(["dentcraft", "--view", "sideways"]).is_err());
+    }
+
+    #[test]
+    fn orient_margin_step_and_tooth_parse() {
+        let args = Args::try_parse_from([
+            "dentcraft",
+            "--orient",
+            "--margin",
+            "16@1.5,-3,12",
+            "--margin",
+            "16@-1,0,2",
+            "--step",
+            "axis",
+            "--tooth",
+            "16",
+        ])
+        .unwrap();
+        assert!(args.orient);
+        let fdi = Fdi::new(16).unwrap();
+        assert_eq!(
+            args.margin,
+            vec![
+                (fdi, DVec3::new(1.5, -3.0, 12.0)),
+                (fdi, DVec3::new(-1.0, 0.0, 2.0))
+            ]
+        );
+        assert_eq!(args.step.map(StepId::from), Some(StepId::InsertionAxis));
+        assert_eq!(args.tooth, Some(fdi));
+        let none = Args::try_parse_from(["dentcraft"]).unwrap();
+        assert!(!none.orient && none.margin.is_empty() && none.step.is_none());
+        assert_eq!(none.tooth, None);
+    }
+
+    #[test]
+    fn margin_rejects_bad_tooth_point_and_nan() {
+        for bad in [
+            "",
+            "16",
+            "16@",
+            "16@1,2",
+            "16@1,2,3,4",
+            "16@a,b,c",
+            "19@0,0,0",
+            "9@0,0,0",
+            "x@0,0,0",
+            "@0,0,0",
+            "16@NaN,0,0",
+            "16@0,inf,0",
+        ] {
+            assert!(
+                parse_margin_click(bad).is_err(),
+                "`{bad}` should be rejected"
+            );
+        }
+        assert!(Args::try_parse_from(["dentcraft", "--margin", "99@0,0,0"]).is_err());
+        assert!(Args::try_parse_from(["dentcraft", "--tooth", "50"]).is_err());
+        assert!(Args::try_parse_from(["dentcraft", "--step", "anatomy"]).is_err());
     }
 }

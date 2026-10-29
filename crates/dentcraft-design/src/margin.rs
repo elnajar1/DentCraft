@@ -6,6 +6,7 @@ use dentcraft_mesh::{
 };
 use glam::DVec3;
 use std::f64::consts::TAU;
+use std::sync::Arc;
 
 /// Closed curve: neither list repeats the first entry at the end.
 #[derive(Clone, Debug, PartialEq)]
@@ -17,8 +18,8 @@ pub struct Margin {
 }
 
 /// Reusable immutable geometry cache. Rebuild after changing a mesh.
-pub struct MarginTracer<'a> {
-    mesh: &'a TriMesh,
+pub struct MarginTracer {
+    mesh: Arc<TriMesh>,
     adjacency: VertexAdjacency,
     curvature: Vec<PrincipalCurvature>,
     cost: Vec<f64>,
@@ -44,7 +45,7 @@ pub(crate) fn validate_mesh(mesh: &TriMesh) -> Result<(), DesignError> {
     Ok(())
 }
 
-impl<'a> MarginTracer<'a> {
+impl MarginTracer {
     /// Precompute adjacency, signed principal curvatures, ridge cost and BVH.
     /// The ridge sharpness is adaptive: `12 / sharpest k1`, so the strongest
     /// convex edge lands just above the path toolkit's `MIN_COST` clamp
@@ -52,8 +53,8 @@ impl<'a> MarginTracer<'a> {
     /// which erases the contrast between the margin and its neighbouring
     /// tessellation rings — or is too weak to glue the path to the ridge.
     /// Empty, wholly degenerate and nonfinite meshes are rejected before toolkit calls.
-    pub fn new(mesh: &'a TriMesh) -> Result<Self, DesignError> {
-        validate_mesh(mesh)?;
+    pub fn new(mesh: Arc<TriMesh>) -> Result<Self, DesignError> {
+        validate_mesh(&mesh)?;
         let adjacency = mesh.vertex_adjacency();
         let curvature = mesh.principal_curvatures();
         let sharpest = curvature
@@ -66,7 +67,7 @@ impl<'a> MarginTracer<'a> {
             0.0
         };
         let cost = ridge_cost(&curvature, sharpness);
-        let bvh = Bvh::build(mesh);
+        let bvh = Bvh::build(&mesh);
         Ok(Self {
             mesh,
             adjacency,
@@ -82,7 +83,7 @@ impl<'a> MarginTracer<'a> {
         }
         let hit = self
             .bvh
-            .closest_point(self.mesh, point)
+            .closest_point(&self.mesh, point)
             .ok_or(DesignError::InvalidMargin)?;
         // Closest face supplies a surface-local vertex (avoids isolated vertices).
         Ok(*self.mesh.triangles[hit.triangle as usize]
@@ -133,7 +134,7 @@ impl<'a> MarginTracer<'a> {
         if waypoints.len() < 3 {
             return Err(DesignError::InvalidMargin);
         }
-        let path = path_through(self.mesh, &self.adjacency, waypoints, true, |v| {
+        let path = path_through(&self.mesh, &self.adjacency, waypoints, true, |v| {
             self.cost[v as usize]
         })
         .ok_or(DesignError::InvalidMargin)?;
@@ -147,10 +148,10 @@ impl<'a> MarginTracer<'a> {
             .iter()
             .map(|&v| self.mesh.positions[v as usize])
             .collect();
-        let smooth = smooth_polyline_on_surface(self.mesh, &self.bvh, &points, 1);
+        let smooth = smooth_polyline_on_surface(&self.mesh, &self.bvh, &points, 1);
         let mut points = resample(&smooth, 0.1);
         for p in &mut points {
-            if let Some(hit) = self.bvh.closest_point(self.mesh, *p) {
+            if let Some(hit) = self.bvh.closest_point(&self.mesh, *p) {
                 *p = hit.point;
             }
         }
@@ -227,8 +228,8 @@ impl<'a> MarginTracer<'a> {
         {
             return Vec::new();
         }
-        inside_closed_path(self.mesh, &self.adjacency, &margin.vertices, seed)
-            .map(|inside| region_triangles(self.mesh, &inside))
+        inside_closed_path(&self.mesh, &self.adjacency, &margin.vertices, seed)
+            .map(|inside| region_triangles(&self.mesh, &inside))
             .unwrap_or_default()
     }
 }
@@ -341,7 +342,7 @@ mod tests {
                 ..Default::default()
             })
             .unwrap();
-            let tracer = MarginTracer::new(&die.mesh).unwrap();
+            let tracer = MarginTracer::new(Arc::new(die.mesh.clone())).unwrap();
             let mut rng = Lcg::new(101 + tilt as u64 + u64::from(finish == FinishLine::Chamfer));
             for _ in 0..3 {
                 let clicks = clicks_near(&die.margin, 4, &mut rng);
@@ -379,7 +380,7 @@ mod tests {
     #[test]
     fn shoulder_inner_corner_clicks_still_find_the_outer_edge() {
         let die = prepared_tooth(&ToothParams::default()).unwrap();
-        let tracer = MarginTracer::new(&die.mesh).unwrap();
+        let tracer = MarginTracer::new(Arc::new(die.mesh.clone())).unwrap();
         let n = die.margin.len();
         // Clicks on the flat ledge, displaced toward the concave inner corner.
         let clicks: Vec<DVec3> = (0..4)
@@ -407,7 +408,7 @@ mod tests {
                 ..Default::default()
             })
             .unwrap();
-            let tracer = MarginTracer::new(&die.mesh).unwrap();
+            let tracer = MarginTracer::new(Arc::new(die.mesh.clone())).unwrap();
             let margin = tracer.propose(die.axis * 12.0, die.axis).unwrap();
             let to_curve = distance_to_curve(&ring(die.axis), &margin.points);
             assert!(to_curve <= 0.1, "{finish:?} tilt {tilt}: {to_curve}");
@@ -428,7 +429,7 @@ mod tests {
     #[test]
     fn region_is_the_preparation_and_excludes_the_base() {
         let die = prepared_tooth(&ToothParams::default()).unwrap();
-        let tracer = MarginTracer::new(&die.mesh).unwrap();
+        let tracer = MarginTracer::new(Arc::new(die.mesh.clone())).unwrap();
         let margin = tracer.propose(die.axis * 12.0, die.axis).unwrap();
         let prep: HashSet<u32> = die.region.iter().copied().collect();
         let region = tracer.region(&margin, die.axis * 12.0);
@@ -451,7 +452,7 @@ mod tests {
     #[test]
     fn invalid_clicks_and_meshes_are_rejected() {
         let die = prepared_tooth(&ToothParams::default()).unwrap();
-        let tracer = MarginTracer::new(&die.mesh).unwrap();
+        let tracer = MarginTracer::new(Arc::new(die.mesh.clone())).unwrap();
         assert_eq!(
             tracer.trace(&die.margin[..2]),
             Err(DesignError::InvalidMargin)
@@ -468,19 +469,19 @@ mod tests {
             vec![[0, 2, 1], [0, 1, 3], [1, 2, 3], [0, 3, 2]],
         );
         split.merge(&island);
-        let split_tracer = MarginTracer::new(&split).unwrap();
+        let split_tracer = MarginTracer::new(Arc::new(split)).unwrap();
         let mut clicks = clicks_near(&die.margin, 4, &mut Lcg::new(5));
         clicks.push(DVec3::splat(50.0));
         assert_eq!(split_tracer.trace(&clicks), Err(DesignError::InvalidMargin));
         // Degenerate tracer inputs.
         assert!(matches!(
-            MarginTracer::new(&TriMesh::default()),
+            MarginTracer::new(Arc::new(TriMesh::default())),
             Err(DesignError::EmptyRegion)
         ));
         let mut nonfinite = die.mesh.clone();
         nonfinite.positions[0] = DVec3::NAN;
         assert!(matches!(
-            MarginTracer::new(&nonfinite),
+            MarginTracer::new(Arc::new(nonfinite)),
             Err(DesignError::InvalidMesh)
         ));
         let collinear = TriMesh::new(
@@ -488,15 +489,21 @@ mod tests {
             vec![[0, 1, 2]],
         );
         assert!(matches!(
-            MarginTracer::new(&collinear),
+            MarginTracer::new(Arc::new(collinear)),
             Err(DesignError::DegenerateRegion)
         ));
     }
 
     #[test]
+    fn tracer_is_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<MarginTracer>();
+    }
+
+    #[test]
     fn inner_surface_boundary_is_the_proposed_margin() {
         let die = prepared_tooth(&ToothParams::default()).unwrap();
-        let tracer = MarginTracer::new(&die.mesh).unwrap();
+        let tracer = MarginTracer::new(Arc::new(die.mesh.clone())).unwrap();
         let margin = tracer.propose(die.axis * 12.0, die.axis).unwrap();
         let region = tracer.region(&margin, die.axis * 12.0);
         let params = InnerSurfaceParams {
@@ -521,7 +528,7 @@ mod tests {
         .unwrap();
         assert!(die.mesh.triangle_count() >= 300_000);
         let start = std::time::Instant::now();
-        let tracer = MarginTracer::new(&die.mesh).unwrap();
+        let tracer = MarginTracer::new(Arc::new(die.mesh.clone())).unwrap();
         let margin = tracer.propose(die.axis * 12.0, die.axis).unwrap();
         let elapsed = start.elapsed();
         println!(
