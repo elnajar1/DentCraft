@@ -8,6 +8,7 @@
   <img src="https://img.shields.io/badge/built%20with-Rust-cba360?style=flat&logo=rust&logoColor=white" alt="Built with Rust" />
   <img src="https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-5f5a51?style=flat" alt="Windows, macOS and Linux" />
   <img src="https://img.shields.io/badge/status-early%20development-7d5c22?style=flat" alt="Status: early development" />
+  <a href="https://github.com/elnajar1/DentCraft/releases/latest"><img src="https://img.shields.io/github/v/release/elnajar1/DentCraft?include_prereleases&style=flat&color=3a88ee&label=download" alt="Download the latest release" /></a>
 </p>
 
 <p align="center">
@@ -87,6 +88,13 @@ shared steps first, then the steps each restoration needs, tooth by tooth.
 
 Material presets (zirconia, lithium disilicate, PMMA, wax) set the cement gap, margin seal,
 minimum thickness and connector size. Teeth use FDI notation (ISO 3950).
+
+## Download
+
+**[DentCraft 0.2.0 for Windows](https://github.com/elnajar1/DentCraft/releases/latest)**: a single
+`.exe` with nothing to install. It designs a single crown from margin to STL; see the
+[changelog](CHANGELOG.md) for what's in it and its known limitations. macOS and Linux users build
+from source below.
 
 ## Build from source
 
