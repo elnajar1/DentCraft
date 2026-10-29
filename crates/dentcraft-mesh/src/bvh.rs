@@ -117,10 +117,10 @@ impl Bvh {
             let node = &self.nodes[index as usize];
             if node.count > 0 {
                 for &triangle in self.leaf(node) {
-                    if let Some(hit) = ray_triangle(mesh, triangle, origin, dir) {
-                        if best.is_none_or(|b| hit.t < b.t) {
-                            best = Some(hit);
-                        }
+                    if let Some(hit) = ray_triangle(mesh, triangle, origin, dir)
+                        && best.is_none_or(|b| hit.t < b.t)
+                    {
+                        best = Some(hit);
                     }
                 }
                 continue;

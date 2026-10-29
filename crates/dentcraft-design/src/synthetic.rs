@@ -213,7 +213,7 @@ fn validate(p: &StumpParams) -> Result<(), DesignError> {
         || p.margin_height <= 0.5
         || p.plate_half_width <= (p.base_radius + 0.3).max(p.top_radius)
         || p.segments < 96
-        || p.segments % 8 != 0
+        || !p.segments.is_multiple_of(8)
         || p.wall_steps == 0
         || p.segments
             .checked_mul(p.wall_steps.saturating_add(6))
@@ -321,7 +321,7 @@ impl Default for ToothParams {
 /// [`DesignError::InvalidParameter`].
 pub fn prepared_tooth(p: &ToothParams) -> Result<PreparedStump, DesignError> {
     if p.segments < 96
-        || p.segments % 8 != 0
+        || !p.segments.is_multiple_of(8)
         || p.wall_steps < 2
         || !p.tilt_deg.is_finite()
         || !(0.5..=3.0).contains(&p.height_scale)

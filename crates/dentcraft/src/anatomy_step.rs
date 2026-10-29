@@ -152,7 +152,11 @@ pub fn shape_params(a: &AnatomyDesign) -> ShapeParams {
 /// +1 where the template's +X is the tooth's mesial direction (quadrants 1 and 3), -1 where the
 /// template is mirrored and its +X is distal (quadrants 2 and 4).
 fn template_sign(tooth: Fdi) -> f64 {
-    if tooth.quadrant() % 2 == 0 { -1.0 } else { 1.0 }
+    if tooth.quadrant().is_multiple_of(2) {
+        -1.0
+    } else {
+        1.0
+    }
 }
 
 /// The direction the template's +X should take (the `mesial` of a [`CrownPlacement`]), from the

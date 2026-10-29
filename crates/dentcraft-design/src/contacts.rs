@@ -246,10 +246,11 @@ impl Thickness<'_> {
             .map(|(tri, cache)| {
                 let p = tri.map(|v| outer.positions[v as usize]);
                 let n = tri.map(|v| normals[v as usize]);
-                if let Some(cached) = cache {
-                    if cached.positions == p && cached.normals == n {
-                        return cached.result;
-                    }
+                if let Some(cached) = cache
+                    && cached.positions == p
+                    && cached.normals == n
+                {
+                    return cached.result;
                 }
                 let mut minimum = f64::INFINITY;
                 let mut deficit = 0.0_f64;
@@ -391,17 +392,15 @@ impl Scan<'_> {
             minimum,
         } = self.inspect(outer, locked);
         let growing = self.grow && minimum > self.target + 0.0001;
-        if growing {
-            if let Some((v, q)) = queries
+        if growing
+            && let Some((v, q)) = queries
                 .iter()
                 .enumerate()
                 .filter(|(v, _)| !locked[*v])
                 .min_by(|a, b| a.1.0.total_cmp(&b.1.0))
-            {
-                if q.0 - self.target <= adapt.max_move {
-                    amounts[v] = q.0 - self.target;
-                }
-            }
+            && q.0 - self.target <= adapt.max_move
+        {
+            amounts[v] = q.0 - self.target;
         }
         spread(&mut amounts, original, locked, adapt.influence_radius);
         amounts

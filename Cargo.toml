@@ -8,7 +8,7 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/elnajar1/DentCraft"
 authors = ["Dr. Mahmoud ElNajar", "DentCraft contributors"]
-rust-version = "1.85"
+rust-version = "1.89"
 
 [workspace.dependencies]
 dentcraft-mesh = { path = "crates/dentcraft-mesh" }
