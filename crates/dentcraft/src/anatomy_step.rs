@@ -5,15 +5,19 @@
 //! drawn as its own opaque mesh; the inner surface is hidden in this step.
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use dentcraft_anatomy::{CrownParams as ShapeParams, crown};
-use dentcraft_case::{AnatomyDesign, Arch, Case, Design, Fdi, RestorationKind, ToothType};
+use dentcraft_case::{
+    AnatomyDesign, Arch, Case, Design, Fdi, JawFrame, Material, RestorationKind, ToothDesign,
+    ToothType,
+};
 use dentcraft_design::{
-    CrownParams as BuildParams, CrownPlacement, CrownReport, InnerSurface, auto_placement,
+    Crown, CrownParams as BuildParams, CrownPlacement, CrownReport, InnerSurface, auto_placement,
     build_crown,
 };
 use dentcraft_render::{DrawItem, MeshData, MeshId};
@@ -280,13 +284,33 @@ impl PartialEq for Key {
     }
 }
 
-struct Outcome {
-    key: Key,
-    mesh: Arc<MeshData>,
-    report: CrownReport,
+/// What a crown was built from in the case: the tooth's design, the material and the jaw frame.
+/// A crown whose stamp no longer matches the case is out of date.
+#[derive(Clone, Debug, PartialEq)]
+struct Stamp {
+    tooth: Option<ToothDesign>,
+    material: Material,
+    jaw: Option<JawFrame>,
 }
 
-fn run(key: Key) -> Result<Outcome, String> {
+impl Stamp {
+    fn of(case: &Case, tooth: Fdi) -> Self {
+        Self {
+            tooth: case.design.teeth.get(&tooth).cloned(),
+            material: case.material.clone(),
+            jaw: case.design.jaw_frame,
+        }
+    }
+}
+
+struct Outcome {
+    key: Key,
+    stamp: Stamp,
+    mesh: Arc<MeshData>,
+    crown: Arc<Crown>,
+}
+
+fn run(key: Key, stamp: Stamp) -> Result<Outcome, String> {
     let template = crown(key.tooth, &shape_params(&key.anatomy));
     let inner = &*key.surface;
     let hint = key
@@ -304,7 +328,8 @@ fn run(key: Key) -> Result<Outcome, String> {
     .map_err(describe)?;
     Ok(Outcome {
         mesh: Arc::new(MeshData::from_mesh(&built.mesh)),
-        report: built.report,
+        crown: Arc::new(built),
+        stamp,
         key,
     })
 }
@@ -366,6 +391,8 @@ pub struct AnatomyStep {
     drag: Option<(AnatomyParam, EditGroup)>,
     error: Option<String>,
     repaint: Option<egui::Context>,
+    /// The latest crown built for each tooth and what it was built from, for the export.
+    built: BTreeMap<Fdi, (Stamp, Arc<Crown>)>,
 }
 
 impl AnatomyStep {
@@ -384,7 +411,14 @@ impl AnatomyStep {
             drag: None,
             error: None,
             repaint,
+            built: BTreeMap::new(),
         }
+    }
+
+    /// The latest crown built for `tooth`, while the case still matches what it was built from.
+    pub fn crown(&self, case: &Case, tooth: Fdi) -> Option<Arc<Crown>> {
+        let (stamp, crown) = self.built.get(&tooth)?;
+        (*stamp == Stamp::of(case, tooth)).then(|| crown.clone())
     }
 
     /// Forgets the open case's crown, jobs and error.
@@ -489,10 +523,12 @@ impl AnatomyStep {
             self.running = false;
             match message {
                 Ok(o) => {
+                    // Kept even when no longer wanted: the stamp tells the export if it is current.
+                    self.built.insert(o.key.tooth, (o.stamp, o.crown.clone()));
                     if Some(&o.key) == self.wanted.as_ref() {
                         self.error = None;
                         *self.mesh.borrow_mut() = Some(o.mesh);
-                        self.report = Some(o.report);
+                        self.report = Some(o.crown.report);
                         self.shown = Some(o.key);
                     }
                 }
@@ -537,9 +573,11 @@ impl AnatomyStep {
         self.running = true;
         let tx = self.tx.clone();
         let repaint = self.repaint.clone();
+        // The surface in the key was computed from the case as it is this frame.
+        let stamp = Stamp::of(f.case, key.tooth);
         std::thread::spawn(move || {
             let k = key.clone();
-            let _ = tx.send(run(key).map_err(|e| (k, e)));
+            let _ = tx.send(run(key, stamp).map_err(|e| (k, e)));
             if let Some(ctx) = repaint {
                 ctx.request_repaint();
             }
@@ -557,6 +595,37 @@ mod tests {
 
     fn close(a: DVec3, b: DVec3) -> bool {
         a.distance(b) < 1e-9
+    }
+
+    #[test]
+    fn a_built_crown_is_offered_only_while_the_case_matches_it() {
+        let mut case = Case::new("x");
+        let tooth = t(36);
+        let crown = Arc::new(Crown {
+            mesh: dentcraft_mesh::TriMesh::default(),
+            margin_vertices: vec![],
+            report: CrownReport {
+                min_thickness: 0.5,
+                thickened_area: 0.0,
+                max_thickening: 0.0,
+            },
+        });
+        let mut step = AnatomyStep::new(None);
+        step.built
+            .insert(tooth, (Stamp::of(&case, tooth), crown.clone()));
+        assert!(step.crown(&case, tooth).is_some());
+        assert!(step.crown(&case, t(46)).is_none());
+        case.design
+            .teeth
+            .entry(tooth)
+            .or_default()
+            .anatomy
+            .mesiodistal = 1.05;
+        assert!(step.crown(&case, tooth).is_none(), "anatomy changed");
+        step.built.insert(tooth, (Stamp::of(&case, tooth), crown));
+        assert!(step.crown(&case, tooth).is_some());
+        case.material.min_wall_thickness += 0.1;
+        assert!(step.crown(&case, tooth).is_none(), "material changed");
     }
 
     #[test]

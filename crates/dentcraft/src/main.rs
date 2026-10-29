@@ -7,6 +7,7 @@ mod axis_step;
 mod browser;
 mod chart;
 mod document;
+mod export_step;
 mod history;
 mod inner_step;
 mod loader;
@@ -76,6 +77,7 @@ fn main() -> ExitCode {
         step: args.step.map(Into::into),
         tooth: args.tooth,
         section: args.section,
+        export: args.export,
         exit_code: exit_code.clone(),
     };
     let result = eframe::run_native(

@@ -8,8 +8,10 @@ use eframe::egui::{
 };
 
 use crate::anatomy_step::{AnatomyParam, NUDGE_MM};
+use crate::app::group_thousands;
 use crate::browser::{self, Section, Sections};
 use crate::chart::{ON_FILL, kind_color};
+use crate::export_step::{ExportCard, format_bytes};
 use crate::inner_step::InnerParam;
 use crate::theme::{Palette, RADIUS_SM, SIZE_SMALL};
 use crate::widgets::{self, Icon, paint_icon, small_button};
@@ -57,6 +59,12 @@ pub enum StepAction {
     NudgeAnatomy(usize, f64),
     /// Put the current tooth's crown back to the library shape and automatic placement.
     ResetAnatomy,
+    /// Simplify the crowns before writing them (or not).
+    SetSimplify(bool),
+    /// Pick a folder and write every ready crown into it as STL.
+    ExportStl,
+    /// Open the last export's folder in the system's file browser.
+    OpenExportFolder,
 }
 
 /// What the Anatomy step's card shows.
@@ -171,6 +179,8 @@ pub struct WorkflowView<'a> {
     pub inner: Option<InnerCard>,
     /// The Anatomy step's card, when that step is active.
     pub anatomy: Option<AnatomyCard>,
+    /// The Finish & export step's card, when that step is active.
+    pub export: Option<ExportCard>,
 }
 
 impl WorkflowView<'_> {
@@ -579,6 +589,10 @@ fn active_card(
             step(StepId::InnerSurface),
         ];
         if let Some(a) = anatomy_section(ui, card, steps, p) {
+            action = Some(a);
+        }
+    } else if let Some(card) = view.export.as_ref().filter(|_| id == StepId::Finish) {
+        if let Some(a) = export_section(ui, card, p) {
             action = Some(a);
         }
     } else {
@@ -1018,6 +1032,110 @@ fn anatomy_section(
                 .clicked()
             {
                 action = Some(StepAction::ResetAnatomy);
+            }
+        });
+    action
+}
+
+/// The Finish & export step's card: every unit's crown, the options and the export.
+fn export_section(ui: &mut Ui, card: &ExportCard, p: &Palette) -> Option<StepAction> {
+    let mut action = None;
+    let busy = card.busy.is_some();
+    egui::Frame::new()
+        .fill(p.panel)
+        .corner_radius(CornerRadius::same(8))
+        .inner_margin(Margin::symmetric(10, 7))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 4.0;
+            if card.rows.is_empty() {
+                ui.label(
+                    RichText::new("The case has no restorations.")
+                        .size(SIZE_SMALL)
+                        .color(p.text_dim),
+                );
+            }
+            for row in &card.rows {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(format!("{} {}", row.tooth, row.kind.label()))
+                            .strong()
+                            .color(p.text),
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let (text, color) = match (&row.result, row.crown) {
+                            (Some(Ok(_)), _) => ("Written", p.accent),
+                            (Some(Err(_)), _) => ("Failed", p.danger),
+                            (None, Some(_)) => ("Ready", p.text),
+                            (None, None) => ("Missing crown", p.text_dim),
+                        };
+                        ui.label(RichText::new(text).size(SIZE_SMALL).color(color));
+                    });
+                });
+                match row.crown {
+                    Some((triangles, thickness)) => {
+                        let mut text = format!(
+                            "{} triangles \u{b7} min {thickness:.2} mm",
+                            group_thousands(triangles)
+                        );
+                        if let Some(Ok((written, bytes))) = &row.result {
+                            text = format!(
+                                "{} triangles written \u{b7} {}",
+                                group_thousands(*written),
+                                format_bytes(*bytes)
+                            );
+                        }
+                        ui.label(RichText::new(text).size(SIZE_SMALL).color(p.text_dim));
+                    }
+                    None => {
+                        if let Some(index) = row.anatomy_step
+                            && small_button(ui, "Anatomy step", true, false)
+                                .on_hover_text("Build this tooth's crown in the Anatomy step")
+                                .clicked()
+                        {
+                            action = Some(StepAction::Tooth(index, row.tooth));
+                        }
+                    }
+                }
+                if let Some(Err(error)) = &row.result {
+                    ui.label(RichText::new(error).size(SIZE_SMALL).color(p.danger));
+                }
+            }
+            ui.add_space(2.0);
+            let mut simplify = card.simplify;
+            if ui
+                .add_enabled(
+                    !busy,
+                    egui::Checkbox::new(&mut simplify, "Simplify (max error 0.002 mm)"),
+                )
+                .on_hover_text("Fewer triangles; the margin stays exactly where it is")
+                .changed()
+            {
+                action = Some(StepAction::SetSimplify(simplify));
+            }
+            let ready = card.rows.iter().any(|r| r.crown.is_some());
+            ui.horizontal(|ui| {
+                if small_button(ui, "Export STL\u{2026}", ready && !busy, true)
+                    .on_hover_text("Choose a folder and write one STL per crown")
+                    .on_disabled_hover_text("No crown is built yet")
+                    .clicked()
+                {
+                    action = Some(StepAction::ExportStl);
+                }
+                if let Some(text) = &card.busy {
+                    ui.add(egui::Spinner::new().size(12.0).color(p.accent));
+                    ui.label(RichText::new(text).size(SIZE_SMALL).color(p.text_dim));
+                }
+            });
+            if let Some(summary) = &card.summary {
+                ui.label(RichText::new(summary).size(SIZE_SMALL).color(p.text));
+                if card.folder.is_some()
+                    && small_button(ui, "Open folder", true, false)
+                        .on_hover_text("Show the files in the file browser")
+                        .clicked()
+                {
+                    action = Some(StepAction::OpenExportFolder);
+                }
             }
         });
     action

@@ -20,6 +20,7 @@ use crate::axis_step::{self, AXIS, AxisStep};
 use crate::browser::{self, SECTIONS_KEY, Section, Sections};
 use crate::chart::{self, ChartEdit};
 use crate::document::{self, Document};
+use crate::export_step::{self, ExportStep, PlanItem};
 use crate::history::History;
 use crate::inner_step::{self, INNER, InnerStep};
 use crate::loader::Loader;
@@ -65,6 +66,8 @@ pub struct StartOptions {
     pub tooth: Option<Fdi>,
     /// Start the Inner surface step with its section view on.
     pub section: bool,
+    /// Folder to export every built crown to once the startup steps are done.
+    pub export: Option<PathBuf>,
     /// Exit code of a screenshot run, read by `main` once the window has closed.
     pub exit_code: Arc<Mutex<Option<u8>>>,
 }
@@ -134,6 +137,13 @@ pub struct DentCraftApp {
     /// `--step inner` or `--step anatomy`: the start went through the Insertion axis step and
     /// moves on to this step once the tooth has an axis.
     pending_inner: Option<StepId>,
+    /// The Finish & export step's options, worker and results.
+    export: ExportStep,
+    /// `--step export`: the start went through the Anatomy step and moves on to Finish & export
+    /// once the crown is built (or has failed).
+    pending_finish: bool,
+    /// `--export DIR`, waiting for the startup chain to finish.
+    pending_export: Option<PathBuf>,
     /// `--orient`, waiting for the scans to load.
     pending_orient: bool,
     /// Tooth the per-tooth step works on.
@@ -207,6 +217,9 @@ impl DentCraftApp {
             },
             anatomy: AnatomyStep::new(Some(cc.egui_ctx.clone())),
             pending_inner: None,
+            export: ExportStep::new(Some(cc.egui_ctx.clone())),
+            pending_finish: false,
+            pending_export: start.export,
             pending_orient: start.orient,
             tooth: None,
             pending_step: start.step,
@@ -518,6 +531,27 @@ impl DentCraftApp {
                 self.inner.toggle_section();
                 return;
             }
+            StepAction::SetSimplify(on) => {
+                self.export.simplify = on;
+                return;
+            }
+            StepAction::ExportStl => {
+                if let Some(dir) = rfd::FileDialog::new()
+                    .set_title("Export crowns as STL")
+                    .pick_folder()
+                {
+                    self.export.start(dir, &self.case.name, &self.export_plan());
+                }
+                return;
+            }
+            StepAction::OpenExportFolder => {
+                if let Some(dir) = self.export.summary().map(|s| s.dir.clone())
+                    && let Err(e) = export_step::open_folder(&dir)
+                {
+                    self.fail(e);
+                }
+                return;
+            }
             StepAction::ClearMargin => {
                 if let Some(tooth) = self.tooth {
                     self.margin
@@ -628,9 +662,72 @@ impl DentCraftApp {
         self.enter_step(Some(tooth));
     }
 
+    /// Every unit of the case with its current crown.
+    fn export_plan(&self) -> Vec<PlanItem> {
+        export_step::plan(&self.case.units, |tooth| {
+            self.anatomy.crown(&self.case, tooth)
+        })
+    }
+
+    /// `--step export`: once the Anatomy step has built (or failed to build) the crown, moves
+    /// on to Finish & export.
+    fn pending_finish_step(&mut self) {
+        if !self.pending_finish
+            || self.pending_inner.is_some()
+            || self.inner.busy()
+            || self.anatomy.busy()
+        {
+            return;
+        }
+        self.pending_finish = false;
+        let tooth = self.tooth;
+        while self
+            .session
+            .current()
+            .is_some_and(|s| s.id != StepId::Finish)
+        {
+            if self.session.complete().is_err() {
+                break;
+            }
+        }
+        self.enter_step(tooth);
+    }
+
+    /// `--export DIR`: once the startup steps are done, writes every built crown.
+    fn pending_export_run(&mut self) {
+        let waiting = self.objects.iter().any(|o| o.loaded().is_none())
+            || self.pending_step.is_some()
+            || !self.pending_margin.is_empty()
+            || self.pending_inner.is_some()
+            || self.pending_finish
+            || self.margin.busy()
+            || self.axis.busy()
+            || self.inner.busy()
+            || self.anatomy.busy();
+        if waiting {
+            return;
+        }
+        if let Some(dir) = self.pending_export.take() {
+            if let Err(e) = std::fs::create_dir_all(&dir) {
+                self.fail(format!("--export: cannot create {}: {e}", dir.display()));
+                return;
+            }
+            let plan = self.export_plan();
+            self.export.start(dir, &self.case.name, &plan);
+        }
+    }
+
     /// Opens `--step` for `--tooth` and proposes the `--margin` seeds, once the scans are in.
     fn start_design(&mut self) {
         if let Some(mut target) = self.pending_step.take() {
+            // Finish & export needs the crowns: open the Anatomy step first and move on once
+            // the crown is built.
+            if target == StepId::Finish
+                && self.session.steps().iter().any(|s| s.id == StepId::Anatomy)
+            {
+                self.pending_finish = true;
+                target = StepId::Anatomy;
+            }
             // The inner surface (and the crown on it) needs the tooth's axis: open the Insertion
             // axis step first, which finds the best axis, and move on once it is set.
             if matches!(target, StepId::InnerSurface | StepId::Anatomy)
@@ -684,6 +781,7 @@ impl DentCraftApp {
         self.axis.reset();
         self.inner.reset();
         self.anatomy.reset();
+        self.export.reset();
         self.tooth = None;
         self.case = case;
     }
@@ -1077,6 +1175,16 @@ impl DentCraftApp {
                     self.apply_step_action(StepAction::Tooth(index, tooth));
                 }
             }
+            Command::Export => {
+                if let Some(index) = self
+                    .session
+                    .steps()
+                    .iter()
+                    .position(|s| s.id == StepId::Finish)
+                {
+                    self.apply_step_action(StepAction::GoTo(index));
+                }
+            }
             Command::Measure => {
                 if self.tools.active_name() == Some(MEASURE) {
                     self.tools.deactivate();
@@ -1213,6 +1321,17 @@ impl DentCraftApp {
     fn workflow_panel(&mut self, ui: &mut egui::Ui) {
         let has_jaw_scan = self.has_jaw_scan();
         let occlusal = self.occlusal();
+        let steps = self.session.steps();
+        let anatomy = steps.iter().position(|s| s.id == StepId::Anatomy);
+        let export = self
+            .session
+            .current()
+            .filter(|s| s.id == StepId::Finish)
+            .map(|_| {
+                self.export.card(&self.export_plan(), |tooth| {
+                    anatomy.filter(|&i| steps[i].teeth.contains(&tooth))
+                })
+            });
         let action = WorkflowView {
             session: &self.session,
             case: &self.case,
@@ -1238,6 +1357,7 @@ impl DentCraftApp {
                     inner.error.filter(|_| inner.has_margin && inner.has_axis),
                 )
             }),
+            export,
         }
         .show(ui);
         if let Some(action) = action {
@@ -1409,6 +1529,13 @@ impl DentCraftApp {
             tooth,
             surface: tooth.and_then(|t| self.inner.surface(t)),
         });
+        self.pending_finish_step();
+        self.pending_export_run();
+        if self.export.update()
+            && let Some(s) = self.export.summary()
+        {
+            eprintln!("dentcraft: export to {}: {}", s.dir.display(), s.line());
+        }
         // Entering the step on a tooth: widen the view to take in the axis and its handle.
         if self.axis.take_new_prep()
             && let Some(mut b) = self.bounds()
@@ -1528,6 +1655,9 @@ impl DentCraftApp {
             || self.pending_inner.is_some()
             || self.inner.busy()
             || self.anatomy.busy()
+            || self.pending_finish
+            || self.pending_export.is_some()
+            || self.export.busy()
             || self.viewport.camera.is_animating();
         let Some(job) = &mut self.screenshot else {
             return;

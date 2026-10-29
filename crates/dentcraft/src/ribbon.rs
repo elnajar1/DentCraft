@@ -98,6 +98,8 @@ pub enum Command {
     Inner,
     /// Open the Anatomy step, or leave its tool.
     Anatomy,
+    /// Open the Finish & export step.
+    Export,
 }
 
 /// Label of the command that completes the active step.
@@ -290,6 +292,13 @@ impl RibbonView<'_> {
                 .clicked()
             {
                 *command = Some(Command::Anatomy);
+            }
+            let on = session.current().is_some_and(|s| s.id == StepId::Finish);
+            if command_button(ui, Icon::Export, "Export", true, on)
+                .on_hover_text("Write the finished crowns as STL files")
+                .clicked()
+            {
+                *command = Some(Command::Export);
             }
         });
     }

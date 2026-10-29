@@ -104,6 +104,8 @@ pub enum Icon {
     Inner,
     /// A molar crown with cusps, for the anatomy step.
     Anatomy,
+    /// Arrow rising out of a tray, for writing files out.
+    Export,
     /// Arrow curving back to the left.
     Undo,
     /// Arrow curving on to the right.
@@ -294,6 +296,11 @@ pub fn paint_icon(painter: &egui::Painter, icon: Icon, rect: Rect, ink: Color32,
         Icon::Import => {
             open(&[(0.0, -0.9), (0.0, 0.35)]);
             open(&[(-0.4, -0.05), (0.0, 0.35), (0.4, -0.05)]);
+            open(&[(-0.85, 0.2), (-0.85, 0.85), (0.85, 0.85), (0.85, 0.2)]);
+        }
+        Icon::Export => {
+            open(&[(0.0, 0.35), (0.0, -0.9)]);
+            open(&[(-0.4, -0.5), (0.0, -0.9), (0.4, -0.5)]);
             open(&[(-0.85, 0.2), (-0.85, 0.85), (0.85, 0.85), (0.85, 0.2)]);
         }
         Icon::Back | Icon::Next => {

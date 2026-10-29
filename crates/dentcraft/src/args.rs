@@ -67,7 +67,7 @@ pub struct Args {
     #[arg(long, value_name = "FDI@X,Y,Z", value_parser = parse_margin_click, allow_hyphen_values = true)]
     pub margin: Vec<(Fdi, DVec3)>,
 
-    /// Design step to open: scans, orient, margin, axis or inner.
+    /// Design step to open: scans, orient, margin, axis, inner, anatomy or export.
     #[arg(long, value_enum)]
     pub step: Option<StepArg>,
 
@@ -78,6 +78,10 @@ pub struct Args {
     /// Start the Inner surface step with its section view on.
     #[arg(long)]
     pub section: bool,
+
+    /// Write every built crown as STL into this folder once the startup steps are done.
+    #[arg(long, value_name = "DIR")]
+    pub export: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -88,6 +92,7 @@ pub enum StepArg {
     Axis,
     Inner,
     Anatomy,
+    Export,
 }
 
 impl From<StepArg> for StepId {
@@ -99,6 +104,7 @@ impl From<StepArg> for StepId {
             StepArg::Axis => StepId::InsertionAxis,
             StepArg::Inner => StepId::InnerSurface,
             StepArg::Anatomy => StepId::Anatomy,
+            StepArg::Export => StepId::Finish,
         }
     }
 }
