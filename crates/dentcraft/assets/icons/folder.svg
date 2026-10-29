@@ -1,4 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <title>Folder</title>
-  <path d="M10.5 12.5L26 12.5L32 18.5L53.5 18.5Q56 18.5 56 21L56 49Q56 51.5 53.5 51.5L10.5 51.5Q8 51.5 8 49L8 15Q8 12.5 10.5 12.5Z" fill="currentColor"/>
+  <title>Open</title>
+  <path d="M5 17.63Q5 13.27 9.35 13.27L21.55 13.27L26.77 18.5L47.68 18.5Q52.03 18.5 52.03 22.85L52.03 46.37Q52.03 50.73 47.68 50.73L9.35 50.73Q5 50.73 5 46.37Z" fill="#8e9faf" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M9.35 50.73Q5 50.73 6.2 46.37L10.77 29.82Q11.97 25.47 16.32 25.47L54.65 25.47Q59 25.47 57.8 29.82L53.23 46.37Q52.03 50.73 47.68 50.73Z" fill="#b9ddf8" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
 </svg>

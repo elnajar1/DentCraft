@@ -1,7 +1,13 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <title>Margin line</title>
-  <path d="M17 43L21 19C22 13 42 13 43 19L47 43" fill="none" stroke="currentColor" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
-  <path d="M10 46A22 8 0 1 0 54 46A22 8 0 1 0 10 46Z" fill="none" stroke="currentColor" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
-  <circle cx="10" cy="46" r="4.5" fill="currentColor"/>
-  <circle cx="43" cy="53" r="4.5" fill="currentColor"/>
+  <defs><clipPath id="clip-1"><path d="M17 42L21 54A11 6.35 0 0 0 43 54L47 42Z"/></clipPath><clipPath id="clip-2"><path d="M22.5 16L17 42A15 8.65 0 0 0 47 42L41.5 16Z"/></clipPath></defs>
+  <path d="M10 42A22 12.69 0 0 1 54 42" fill="none" stroke="#236ead" stroke-width="4.6" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M17 42L21 54A11 6.35 0 0 0 43 54L47 42Z" fill="#b8c3cf"/>
+  <g clip-path="url(#clip-1)"><path d="M38 0L64 0L64 64L38 64Z" fill="#8e9faf"/></g>
+  <path d="M17 42L21 54A11 6.35 0 0 0 43 54L47 42Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M22.5 16L17 42A15 8.65 0 0 0 47 42L41.5 16Z" fill="#b8c3cf"/>
+  <g clip-path="url(#clip-2)"><path d="M38.75 0L64 0L64 64L38.75 64Z" fill="#8e9faf"/></g>
+  <path d="M22.5 16L17 42A15 8.65 0 0 0 47 42L41.5 16" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M22.5 16A9.5 5.48 0 1 0 41.5 16A9.5 5.48 0 1 0 22.5 16Z" fill="#e2e8ef" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M10 42A22 12.69 0 0 0 54 42" fill="none" stroke="#236ead" stroke-width="4.6" stroke-linejoin="round" stroke-linecap="round"/>
 </svg>

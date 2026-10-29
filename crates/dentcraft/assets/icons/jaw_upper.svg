@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>Upper jaw</title>
+  <defs><clipPath id="clip-1"><path d="M7 34A25 15.87 0 0 0 57 34L57 41A25 15.87 0 0 1 7 41Z"/></clipPath><clipPath id="clip-2"><path d="M7 19A25 15.87 0 0 0 57 19L57 26A25 15.87 0 0 1 7 26Z"/></clipPath></defs>
+  <path d="M7 34A25 15.87 0 0 0 57 34L57 41A25 15.87 0 0 1 7 41Z" fill="#b8c3cf"/>
+  <g clip-path="url(#clip-1)"><path d="M40.75 0L64 0L64 64L40.75 64Z" fill="#8e9faf"/></g>
+  <path d="M7 34A25 15.87 0 0 0 57 34L57 41A25 15.87 0 0 1 7 41Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M7 34A25 15.87 0 0 0 57 34L45 34A13 8.25 0 0 1 19 34Z" fill="#e2e8ef" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M7 19A25 15.87 0 0 0 57 19L57 26A25 15.87 0 0 1 7 26Z" fill="#328bd3"/>
+  <g clip-path="url(#clip-2)"><path d="M40.75 0L64 0L64 64L40.75 64Z" fill="#236ead"/></g>
+  <path d="M7 19A25 15.87 0 0 0 57 19L57 26A25 15.87 0 0 1 7 26Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M7 19A25 15.87 0 0 0 57 19L45 19A13 8.25 0 0 1 19 19Z" fill="#b9ddf8" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+</svg>

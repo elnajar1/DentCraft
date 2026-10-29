@@ -11,9 +11,11 @@ Software dependencies are listed in Cargo.lock and keep their own licences.
 The application's UI colour tokens, type scale and layout conventions (ribbon toolbar, browser
 panels) are adapted from SolidCraft (https://github.com/tangency-labs/solidcraft), Copyright (c)
 2026 SolidCraft contributors, licensed under the Apache License, Version 2.0. Text colours were
-adjusted for contrast. Icons adapted from SolidCraft's icon set (assets/icons/ui/design/svg) and
-its SVG icon renderer, Apache-2.0; some icons were made monochrome. The icons DentCraft adds are
-listed in crates/dentcraft/assets/icons/README.md.
+adjusted for contrast. Icons adapted from SolidCraft's icon set (assets/icons/ui/design/svg), its
+icon colour palette (palette.toml: isometric face colours and their dark-theme values) and its SVG
+icon renderer, Apache-2.0; some icons were made monochrome. DentCraft's coloured icons are drawn in
+that palette and style. The icons DentCraft adds are listed in
+crates/dentcraft/assets/icons/README.md.
 
 DentCraft is an independent project. Its behaviour is designed from public dental literature,
 general CAD conventions and user feedback, under the clean-room rules in AGENTS.md. DentCraft is

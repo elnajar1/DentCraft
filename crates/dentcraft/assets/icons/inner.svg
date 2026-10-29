@@ -1,5 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <title>Inner surface</title>
-  <path d="M19 58L22 38C23 32 41 32 42 38L45 58" fill="none" stroke="currentColor" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
-  <path d="M8 58L12 30C14 17 50 17 52 30L56 58" fill="none" stroke="currentColor" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M49 22Q46 8 32 8L38 4.5Q52 4.5 55 18.5L60 48.5L54 52Z" fill="#8e9faf" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M10 52L15 22Q18 8 32 8Q46 8 49 22L54 52Z" fill="#e2e8ef" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M16 52L20 24Q22 12 32 12Q42 12 44 24L48 52Z" fill="#328bd3"/>
+  <path d="M22 52L25.5 28Q27 21 32 21Q37 21 38.5 28L42 52Z" fill="#b8c3cf" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M16 52L20 24Q22 12 32 12Q42 12 44 24L48 52" fill="none" stroke="#34465b" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M8 52L56 52" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
 </svg>

@@ -1,6 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <title>New</title>
-  <path d="M18 8L38 8L50 20L50 52Q50 56 46 56L18 56Q14 56 14 52L14 12Q14 8 18 8Z" fill="none" stroke="currentColor" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
-  <path d="M38 8L38 20L50 20" fill="none" stroke="currentColor" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
-  <path d="M32 30L32 46M24 38L40 38" fill="none" stroke="currentColor" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
+  <defs><mask id="new-plus-cut" maskUnits="userSpaceOnUse" x="0" y="0" width="64" height="64"><path d="M0 0L64 0L64 64L0 64Z" fill="white"/><path d="M44.59 40.09L44.59 50.09M39.59 45.09L49.59 45.09" fill="none" stroke="black" stroke-width="3.2"/><path d="M33.59 45.09A11 11 0 1 0 55.59 45.09A11 11 0 1 0 33.59 45.09Z" fill="none" stroke="black" stroke-width="4.4" stroke-linejoin="round" stroke-linecap="round"/></mask></defs>
+  <path d="M13.09 8.09L36.59 8.09L43.59 15.09L43.59 50.59Q43.59 55.09 39.09 55.09L13.09 55.09Q8.59 55.09 8.59 50.59L8.59 12.59Q8.59 8.09 13.09 8.09Z" fill="#e2e8ef" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round" mask="url(#new-plus-cut)"/>
+  <path d="M36.59 8.09L36.59 13.59Q36.59 15.09 38.09 15.09L43.59 15.09Z" fill="#b8c3cf" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round" mask="url(#new-plus-cut)"/>
+  <circle cx="44.59" cy="45.09" r="11" fill="#236ead" mask="url(#new-plus-cut)"/>
 </svg>

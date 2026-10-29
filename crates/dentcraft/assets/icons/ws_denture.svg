@@ -1,11 +1,15 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <title>Denture</title>
-  <path d="M8 58C4 30 14 5 32 5C50 5 60 30 56 58M21 58C19 40 24 27 32 27C40 27 45 40 43 58" fill="none" stroke="currentColor" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
-  <circle cx="32" cy="16" r="3.6" fill="currentColor"/>
-  <circle cx="39.8" cy="19.4" r="3.6" fill="currentColor"/>
-  <circle cx="46.2" cy="28.9" r="3.6" fill="currentColor"/>
-  <circle cx="49.9" cy="42.7" r="3.6" fill="currentColor"/>
-  <circle cx="24.2" cy="19.4" r="3.6" fill="currentColor"/>
-  <circle cx="17.8" cy="28.9" r="3.6" fill="currentColor"/>
-  <circle cx="14.1" cy="42.7" r="3.6" fill="currentColor"/>
+  <defs><clipPath id="clip-1"><path d="M7 32A25 15.87 0 0 0 57 32L57 41A25 15.87 0 0 1 7 41Z"/></clipPath></defs>
+  <path d="M7 32A25 15.87 0 0 0 57 32L57 41A25 15.87 0 0 1 7 41Z" fill="#b8c3cf"/>
+  <g clip-path="url(#clip-1)"><path d="M40.75 0L64 0L64 64L40.75 64Z" fill="#8e9faf"/></g>
+  <path d="M7 32A25 15.87 0 0 0 57 32L57 41A25 15.87 0 0 1 7 41Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M7 32A25 15.87 0 0 0 57 32L44 32A12 7.62 0 0 1 20 32Z" fill="#e2e8ef" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M9.68 32.92A4.4 3.8 0 1 0 18.48 32.92A4.4 3.8 0 1 0 9.68 32.92Z" fill="#328bd3" stroke="#34465b" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M13.35 37.48A4.4 3.8 0 1 0 22.15 37.48A4.4 3.8 0 1 0 13.35 37.48Z" fill="#328bd3" stroke="#34465b" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M19.72 40.62A4.4 3.8 0 1 0 28.52 40.62A4.4 3.8 0 1 0 19.72 40.62Z" fill="#328bd3" stroke="#34465b" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M27.6 41.74A4.4 3.8 0 1 0 36.4 41.74A4.4 3.8 0 1 0 27.6 41.74Z" fill="#328bd3" stroke="#34465b" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M35.48 40.62A4.4 3.8 0 1 0 44.28 40.62A4.4 3.8 0 1 0 35.48 40.62Z" fill="#328bd3" stroke="#34465b" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M41.85 37.48A4.4 3.8 0 1 0 50.65 37.48A4.4 3.8 0 1 0 41.85 37.48Z" fill="#328bd3" stroke="#34465b" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M45.52 32.92A4.4 3.8 0 1 0 54.32 32.92A4.4 3.8 0 1 0 45.52 32.92Z" fill="#328bd3" stroke="#34465b" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
 </svg>

@@ -1,4 +1,13 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <title>Anatomy</title>
-  <path d="M12 44C8 34 8 20 13 14C16 10 20 12 22 15C24 18 26 18 28 15C30 12 34 12 36 15C38 18 40 18 42 15C44 12 48 10 51 14C56 20 56 34 52 44C50 50 44 52 32 52C20 52 14 50 12 44Z" fill="none" stroke="currentColor" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
+  <defs><clipPath id="clip-1"><path d="M22 44L19 56A13 7.5 0 0 0 45 56L42 44Z"/></clipPath><clipPath id="clip-2"><path d="M12 22Q32 30.8 52 22Q53.2 38 40.8 46Q32 49.2 23.2 46Q10.8 38 12 22Z"/></clipPath></defs>
+  <path d="M22 44L19 56A13 7.5 0 0 0 45 56L42 44Z" fill="#b8c3cf"/>
+  <g clip-path="url(#clip-1)"><path d="M37.85 0L64 0L64 64L37.85 64Z" fill="#8e9faf"/></g>
+  <path d="M22 44L19 56A13 7.5 0 0 0 45 56L42 44" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M22 44A10 5.77 0 1 0 42 44A10 5.77 0 1 0 22 44Z" fill="#e2e8ef" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M12 22Q32 30.8 52 22Q53.2 38 40.8 46Q32 49.2 23.2 46Q10.8 38 12 22Z" fill="#328bd3"/>
+  <g clip-path="url(#clip-2)"><path d="M40 0L64 0L64 64L40 64Z" fill="#236ead"/></g>
+  <path d="M12 22Q32 30.8 52 22Q53.2 38 40.8 46Q32 49.2 23.2 46Q10.8 38 12 22Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M12 22Q11.2 14 20 14Q24 9.2 28 14.8Q32 8.24 36 14.8Q40 9.2 44 14Q52.8 14 52 22Q32 30.8 12 22Z" fill="#b9ddf8" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M20.8 20.4Q32 25.2 43.2 20.4" fill="none" stroke="#34465b" stroke-width="2.04" stroke-linejoin="round" stroke-linecap="round"/>
 </svg>

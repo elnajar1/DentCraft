@@ -1,5 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <title>Model builder</title>
-  <path d="M6 44L14 36L50 36L58 44L58 54L6 54ZM6 44L58 44" fill="none" stroke="currentColor" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
-  <path d="M14 36C12 18 22 8 32 8C42 8 52 18 50 36M25 36C24 26 27 20 32 20C37 20 40 26 39 36" fill="none" stroke="currentColor" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
+  <defs><clipPath id="clip-1"><path d="M12 30A20 12.69 0 0 0 52 30L52 37A20 12.69 0 0 1 12 37Z"/></clipPath></defs>
+  <path d="M4 42L32 56L32 62L4 48Z" fill="#b8c3cf" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M32 56L60 42L60 48L32 62Z" fill="#8e9faf" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M4 42L32 28L60 42L32 56Z" fill="#e2e8ef" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M12 30A20 12.69 0 0 0 52 30L52 37A20 12.69 0 0 1 12 37Z" fill="#328bd3"/>
+  <g clip-path="url(#clip-1)"><path d="M39 0L64 0L64 64L39 64Z" fill="#236ead"/></g>
+  <path d="M12 30A20 12.69 0 0 0 52 30L52 37A20 12.69 0 0 1 12 37Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M12 30A20 12.69 0 0 0 52 30L42 30A10 6.35 0 0 1 22 30Z" fill="#b9ddf8" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
 </svg>

@@ -1,4 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <title>Splint</title>
-  <path d="M10 56C6 36 12 8 32 8C52 8 58 36 54 56L42 56C44 40 42 22 32 22C22 22 20 40 22 56Z" fill="none" stroke="currentColor" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
+  <defs><clipPath id="clip-1"><path d="M7 36A25 15.87 0 0 0 57 36L57 43A25 15.87 0 0 1 7 43Z"/></clipPath><clipPath id="clip-2"><path d="M5 26A27 17.14 0 0 0 59 26L59 31A27 17.14 0 0 1 5 31Z"/></clipPath></defs>
+  <path d="M7 36A25 15.87 0 0 0 57 36L57 43A25 15.87 0 0 1 7 43Z" fill="#b8c3cf"/>
+  <g clip-path="url(#clip-1)"><path d="M40.75 0L64 0L64 64L40.75 64Z" fill="#8e9faf"/></g>
+  <path d="M7 36A25 15.87 0 0 0 57 36L57 43A25 15.87 0 0 1 7 43Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M7 36A25 15.87 0 0 0 57 36L45 36A13 8.25 0 0 1 19 36Z" fill="#e2e8ef" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M5 26A27 17.14 0 0 0 59 26L59 31A27 17.14 0 0 1 5 31Z" fill="#328bd3"/>
+  <g clip-path="url(#clip-2)"><path d="M41.45 0L64 0L64 64L41.45 64Z" fill="#236ead"/></g>
+  <path d="M5 26A27 17.14 0 0 0 59 26L59 31A27 17.14 0 0 1 5 31Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M5 26A27 17.14 0 0 0 59 26L43 26A11 6.98 0 0 1 21 26Z" fill="#b9ddf8" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
 </svg>

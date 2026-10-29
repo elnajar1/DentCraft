@@ -1,6 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <title>Smile design</title>
-  <path d="M4 30C14 17 24 15 32 19C40 15 50 17 60 30C50 45 40 50 32 50C24 50 14 45 4 30Z" fill="none" stroke="currentColor" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
-  <path d="M12 30C22 25 42 25 52 30C42 40 22 40 12 30Z" fill="none" stroke="currentColor" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
-  <path d="M24 28L24 35M32 27L32 36M40 28L40 35" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M6 22Q32 34 58 22Q50 54 32 54Q14 54 6 22Z" fill="#8e9faf" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M13 27Q20 30 25 31L25 41Q18 41 14 36Z" fill="#e2e8ef" stroke="#34465b" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M25 31Q32 32 39 31L39 43Q32 45 25 43Z" fill="#e2e8ef" stroke="#34465b" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M39 31Q44 30 51 27Q50 36 39 41Z" fill="#e2e8ef" stroke="#34465b" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M6 22Q32 34 58 22" fill="none" stroke="#236ead" stroke-width="4.2" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M6 22Q14 54 32 54Q50 54 58 22" fill="none" stroke="#236ead" stroke-width="4.2" stroke-linejoin="round" stroke-linecap="round"/>
 </svg>

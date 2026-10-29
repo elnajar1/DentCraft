@@ -26,7 +26,7 @@ use crate::workspace::{self, Status, Workspace};
 /// Height of the tab strip.
 const TAB_HEIGHT: f32 = 28.0;
 /// Minimum size of a command button.
-const COMMAND_SIZE: Vec2 = vec2(56.0, 52.0);
+const COMMAND_SIZE: Vec2 = vec2(56.0, 56.0);
 /// Height of a group caption.
 const CAPTION_HEIGHT: f32 = 15.0;
 /// Space above and below the command row.
@@ -343,7 +343,7 @@ impl RibbonView<'_> {
                 .session
                 .current()
                 .is_some_and(|s| crate::tooth_view::is_tooth_step(s.id));
-            if command_button(ui, Icon::Fit, "Fit tooth", on_tooth, false)
+            if command_button(ui, Icon::FitTooth, "Fit tooth", on_tooth, false)
                 .on_hover_text("Frame the tooth being designed  (F)")
                 .on_disabled_hover_text("Available in the per-tooth steps")
                 .clicked()
@@ -353,13 +353,13 @@ impl RibbonView<'_> {
         });
         divider(ui);
         group(ui, "Scans", |ui| {
-            for (role, jaw, visible) in [
-                (ScanRole::Upper, "upper", self.upper_visible),
-                (ScanRole::Lower, "lower", self.lower_visible),
+            for (role, jaw, icon, visible) in [
+                (ScanRole::Upper, "upper", Icon::UpperJaw, self.upper_visible),
+                (ScanRole::Lower, "lower", Icon::LowerJaw, self.lower_visible),
             ] {
                 let on = visible.unwrap_or(false);
                 let response =
-                    command_button(ui, Icon::Eye, &format!("Show {jaw}"), visible.is_some(), on)
+                    command_button(ui, icon, &format!("Show {jaw}"), visible.is_some(), on)
                         .on_hover_text(format!("Show or hide the {jaw} jaw scans"))
                         .on_disabled_hover_text(format!("No {jaw} jaw scan in the case"));
                 if response.clicked() {
@@ -687,7 +687,7 @@ fn command_button(ui: &mut Ui, icon: Icon, label: &str, enabled: bool, selected:
         let painter = ui.painter();
         painter.rect_filled(rect, CornerRadius::same(RADIUS_SM), fill);
         let icon_rect =
-            Rect::from_center_size(pos2(rect.center().x, rect.top() + 18.0), Vec2::splat(20.0));
+            Rect::from_center_size(pos2(rect.center().x, rect.top() + 19.0), Vec2::splat(28.0));
         paint_icon(painter, icon, icon_rect, ink);
         let text_pos = pos2(
             rect.center().x - galley.size().x * 0.5,

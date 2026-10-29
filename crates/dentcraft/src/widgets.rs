@@ -69,7 +69,14 @@ pub enum Icon {
     Close,
     Sun,
     Moon,
+    /// Corner brackets round the scene, for framing everything.
     Fit,
+    /// Corner brackets round a tooth, for framing the tooth being designed.
+    FitTooth,
+    /// Upper arch, for showing the upper jaw scans.
+    UpperJaw,
+    /// Lower arch, for showing the lower jaw scans.
+    LowerJaw,
     Plus,
     /// Tick mark, for done or selected items.
     Check,
@@ -163,7 +170,8 @@ pub fn icon_button(ui: &mut Ui, icon: Icon, size: f32) -> Response {
     response.on_hover_cursor(CursorIcon::PointingHand)
 }
 
-/// Draws `icon` as large as fits in `rect`, tinted `ink`.
+/// Draws `icon` as large as fits in `rect`: a monochrome icon tinted `ink`, a coloured one in its
+/// own colours at the opacity of `ink`.
 pub fn paint_icon(painter: &egui::Painter, icon: Icon, rect: Rect, ink: Color32) {
     crate::icon_svg::paint(painter, icon, rect, ink);
 }

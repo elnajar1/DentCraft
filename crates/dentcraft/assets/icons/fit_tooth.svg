@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>Fit tooth</title>
+  <defs><clipPath id="clip-1"><path d="M20 27Q32 32.28 44 27Q44.72 36.6 37.28 41.4Q32 43.32 26.72 41.4Q19.28 36.6 20 27Z"/></clipPath></defs>
+  <path d="M8 20L8 8L20 8M44 8L56 8L56 20M56 44L56 56L44 56M20 56L8 56L8 44" fill="none" stroke="currentColor" stroke-width="4.6" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M20 27Q32 32.28 44 27Q44.72 36.6 37.28 41.4Q32 43.32 26.72 41.4Q19.28 36.6 20 27Z" fill="#328bd3"/>
+  <g clip-path="url(#clip-1)"><path d="M36.8 0L64 0L64 64L36.8 64Z" fill="#236ead"/></g>
+  <path d="M20 27Q32 32.28 44 27Q44.72 36.6 37.28 41.4Q32 43.32 26.72 41.4Q19.28 36.6 20 27Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M20 27Q19.52 22.2 24.8 22.2Q27.2 19.32 29.6 22.68Q32 18.74 34.4 22.68Q36.8 19.32 39.2 22.2Q44.48 22.2 44 27Q32 32.28 20 27Z" fill="#b9ddf8" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M25.28 26.04Q32 28.92 38.72 26.04" fill="none" stroke="#34465b" stroke-width="2.04" stroke-linejoin="round" stroke-linecap="round"/>
+</svg>

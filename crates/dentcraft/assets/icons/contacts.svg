@@ -1,6 +1,13 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <title>Contacts</title>
-  <path d="M25 50H13C9 50 8 44 8 38V22C8 16 11 14 15 14C20 14 22 18 25 18" fill="none" stroke="currentColor" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
-  <path d="M39 50H51C55 50 56 44 56 38V22C56 16 53 14 49 14C44 14 42 18 39 18" fill="none" stroke="currentColor" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
-  <path d="M32 28V40" fill="none" stroke="currentColor" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
+  <defs><clipPath id="clip-1"><path d="M4 20Q18 26.16 32 20Q32.84 39.04 24.16 48.95Q18 51.19 11.84 48.95Q3.16 39.04 4 20Z"/></clipPath><clipPath id="clip-2"><path d="M32 20Q46 26.16 60 20Q60.84 39.04 52.16 48.95Q46 51.19 39.84 48.95Q31.16 39.04 32 20Z"/></clipPath></defs>
+  <path d="M4 20Q18 26.16 32 20Q32.84 39.04 24.16 48.95Q18 51.19 11.84 48.95Q3.16 39.04 4 20Z" fill="#b8c3cf"/>
+  <g clip-path="url(#clip-1)"><path d="M23.6 0L64 0L64 64L23.6 64Z" fill="#8e9faf"/></g>
+  <path d="M4 20Q18 26.16 32 20Q32.84 39.04 24.16 48.95Q18 51.19 11.84 48.95Q3.16 39.04 4 20Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M4 20Q3.44 14.4 9.6 14.4Q12.4 11.04 15.2 14.96Q18 10.37 20.8 14.96Q23.6 11.04 26.4 14.4Q32.56 14.4 32 20Q18 26.16 4 20Z" fill="#e2e8ef" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M32 20Q46 26.16 60 20Q60.84 39.04 52.16 48.95Q46 51.19 39.84 48.95Q31.16 39.04 32 20Z" fill="#b8c3cf"/>
+  <g clip-path="url(#clip-2)"><path d="M51.6 0L64 0L64 64L51.6 64Z" fill="#8e9faf"/></g>
+  <path d="M32 20Q46 26.16 60 20Q60.84 39.04 52.16 48.95Q46 51.19 39.84 48.95Q31.16 39.04 32 20Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M32 20Q31.44 14.4 37.6 14.4Q40.4 11.04 43.2 14.96Q46 10.37 48.8 14.96Q51.6 11.04 54.4 14.4Q60.56 14.4 60 20Q46 26.16 32 20Z" fill="#e2e8ef" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M32 20L36 28L32 36L28 28Z" fill="#236ead" stroke="#34465b" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
 </svg>

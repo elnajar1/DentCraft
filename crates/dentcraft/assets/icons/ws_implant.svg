@@ -1,6 +1,15 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <title>Implant</title>
-  <path d="M18 21C16 13 20 6 26 7C29 8 30 9 32 9C34 9 35 8 38 7C44 6 48 13 46 21C45 24 40 25 32 25C24 25 19 24 18 21Z" fill="none" stroke="currentColor" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
-  <path d="M23 31L41 31L38 53L32 58L26 53Z" fill="none" stroke="currentColor" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
-  <path d="M20 40L44 36M21 48L43 44" fill="none" stroke="currentColor" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
+  <defs><clipPath id="clip-1"><path d="M24 34L25 52L32 61L39 52L40 34Z"/></clipPath><clipPath id="clip-2"><path d="M15 16Q32 23.48 49 16Q50.02 29.6 39.48 36.4Q32 39.12 24.52 36.4Q13.98 29.6 15 16Z"/></clipPath></defs>
+  <path d="M24 34L25 52L32 61L39 52L40 34Z" fill="#b8c3cf"/>
+  <g clip-path="url(#clip-1)"><path d="M35 0L64 0L64 64L35 64Z" fill="#8e9faf"/></g>
+  <path d="M24 34L25 52L32 61L39 52L40 34Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M24 40L40 36" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M24 46L40 42" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M24 52L40 48" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M15 16Q32 23.48 49 16Q50.02 29.6 39.48 36.4Q32 39.12 24.52 36.4Q13.98 29.6 15 16Z" fill="#328bd3"/>
+  <g clip-path="url(#clip-2)"><path d="M38.8 0L64 0L64 64L38.8 64Z" fill="#236ead"/></g>
+  <path d="M15 16Q32 23.48 49 16Q50.02 29.6 39.48 36.4Q32 39.12 24.52 36.4Q13.98 29.6 15 16Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M15 16Q14.32 9.2 21.8 9.2Q25.2 5.12 28.6 9.88Q32 4.3 35.4 9.88Q38.8 5.12 42.2 9.2Q49.68 9.2 49 16Q32 23.48 15 16Z" fill="#b9ddf8" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M22.48 14.64Q32 18.72 41.52 14.64" fill="none" stroke="#34465b" stroke-width="2.04" stroke-linejoin="round" stroke-linecap="round"/>
 </svg>

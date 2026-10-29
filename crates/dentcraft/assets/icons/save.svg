@@ -1,11 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <title>Save</title>
-  <defs>
-    <mask id="save3-slots" maskUnits="userSpaceOnUse" x="-32" y="-32" width="128" height="128">
-      <path d="M-32 -32L96 -32L96 96L-32 96Z" fill="white"/>
-      <path d="M25.5 9L35.5 9A3.5 3.5 0 0 1 39 12.5L39 19.5A3.5 3.5 0 0 1 35.5 23L25.5 23A3.5 3.5 0 0 1 22 19.5L22 12.5A3.5 3.5 0 0 1 25.5 9Z" fill="black"/>
-      <path d="M25 34L39 34A4.5 4.5 0 0 1 43.5 38.5L43.5 43.5A4.5 4.5 0 0 1 39 48L25 48A4.5 4.5 0 0 1 20.5 43.5L20.5 38.5A4.5 4.5 0 0 1 25 34Z" fill="black"/>
-    </mask>
-  </defs>
-  <path d="M19 10L40.5 10Q43 10 44.8 11.8L52.2 19.2Q54 21 54 23.5L54 45Q54 54 45 54L19 54Q10 54 10 45L10 19Q10 10 19 10Z" fill="currentColor" mask="url(#save3-slots)"/>
+  <path d="M14 8L44 8L56 20L56 50Q56 56 50 56L14 56Q8 56 8 50L8 14Q8 8 14 8Z" fill="#b8c3cf" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M18 8L42 8L42 22Q42 24 40 24L20 24Q18 24 18 22Z" fill="#e2e8ef" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M34 12L38 12L38 20L34 20Z" fill="#34465b"/>
+  <path d="M17 34Q17 32 19 32L45 32Q47 32 47 34L47 56L17 56Z" fill="#328bd3" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M23 40L41 40M23 47L41 47" fill="none" stroke="#b9ddf8" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
 </svg>

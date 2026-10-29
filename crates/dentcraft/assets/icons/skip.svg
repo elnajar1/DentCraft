@@ -1,4 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <title>Skip</title>
-  <path d="M12 18L25 32L12 46M28 18L41 32L28 46M51 18L51 46" fill="none" stroke="currentColor" stroke-width="5" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M22.66 44L32 49.4L32 57.4L22.64 52Z" fill="#b8c3cf" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M32 49.4L41.36 44L41.36 52L32 57.4Z" fill="#8e9faf" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M22.64 44L32 38.6L41.36 44L32 49.4Z" fill="#e2e8ef" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M10 44Q12 12 40 18" fill="none" stroke="#236ead" stroke-width="4.6" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M52 22L38 27L41 11Z" fill="#236ead" stroke="#236ead" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
 </svg>

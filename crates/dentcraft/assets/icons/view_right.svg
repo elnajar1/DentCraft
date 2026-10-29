@@ -1,5 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <title>Right view</title>
-  <path d="M40 24L56 8L56 40L40 56Z" fill="currentColor" fill-opacity="0.8"/>
-  <path d="M8 24L40 24L40 56L8 56ZM8 24L24 8L56 8L56 40L40 56M40 24L56 8" fill="none" stroke="currentColor" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/>
+  <defs><clipPath id="clip-1"><path d="M7 32A25 15.87 0 0 0 57 32L57 40A25 15.87 0 0 1 7 40Z"/></clipPath></defs>
+  <path d="M7 32A25 15.87 0 0 0 57 32L57 40A25 15.87 0 0 1 7 40Z" fill="#b8c3cf"/>
+  <g clip-path="url(#clip-1)"><path d="M40.75 0L64 0L64 64L40.75 64Z" fill="#8e9faf"/></g>
+  <path d="M7 32A25 15.87 0 0 0 57 32L57 40A25 15.87 0 0 1 7 40Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M7 32A25 15.87 0 0 0 57 32L44 32A12 7.62 0 0 1 20 32Z" fill="#e2e8ef" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M63 22L56.82 25.33" fill="none" stroke="#236ead" stroke-width="4.6" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M50 29L54.39 18.69L61.02 31.01Z" fill="#236ead" stroke="#236ead" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
 </svg>

@@ -1,4 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <title>Crown and bridge</title>
-  <path d="M14 13C14 7 19 5 24 6C28 7 30 9 32 9C34 9 36 7 40 6C45 5 50 7 50 13C50 22 47 28 46 36C45 46 43 56 39 57C35 58 35 45 32 41C29 45 29 58 25 57C21 56 19 46 18 36C17 28 14 22 14 13Z" fill="none" stroke="currentColor" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
+  <defs><clipPath id="clip-1"><path d="M9 24Q32 34.12 55 24Q56.38 42.4 42.12 51.6Q32 55.28 21.88 51.6Q7.62 42.4 9 24Z"/></clipPath></defs>
+  <path d="M9 24Q32 34.12 55 24Q56.38 42.4 42.12 51.6Q32 55.28 21.88 51.6Q7.62 42.4 9 24Z" fill="#328bd3"/>
+  <g clip-path="url(#clip-1)"><path d="M41.2 0L64 0L64 64L41.2 64Z" fill="#236ead"/></g>
+  <path d="M9 24Q32 34.12 55 24Q56.38 42.4 42.12 51.6Q32 55.28 21.88 51.6Q7.62 42.4 9 24Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M9 24Q8.08 14.8 18.2 14.8Q22.8 9.28 27.4 15.72Q32 8.18 36.6 15.72Q41.2 9.28 45.8 14.8Q55.92 14.8 55 24Q32 34.12 9 24Z" fill="#b9ddf8" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M19.12 22.16Q32 27.68 44.88 22.16" fill="none" stroke="#34465b" stroke-width="2.04" stroke-linejoin="round" stroke-linecap="round"/>
 </svg>
