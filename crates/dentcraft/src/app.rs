@@ -629,13 +629,10 @@ impl DentCraftApp {
             .map(|f| DVec3::from_array(f.occlusal))
     }
 
-    /// Direction out of a preparation: the jaw's occlusal direction once it is set, else
-    /// towards the camera.
-    fn margin_axis(&self) -> DVec3 {
-        match &self.case.design.jaw_frame {
-            Some(frame) => DVec3::from_array(frame.occlusal),
-            None => -self.viewport.camera.forward().as_dvec3(),
-        }
+    /// Direction out of a preparation when the jaw is oriented; without a jaw frame the margin
+    /// step falls back to the scan's own occlusal direction (see `margin_step::proposal_axis`).
+    fn margin_axis(&self) -> Option<DVec3> {
+        self.occlusal()
     }
 
     /// `--step inner` or `--step anatomy`: once the Insertion axis step has set the tooth's axis,

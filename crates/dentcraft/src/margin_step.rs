@@ -11,7 +11,8 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use dentcraft_case::{Arch, Design, Fdi, ScanRole, ToothDesign};
-use dentcraft_design::{Margin, MarginTracer};
+use dentcraft_design::{DesignError, Margin, MarginTracer};
+use dentcraft_mesh::TriMesh;
 use dentcraft_render::{MeshId, Overlay};
 use eframe::egui;
 use glam::DVec3;
@@ -276,13 +277,18 @@ pub fn nearest_scan(objects: &[SceneObject], p: DVec3) -> Option<(MeshId, DVec3)
 
 enum Slot {
     Building,
-    Ready(Arc<MarginTracer>),
+    /// The tracer and the scan's own occlusal direction, when one can be found.
+    Ready(Arc<MarginTracer>, Option<DVec3>),
     Failed(String),
 }
 
 #[derive(Clone, Debug)]
 enum JobKind {
-    Propose { seed: DVec3, axis: DVec3 },
+    /// `axis` is the jaw frame's occlusal direction, once the jaw is oriented.
+    Propose {
+        seed: DVec3,
+        axis: Option<DVec3>,
+    },
     Trace(Vec<DVec3>),
 }
 
@@ -296,7 +302,7 @@ struct Job {
 }
 
 enum Message {
-    Tracer(MeshId, Result<MarginTracer, String>),
+    Tracer(MeshId, Result<(MarginTracer, Option<DVec3>), String>),
     Job(Job, Result<Margin, String>),
 }
 
@@ -307,8 +313,8 @@ pub struct StepFrame<'a> {
     pub objects: &'a [SceneObject],
     /// Tooth being worked on.
     pub tooth: Option<Fdi>,
-    /// Direction out of the preparation for a proposal.
-    pub axis: DVec3,
+    /// The jaw frame's occlusal direction, once the jaw is oriented.
+    pub axis: Option<DVec3>,
 }
 
 /// The app side of the Margin step: tracers, worker jobs and undoable edits.
@@ -391,7 +397,8 @@ impl MarginStep {
     }
 
     /// Proposes a margin for `tooth` from `seed` on `scan`.
-    pub fn propose(&mut self, tooth: Fdi, scan: MeshId, seed: DVec3, axis: DVec3) {
+    /// `axis` is the jaw frame's occlusal direction; without one the proposal uses the scan's.
+    pub fn propose(&mut self, tooth: Fdi, scan: MeshId, seed: DVec3, axis: Option<DVec3>) {
         self.seeds.insert(tooth, (scan, seed));
         self.error = None;
         self.push(Job {
@@ -404,7 +411,7 @@ impl MarginStep {
     }
 
     /// Proposes again from the last seed of `tooth`.
-    pub fn detect_again(&mut self, tooth: Fdi, axis: DVec3) {
+    pub fn detect_again(&mut self, tooth: Fdi, axis: Option<DVec3>) {
         if let Some(&(scan, seed)) = self.seeds.get(&tooth) {
             self.propose(tooth, scan, seed, axis);
         }
@@ -509,7 +516,7 @@ impl MarginStep {
             match message {
                 Message::Tracer(scan, result) => {
                     let slot = match result {
-                        Ok(t) => Slot::Ready(Arc::new(t)),
+                        Ok((t, occlusal)) => Slot::Ready(Arc::new(t), occlusal),
                         Err(e) => Slot::Failed(e),
                     };
                     self.tracers.insert(scan, slot);
@@ -538,7 +545,7 @@ impl MarginStep {
                 return;
             }
             Err(e) => {
-                self.error = Some(capitalize(&e));
+                self.error = Some(e);
                 return;
             }
         };
@@ -585,7 +592,7 @@ impl MarginStep {
     ) -> Result<Option<Arc<MarginTracer>>, String> {
         self.ensure_tracer(scan, objects);
         match self.tracers.get(&scan) {
-            Some(Slot::Ready(t)) => Ok(Some(t.clone())),
+            Some(Slot::Ready(t, _)) => Ok(Some(t.clone())),
             Some(Slot::Failed(e)) => Err(e.clone()),
             Some(Slot::Building) => Ok(None),
             None => Err("The scan is no longer loaded".to_owned()),
@@ -608,7 +615,14 @@ impl MarginStep {
         let tx = self.tx.clone();
         let repaint = self.repaint.clone();
         std::thread::spawn(move || {
-            let result = MarginTracer::new(mesh).map_err(|e| e.to_string());
+            // The scan's occlusal direction is computed once per scan, with its tracer.
+            let occlusal = dentcraft_design::occlusal_direction(&mesh).ok();
+            let result = MarginTracer::new(mesh).map(|t| (t, occlusal)).map_err(|e| {
+                eprintln!("dentcraft: margin tracer: {e}");
+                "This scan can't be traced: it has no usable surface. Check the scan, or \
+                     load it again."
+                    .to_owned()
+            });
             let _ = tx.send(Message::Tracer(scan, result));
             if let Some(ctx) = repaint {
                 ctx.request_repaint();
@@ -625,11 +639,11 @@ impl MarginStep {
         };
         let scan = job.scan;
         self.ensure_tracer(scan, objects);
-        let tracer = match self.tracers.get(&scan) {
-            Some(Slot::Ready(t)) => t.clone(),
+        let (tracer, occlusal) = match self.tracers.get(&scan) {
+            Some(Slot::Ready(t, occlusal)) => (t.clone(), *occlusal),
             Some(Slot::Building) => return,
             Some(Slot::Failed(e)) => {
-                self.error = Some(format!("Cannot trace on this scan: {e}"));
+                self.error = Some(e.clone());
                 self.waiting.pop_front();
                 return;
             }
@@ -647,10 +661,19 @@ impl MarginStep {
         let repaint = self.repaint.clone();
         std::thread::spawn(move || {
             let result = match &job.kind {
-                JobKind::Propose { seed, axis } => tracer.propose(*seed, *axis),
+                JobKind::Propose { seed, axis } => {
+                    match proposal_axis(tracer.mesh(), *axis, occlusal, *seed) {
+                        Some(axis) => tracer.propose(*seed, axis),
+                        None => Err(DesignError::InvalidAxis),
+                    }
+                }
                 JobKind::Trace(controls) => tracer.trace(controls),
             }
-            .map_err(|e| e.to_string());
+            .map_err(|e| {
+                // The technical reason goes to the log; the panel shows what to do next.
+                eprintln!("dentcraft: margin {:?} on {}: {e}", job.edit, job.tooth);
+                user_message(&job.kind, &e)
+            });
             let _ = tx.send(Message::Job(job, result));
             if let Some(ctx) = repaint {
                 ctx.request_repaint();
@@ -659,17 +682,132 @@ impl MarginStep {
     }
 }
 
-fn capitalize(text: &str) -> String {
-    let mut chars = text.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().chain(chars).collect(),
-        None => String::new(),
+/// The direction out of the preparation for a proposal: the jaw frame's occlusal direction when
+/// the jaw is oriented, else the scan's own (`scan_occlusal`), else the area-weighted mean
+/// normal of the surface within 3 mm of the seed. Never the camera's view direction: from a
+/// facial view that is horizontal and no margin can be found around it.
+pub fn proposal_axis(
+    mesh: &TriMesh,
+    jaw: Option<DVec3>,
+    scan_occlusal: Option<DVec3>,
+    seed: DVec3,
+) -> Option<DVec3> {
+    let valid = |a: DVec3| (a.is_finite() && a.length_squared() > 1e-24).then(|| a.normalize());
+    if let Some(axis) = jaw
+        .and_then(valid)
+        .or_else(|| scan_occlusal.and_then(valid))
+    {
+        return Some(axis);
+    }
+    let sum: DVec3 = (0..mesh.triangles.len())
+        .filter(|&i| {
+            let [a, b, c] = mesh.triangle(i);
+            ((a + b + c) / 3.0).distance_squared(seed) <= 3.0 * 3.0
+        })
+        .map(|i| mesh.triangle_cross(i))
+        .sum();
+    valid(sum)
+}
+
+/// A short sentence for the panel, with the next thing to try. Internal reasons stay in the log.
+fn user_message(kind: &JobKind, error: &DesignError) -> String {
+    match (kind, error) {
+        (
+            _,
+            DesignError::EmptyRegion | DesignError::DegenerateRegion | DesignError::InvalidMesh,
+        ) => {
+            "This scan can't be traced: it has no usable surface here. Check the scan, or load it \
+             again."
+                .to_owned()
+        }
+        (JobKind::Propose { .. }, _) => {
+            "Couldn't find a margin around this point. Click the top of the prepared tooth, or \
+             orient the jaw first."
+                .to_owned()
+        }
+        (JobKind::Trace(_), _) => {
+            "Couldn't run the margin through these points. Move the handles onto the finish \
+             line, or click Detect again."
+                .to_owned()
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_proposal_axis_never_comes_from_the_view() {
+        // A quad tilted 45 degrees about X, facing +Y+Z, with a far triangle facing -Z.
+        let mesh = TriMesh::new(
+            vec![
+                DVec3::new(-1.0, -1.0, 1.0),
+                DVec3::new(1.0, -1.0, 1.0),
+                DVec3::new(1.0, 1.0, -1.0),
+                DVec3::new(-1.0, 1.0, -1.0),
+                DVec3::new(20.0, 0.0, 0.0),
+                DVec3::new(21.0, 1.0, 0.0),
+                DVec3::new(21.0, 0.0, 0.0),
+            ],
+            vec![[0, 1, 2], [0, 2, 3], [4, 5, 6]],
+        );
+        let seed = DVec3::ZERO;
+        let jaw = DVec3::new(0.0, 0.0, 2.0);
+        let scan = DVec3::new(0.0, 3.0, 0.0);
+        assert_eq!(
+            proposal_axis(&mesh, Some(jaw), Some(scan), seed),
+            Some(DVec3::Z)
+        );
+        assert_eq!(proposal_axis(&mesh, None, Some(scan), seed), Some(DVec3::Y));
+        // No direction at all: the surface around the seed decides; the far triangle is ignored.
+        let patch = proposal_axis(&mesh, None, None, seed).unwrap();
+        assert!((patch - DVec3::new(0.0, 1.0, 1.0).normalize()).length() < 1e-12);
+        assert_eq!(
+            proposal_axis(&mesh, Some(DVec3::ZERO), None, seed),
+            Some(patch)
+        );
+        assert_eq!(proposal_axis(&mesh, None, None, DVec3::splat(50.0)), None);
+    }
+
+    #[test]
+    fn a_proposal_without_a_jaw_frame_uses_the_scan_direction() {
+        // Without a jaw frame the app used to propose along the camera's view direction, which
+        // is horizontal in a facial view: the projection degenerated and nothing was found.
+        let die =
+            dentcraft_design::prepared_tooth(&dentcraft_design::ToothParams::default()).unwrap();
+        let occlusal = dentcraft_design::occlusal_direction(&die.mesh).ok();
+        let top = die.axis * 12.0;
+        let tracer = MarginTracer::new(Arc::new(die.mesh.clone())).unwrap();
+        let axis = proposal_axis(&die.mesh, None, occlusal, top).unwrap();
+        assert!(axis.dot(die.axis) > 0.9, "axis {axis}");
+        let margin = tracer.propose(top, axis).unwrap();
+        assert!(margin.points.len() > 100);
+        let facial = die.axis.any_orthonormal_vector();
+        assert!(tracer.propose(top, facial).is_err());
+    }
+
+    #[test]
+    fn failures_read_as_a_next_step_not_an_internal_error() {
+        let propose = JobKind::Propose {
+            seed: DVec3::ZERO,
+            axis: None,
+        };
+        let trace = JobKind::Trace(Vec::new());
+        for kind in [&propose, &trace] {
+            for error in [
+                DesignError::InvalidMargin,
+                DesignError::InvalidAxis,
+                DesignError::EmptyRegion,
+            ] {
+                let text = user_message(kind, &error);
+                assert!(!text.contains(&error.to_string()), "{text}");
+                assert!(!text.contains("polygon"), "{text}");
+                assert!(text.ends_with('.'), "{text}");
+            }
+        }
+        assert!(user_message(&propose, &DesignError::InvalidMargin).contains("Click the top"));
+    }
 
     fn t(code: u8) -> Fdi {
         Fdi::new(code).unwrap()
