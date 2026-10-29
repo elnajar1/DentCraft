@@ -71,15 +71,20 @@ pub struct InnerSurface {
 /// point-to-margin-polyline distances for the first interior samples. Steep
 /// edges are split at axial-height levels spaced by grid_step. The sampled
 /// ball is followed by exact closest-point clearance correction, moving only
-/// along +axis. Every edge midpoint and centroid is then checked against the
-/// interpolated vertex targets, to 1 µm, including signed clearance at zero gap.
-/// A deficient sample raises its triangle's lowest movable vertices first, so a
-/// blocked-out cliff closes over the overhang lip rather than lifting its top.
+/// along +axis. Every vertex, edge midpoint and centroid is then checked against
+/// the interpolated vertex targets, to 1 µm, including signed clearance at zero
+/// gap — vertices are re-checked in every round because a raise alongside a
+/// wall that leans over them (a fold or the edge of a scan hole) reduces their
+/// clearance again. A deficient sample raises its triangle's lowest movable
+/// vertices first, so a blocked-out cliff closes over the overhang lip rather
+/// than lifting its top.
 ///
 /// Boundary positions remain bit-exact. A margin overhang beyond the horizontal
-/// noise threshold is rejected. Missing grid hits inherit nearby valid heights.
-/// A grid step greater than 0.1 mm is rejected. Allocation/refinement limits and
-/// failure to converge return errors, never an unchecked surface.
+/// noise threshold is rejected, except within the margin seal band
+/// ([`crate::SEAL_BAND_MM`] around the margin line, the crossing zone of the
+/// barrier and the smooth curve). Missing grid hits inherit nearby valid
+/// heights. A grid step greater than 0.1 mm is rejected. Allocation/refinement
+/// limits and failure to converge return errors, never an unchecked surface.
 pub fn inner_surface(
     mesh: &TriMesh,
     region: &[u32],
@@ -562,6 +567,11 @@ fn ordered_parameter_bounds(previous: f64, separation: f64, remaining: usize) ->
     ((previous + separation).min(hi), hi)
 }
 
+/// Reject when the region cannot seat on the margin along `axis`: the worst
+/// horizontal extension beyond the projected margin (region vertices, edge
+/// midpoints and centroids) must stay within `threshold`. Samples within the
+/// [`crate::SEAL_BAND_MM`] band around the margin line are the barrier/curve
+/// crossing zone and do not count (see [`crate::margin_overhang::measure_polygon`]).
 fn reject_margin_undercut(
     polygon: &Polygon,
     frame: Frame,
@@ -743,7 +753,13 @@ fn correct_faces(
                 let points = ids.map(|i| surface.mesh.positions[i]);
                 let gaps = ids.map(|i| surface.target_gaps[i]);
                 let mut shifts = [0.0_f64; 3];
+                // Vertices included: a raise that cleared one sample can push a
+                // vertex alongside a leaning wall (a fold over a scan hole) back
+                // into the die; only a re-check catches that.
                 for weights in [
+                    [1.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                    [0.0, 0.0, 1.0],
                     [0.5, 0.5, 0.0],
                     [0.0, 0.5, 0.5],
                     [0.5, 0.0, 0.5],
@@ -751,11 +767,15 @@ fn correct_faces(
                 ] {
                     let point = (0..3).map(|i| points[i] * weights[i]).sum::<DVec3>();
                     let target = (0..3).map(|i| gaps[i] * weights[i]).sum::<f64>();
-                    if ids
-                        .iter()
-                        .filter_map(|&i| vertex_planes[i])
-                        .any(|(n, d)| n.dot(point) - d >= target - 0.0008)
-                    {
+                    // Fast path: skip when every local supporting plane certifies
+                    // the sample. A single certifying plane is only a bound on the
+                    // unsigned distance; on the open region patch a sample can sit
+                    // behind its own wall face in the finish-line valley while a
+                    // neighbouring face's plane vouches for it, so all three local
+                    // planes (and a non-supporting face) must force the exact query.
+                    if ids.iter().all(|&i| {
+                        vertex_planes[i].is_some_and(|(n, d)| n.dot(point) - d >= target - 0.0008)
+                    }) {
                         continue;
                     }
                     if signed_clearance(point, prep).0 >= target - 0.0008 {
@@ -772,6 +792,15 @@ fn correct_faces(
                         ids.map(|i| i >= boundary),
                         deficit,
                     ) else {
+                        // The sample lies entirely on the exact margin boundary
+                        // and cannot be raised. The smoothed curve crosses the
+                        // barrier's triangles, so against the region alone it
+                        // can read up to the crossing noise inside although it
+                        // lies on the scan; tolerate the seal band, reject a
+                        // margin genuinely buried in the preparation.
+                        if signed_clearance(point, prep).0 >= target - crate::SEAL_BAND_MM {
+                            continue;
+                        }
                         return Some(Err(DesignError::RefinementLimit));
                     };
                     for i in 0..3 {
@@ -1236,15 +1265,99 @@ mod tests {
         for tri in &result.mesh.triangles {
             let points = tri.map(|i| result.mesh.positions[i as usize]);
             let gaps = tri.map(|i| result.target_gaps[i as usize]);
-            for weights in [
-                [0.5, 0.5, 0.0],
-                [0.0, 0.5, 0.5],
-                [0.5, 0.0, 0.5],
-                [1.0 / 3.0; 3],
-            ] {
+            for weights in ALL_WEIGHTS {
                 let p = (0..3).map(|i| points[i] * weights[i]).sum::<DVec3>();
                 let g = (0..3).map(|i| gaps[i] * weights[i]).sum::<f64>();
                 assert!(signed_clearance(p, &closed).0 >= g - 0.001);
+            }
+        }
+    }
+
+    /// Sample weights of every vertex, edge midpoint and centroid.
+    const ALL_WEIGHTS: [[f64; 3]; 7] = [
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [0.5, 0.5, 0.0],
+        [0.0, 0.5, 0.5],
+        [0.5, 0.0, 0.5],
+        [1.0 / 3.0; 3],
+    ];
+
+    /// A flat floor with a fin that rises vertically, folds left over the floor
+    /// and back right, stopping just short of a column to its right: the surface
+    /// is not single-valued along the axis there, and the fold's top is open
+    /// (like a scan hole above an overhang). The first-hit envelope jumps from
+    /// the fold's top to the floor between two grid columns — a blocked-out
+    /// cliff whose face is the fin's vertical wall. Closing that cliff raises
+    /// the low vertex beside the wall until it stands beside the fold's tip;
+    /// unless vertices are re-checked after such raises, the vertex ends up
+    /// inside the fin's clearance — the deficit this test pins.
+    #[test]
+    fn raises_beside_a_leaning_fold_are_rechecked_at_vertices() {
+        let margin = vec![
+            DVec3::new(-4.0, -4.0, 0.0),
+            DVec3::new(4.0, -4.0, 0.0),
+            DVec3::new(4.0, 4.0, 0.0),
+            DVec3::new(-4.0, 4.0, 0.0),
+        ];
+        let mut positions = margin.clone();
+        let mut triangles = vec![[0, 1, 2], [0, 2, 3]];
+        // (x, z) outline of the fin, with the side its faces bound (the wall
+        // bounds space to its right, the fold the space above it).
+        let outline = [
+            (0.735, 0.0, DVec3::X),
+            (0.735, 2.9, DVec3::X),
+            (0.4, 2.95, DVec3::Z),
+            (0.79, 2.95, DVec3::Z),
+        ];
+        for window in outline.windows(2) {
+            let (a, b) = (window[0], window[1]);
+            let (base, outward) = (positions.len() as u32, a.2);
+            // Quad between the sections, wound so the faces point `outward`.
+            let [p, q, r, s] = [
+                DVec3::new(a.0, -0.5, a.1),
+                DVec3::new(a.0, 0.5, a.1),
+                DVec3::new(b.0, 0.5, b.1),
+                DVec3::new(b.0, -0.5, b.1),
+            ];
+            let flip = (q - p).cross(r - q).dot(outward) < 0.0;
+            for point in [p, q, r, s] {
+                positions.push(point);
+            }
+            if flip {
+                triangles.push([base, base + 2, base + 1]);
+                triangles.push([base, base + 3, base + 2]);
+            } else {
+                triangles.push([base, base + 1, base + 2]);
+                triangles.push([base, base + 2, base + 3]);
+            }
+        }
+        let mesh = TriMesh::new(positions, triangles);
+        let region: Vec<u32> = (0..mesh.triangles.len() as u32).collect();
+        assert!(
+            crate::undercut_map(&mesh, &region, DVec3::Z)
+                .unwrap()
+                .undercut_area
+                > 0.0
+        );
+        let params = InnerSurfaceParams {
+            margin_seal_width: 0.0,
+            transition_width: 0.0,
+            grid_step: 0.1,
+            ..Default::default()
+        };
+        let result = inner_surface(&mesh, &region, &margin, DVec3::Z, &params).unwrap();
+        assert_disk(&result, DVec3::Z);
+        let closed = Region::new(&mesh, &region).unwrap();
+        for tri in &result.mesh.triangles {
+            let points = tri.map(|i| result.mesh.positions[i as usize]);
+            let gaps = tri.map(|i| result.target_gaps[i as usize]);
+            for weights in ALL_WEIGHTS {
+                let p = (0..3).map(|i| points[i] * weights[i]).sum::<DVec3>();
+                let g = (0..3).map(|i| gaps[i] * weights[i]).sum::<f64>();
+                let (gap, _) = signed_clearance(p, &closed);
+                assert!(gap >= g - 0.001, "{p:?} gap {gap} target {g}");
             }
         }
     }
