@@ -7,7 +7,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-dentcraft-mesh = { version = "0.1.0", path = "../dentcraft-mesh" }
+dentcraft-mesh.workspace = true
 glam = "0.34.1"
 thiserror = "2.0.21"
 

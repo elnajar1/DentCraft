@@ -522,7 +522,7 @@ checksum = "be1e0bca6c3637f992fc1cc7cbc52a78c1ef6db076dbf1059c4323d6a2048376"
 
 [[package]]
 name = "dentcraft"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "dentcraft-anatomy",
@@ -541,7 +541,7 @@ dependencies = [
 
 [[package]]
 name = "dentcraft-anatomy"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "dentcraft-case",
  "dentcraft-mesh",
@@ -552,7 +552,7 @@ dependencies = [
 
 [[package]]
 name = "dentcraft-case"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "glam",
  "serde",
@@ -562,7 +562,7 @@ dependencies = [
 
 [[package]]
 name = "dentcraft-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "dentcraft-case",
@@ -576,7 +576,7 @@ dependencies = [
 
 [[package]]
 name = "dentcraft-design"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "dentcraft-anatomy",
  "dentcraft-case",
@@ -590,7 +590,7 @@ dependencies = [
 
 [[package]]
 name = "dentcraft-io"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "dentcraft-mesh",
  "glam",
@@ -599,7 +599,7 @@ dependencies = [
 
 [[package]]
 name = "dentcraft-mesh"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "glam",
  "serde",
@@ -607,7 +607,7 @@ dependencies = [
 
 [[package]]
 name = "dentcraft-render"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytemuck",
  "dentcraft-mesh",
@@ -619,7 +619,7 @@ dependencies = [
 
 [[package]]
 name = "dentcraft-workflow"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "dentcraft-case",
  "serde",

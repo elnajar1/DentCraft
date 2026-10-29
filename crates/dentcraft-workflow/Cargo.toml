@@ -7,7 +7,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-dentcraft-case = { version = "0.1.0", path = "../dentcraft-case" }
+dentcraft-case.workspace = true
 serde = { version = "1.0.229", features = ["derive"] }
 thiserror = "2.0.21"
 
