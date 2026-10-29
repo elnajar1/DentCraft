@@ -1,5 +1,6 @@
 //! The application shell: top bar, case panel, workflow panel, viewport and status bar.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -240,6 +241,10 @@ pub struct DentCraftApp {
     tooth_frame: FrameTrigger,
     /// `--export DIR`, waiting for the startup chain to finish.
     pending_export: Option<PathBuf>,
+    /// Step errors a screenshot run has already reported (see [`new_step_errors`]).
+    reported_errors: HashSet<String>,
+    /// Those errors, kept until the run ends: a card forgets its error when its step is left.
+    step_failures: Vec<String>,
     /// `--orient`, waiting for the scans to load.
     pending_orient: bool,
     /// Tooth the per-tooth step works on.
@@ -334,6 +339,8 @@ impl DentCraftApp {
             frame_crown: false,
             tooth_frame: FrameTrigger::default(),
             pending_export: start.export,
+            reported_errors: HashSet::new(),
+            step_failures: Vec::new(),
             pending_orient: start.orient,
             tooth: None,
             pending_step: start.step,
@@ -860,6 +867,7 @@ impl DentCraftApp {
         {
             return; // The axis search has not started yet.
         }
+        self.collect_step_errors();
         self.pending_inner = None;
         while self.session.current().is_some_and(|s| s.id != target) {
             if self.session.complete().is_err() {
@@ -890,6 +898,7 @@ impl DentCraftApp {
         if self.pending_inner.is_some() || self.inner.busy() || self.anatomy.busy() {
             return;
         }
+        self.collect_step_errors();
         self.pending_finish = None;
         let tooth = self.tooth;
         while self.session.current().is_some_and(|s| s.id != target) {
@@ -1966,11 +1975,11 @@ impl DentCraftApp {
             .current()
             .filter(|s| s.id == StepId::Margin)
             .and(self.tooth);
+        let axis = self.margin_axis(tooth);
         self.margin.update(StepFrame {
             design: &mut self.case.design,
             history: &mut self.history,
             objects: &self.objects,
-        let axis = self.margin_axis(tooth);
             tooth,
             axis,
         });
@@ -1980,11 +1989,11 @@ impl DentCraftApp {
             .current()
             .filter(|s| s.id == StepId::InsertionAxis)
             .and(self.tooth);
+        let occlusal = self.occlusal(tooth);
         self.axis.update(axis_step::StepFrame {
             design: &mut self.case.design,
             history: &mut self.history,
             objects: &self.objects,
-        let occlusal = self.occlusal(tooth);
             margin: &mut self.margin,
             tooth,
             occlusal,
@@ -2045,6 +2054,17 @@ impl DentCraftApp {
             && let Some(s) = self.export.summary()
         {
             eprintln!("dentcraft: export to {}: {}", s.dir.display(), s.line());
+            if s.files == 0 && !self.case.units.is_empty() && self.screenshot.is_some() {
+                // The step errors say why, and the run ends here: report them first.
+                self.collect_step_errors();
+                for error in std::mem::take(&mut self.step_failures) {
+                    self.fail(error);
+                }
+                let n = self.case.units.len();
+                self.fail(format!(
+                    "--export: no files written for {n} planned unit(s)"
+                ));
+            }
         }
         // Entering a per-tooth step, or changing tooth: frame the tooth once its margin is there.
         let entry = self
@@ -2211,6 +2231,16 @@ impl DentCraftApp {
             || self.viewport.camera.is_animating();
         // The settled frame logs the contacts report, so a screenshot run quotes it.
         let contacts = self.contacts_log();
+        // The step errors of the settled frame, reported once the capture is requested.
+        let capturing = self.screenshot.as_ref().is_some_and(|j| {
+            !busy && !j.requested && j.settled_frames + 1 >= SCREENSHOT_SETTLE_FRAMES
+        });
+        self.collect_step_errors();
+        let errors = if capturing {
+            std::mem::take(&mut self.step_failures)
+        } else {
+            Vec::new()
+        };
         let Some(job) = &mut self.screenshot else {
             return;
         };
@@ -2219,7 +2249,7 @@ impl DentCraftApp {
             set_exit(&job.exit_code, code);
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         };
-        if job.exit_code.lock().is_ok_and(|c| c.is_some()) {
+        if !job.requested && job.exit_code.lock().is_ok_and(|c| c.is_some()) {
             // A load failed: give up now rather than capture an incomplete scene.
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
@@ -2260,6 +2290,44 @@ impl DentCraftApp {
                 repaint.request_repaint();
             });
         }
+        // After the request, so the capture is still saved with the run marked as failed.
+        for error in errors {
+            self.fail(error);
+        }
+    }
+
+    /// In a screenshot run, keeps the current tooth's step errors not seen before, as
+    /// `step on tooth: message` lines.
+    fn collect_step_errors(&mut self) {
+        if self.screenshot.is_none() {
+            return;
+        }
+        let Some(tooth) = self.tooth else {
+            return;
+        };
+        let occlusal = self.occlusal(Some(tooth));
+        let inner = self
+            .inner
+            .card(&self.case.design, &self.case.material, tooth);
+        let inner_error = inner.error.filter(|_| inner.has_margin && inner.has_axis);
+        let anatomy = self
+            .anatomy
+            .card(&self.case, tooth, false, inner_error.clone());
+        let base = self.anatomy.crown(&self.case, tooth);
+        let contacts = self
+            .contacts
+            .card(&self.case, &self.objects, tooth, base.as_ref(), None);
+        let cards = [
+            (
+                "Insertion axis",
+                self.axis.card(&self.case.design, tooth, occlusal).error,
+            ),
+            ("Inner surface", inner_error),
+            ("Anatomy", anatomy.error),
+            ("Contacts", contacts.error),
+        ];
+        let found = new_step_errors(tooth, cards, &mut self.reported_errors);
+        self.step_failures.extend(found);
     }
 
     /// The current tooth's contacts report as one log line, for screenshot runs.
@@ -2272,6 +2340,21 @@ impl DentCraftApp {
         card.report
             .map(|r| format!("tooth {tooth}: {}", contacts_step::report_line(&r)))
     }
+}
+
+/// The `(step, error)` pairs of one tooth's step cards as `step on tooth: message` lines, each
+/// message once: the Anatomy card repeats the Inner surface error it is waiting on.
+fn new_step_errors(
+    tooth: Fdi,
+    cards: [(&str, Option<String>); 4],
+    seen: &mut HashSet<String>,
+) -> Vec<String> {
+    cards
+        .into_iter()
+        .filter_map(|(step, error)| Some((step, error?)))
+        .filter(|(_, error)| seen.insert(format!("{tooth}: {error}")))
+        .map(|(step, error)| format!("{step} on {tooth}: {error}"))
+        .collect()
 }
 
 /// One row of the Objects list. Returns true when the user asked to remove the object.
@@ -2504,6 +2587,34 @@ impl eframe::App for DentCraftApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn step_errors_are_reported_once_each() {
+        let tooth = Fdi::new(33).unwrap();
+        let e = |m: &str| Some(m.to_owned());
+        let mut seen = HashSet::new();
+        let none = [
+            ("Insertion axis", None),
+            ("Inner surface", None),
+            ("Anatomy", None),
+            ("Contacts", None),
+        ];
+        assert!(new_step_errors(tooth, none, &mut seen).is_empty());
+        let cards = [
+            ("Insertion axis", None),
+            ("Inner surface", e("Facing away")),
+            ("Anatomy", e("Facing away")),
+            ("Contacts", e("Missing crown")),
+        ];
+        assert_eq!(
+            new_step_errors(tooth, cards.clone(), &mut seen),
+            [
+                "Inner surface on 33: Facing away",
+                "Contacts on 33: Missing crown"
+            ]
+        );
+        assert!(new_step_errors(tooth, cards, &mut seen).is_empty());
+    }
 
     #[test]
     fn thousands_are_grouped() {
