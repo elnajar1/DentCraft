@@ -464,7 +464,7 @@ fn menu_row(
             pos2(rect.right() - 14.0, rect.center().y),
             Vec2::splat(12.0),
         );
-        paint_icon(painter, Icon::Check, r, p.accent, *p);
+        paint_icon(painter, Icon::Check, r, p.accent);
     }
     response.on_hover_cursor(CursorIcon::PointingHand)
 }

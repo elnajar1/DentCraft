@@ -130,7 +130,7 @@ pub fn header(ui: &mut Ui, section: Section, open: &mut bool, extra: impl FnOnce
             Icon::ChevronRight
         };
         let icon = Rect::from_center_size(rect.left_center() + vec2(14.0, 0.0), vec2(10.0, 10.0));
-        paint_icon(ui.painter(), chevron, icon, p.text_dim, p);
+        paint_icon(ui.painter(), chevron, icon, p.text_dim);
         let font: FontId = TextStyle::Body.resolve(ui.style());
         ui.painter().text(
             rect.left_center() + vec2(26.0, 0.0),

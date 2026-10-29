@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>Smile design</title>
+  <path d="M4 30C14 17 24 15 32 19C40 15 50 17 60 30C50 45 40 50 32 50C24 50 14 45 4 30Z" fill="none" stroke="currentColor" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M12 30C22 25 42 25 52 30C42 40 22 40 12 30Z" fill="none" stroke="currentColor" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M24 28L24 35M32 27L32 36M40 28L40 35" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+</svg>

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>Margin line</title>
+  <path d="M17 43L21 19C22 13 42 13 43 19L47 43" fill="none" stroke="currentColor" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M10 46A22 8 0 1 0 54 46A22 8 0 1 0 10 46Z" fill="none" stroke="currentColor" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
+  <circle cx="10" cy="46" r="4.5" fill="currentColor"/>
+  <circle cx="43" cy="53" r="4.5" fill="currentColor"/>
+</svg>

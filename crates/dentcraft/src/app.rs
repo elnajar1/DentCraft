@@ -1807,7 +1807,6 @@ fn issues_box(ui: &mut egui::Ui, issues: &[dentcraft_case::CaseIssue], p: &Palet
                         Icon::Warning,
                         egui::Rect::from_center_size(rect.center(), vec2(12.0, 12.0)),
                         p.danger,
-                        *p,
                     );
                     ui.add(
                         egui::Label::new(

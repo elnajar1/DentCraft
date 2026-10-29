@@ -429,7 +429,7 @@ fn status_icon(ui: &mut Ui, index: usize, status: StepStatus, p: &Palette) {
     match status {
         StepStatus::Done => {
             painter.circle_filled(c, 10.0, p.accent.gamma_multiply(0.22));
-            paint_icon(painter, Icon::Check, rect.shrink(5.0), p.accent, *p);
+            paint_icon(painter, Icon::Check, rect.shrink(5.0), p.accent);
         }
         StepStatus::Skipped => {
             painter.circle_stroke(c, 9.5, Stroke::new(1.0, p.border));
@@ -504,7 +504,7 @@ fn tooth_chip(ui: &mut Ui, tooth: Fdi, case: &Case, mark: ChipMark, p: &Palette)
             egui::pos2(rect.right() - 3.0 - CHIP_TICK * 0.5, rect.center().y),
             Vec2::splat(9.0),
         );
-        paint_icon(ui.painter(), Icon::Check, at, ink, *p);
+        paint_icon(ui.painter(), Icon::Check, at, ink);
     }
     if let Some(unit) = case.unit(tooth) {
         let done = if mark.done { " · margin done" } else { "" };
@@ -1235,7 +1235,6 @@ fn finished_card(ui: &mut Ui, total: usize, p: &Palette) {
             Icon::Check,
             Rect::from_center_size(rect.center(), Vec2::splat(14.0)),
             p.on_primary,
-            *p,
         );
         ui.label(RichText::new("Design complete").heading().color(p.text));
     });

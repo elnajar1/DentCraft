@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>Left view</title>
+  <path d="M8 24L24 8L24 40L8 56Z" fill="currentColor" fill-opacity="0.8"/>
+  <path d="M8 24L40 24L40 56L8 56ZM8 24L24 8L56 8L56 40L40 56M40 24L56 8" fill="none" stroke="currentColor" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/>
+</svg>

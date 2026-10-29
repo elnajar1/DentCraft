@@ -9,6 +9,7 @@ mod chart;
 mod document;
 mod export_step;
 mod history;
+mod icon_svg;
 mod inner_step;
 mod loader;
 mod margin_edit;

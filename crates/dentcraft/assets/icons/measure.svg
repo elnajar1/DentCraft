@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>Measure</title>
+  <path d="M9 43.63L45 7.63L58 20.63L22 56.63Z" fill="none" stroke="currentColor" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M17 39.63L23 45.63M26 30.63L30 34.63M35 21.63L41 27.63M44 12.63L47 15.63" fill="none" stroke="currentColor" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
+</svg>

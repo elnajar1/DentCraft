@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>Denture</title>
+  <path d="M8 58C4 30 14 5 32 5C50 5 60 30 56 58M21 58C19 40 24 27 32 27C40 27 45 40 43 58" fill="none" stroke="currentColor" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
+  <circle cx="32" cy="16" r="3.6" fill="currentColor"/>
+  <circle cx="39.8" cy="19.4" r="3.6" fill="currentColor"/>
+  <circle cx="46.2" cy="28.9" r="3.6" fill="currentColor"/>
+  <circle cx="49.9" cy="42.7" r="3.6" fill="currentColor"/>
+  <circle cx="24.2" cy="19.4" r="3.6" fill="currentColor"/>
+  <circle cx="17.8" cy="28.9" r="3.6" fill="currentColor"/>
+  <circle cx="14.1" cy="42.7" r="3.6" fill="currentColor"/>
+</svg>

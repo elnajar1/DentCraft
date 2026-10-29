@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>Model builder</title>
+  <path d="M6 44L14 36L50 36L58 44L58 54L6 54ZM6 44L58 44" fill="none" stroke="currentColor" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M14 36C12 18 22 8 32 8C42 8 52 18 50 36M25 36C24 26 27 20 32 20C37 20 40 26 39 36" fill="none" stroke="currentColor" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
+</svg>

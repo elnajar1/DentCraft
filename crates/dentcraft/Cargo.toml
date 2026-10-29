@@ -17,6 +17,8 @@ dentcraft-mesh = { workspace = true }
 dentcraft-render = { workspace = true }
 dentcraft-workflow = { workspace = true }
 eframe = { version = "0.37.0", default-features = false, features = ["wgpu", "default_fonts", "persistence", "x11", "wayland"] }
+# Rasterises the icon SVGs (resvg, MIT OR Apache-2.0).
+egui_extras = { version = "0.37.0", default-features = false, features = ["svg"] }
 # Same version as dentcraft-render: its camera API takes glam vectors.
 glam = "0.34.1"
 image = { version = "0.25", default-features = false, features = ["png"] }

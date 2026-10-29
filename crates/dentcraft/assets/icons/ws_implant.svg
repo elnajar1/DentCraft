@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>Implant</title>
+  <path d="M18 21C16 13 20 6 26 7C29 8 30 9 32 9C34 9 35 8 38 7C44 6 48 13 46 21C45 24 40 25 32 25C24 25 19 24 18 21Z" fill="none" stroke="currentColor" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M23 31L41 31L38 53L32 58L26 53Z" fill="none" stroke="currentColor" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M20 40L44 36M21 48L43 44" fill="none" stroke="currentColor" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
+</svg>

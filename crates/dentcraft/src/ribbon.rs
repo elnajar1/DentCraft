@@ -379,7 +379,7 @@ fn workspace_switcher(ui: &mut Ui, block: Rect, menu: &mut WorkspaceMenu) {
     );
     let x = block.center().x;
     let icon = Rect::from_center_size(pos2(x, block.top() + 34.0), Vec2::splat(30.0));
-    paint_icon(painter, Icon::Workspace(current), icon, p.text, p);
+    paint_icon(painter, Icon::Workspace(current), icon, p.text);
     let name = painter.layout_no_wrap(
         current.short_name().to_owned(),
         FontId::proportional(SIZE_BODY),
@@ -525,7 +525,7 @@ fn workspace_row(ui: &mut Ui, w: Workspace, key_highlight: bool) -> bool {
     } else {
         p.text.gamma_multiply(0.35)
     };
-    paint_icon(painter, Icon::Workspace(w), tile.shrink(7.0), icon_ink, p);
+    paint_icon(painter, Icon::Workspace(w), tile.shrink(7.0), icon_ink);
 
     let text = if enabled { p.text } else { p.text_dim };
     let x = r.left() + 74.0;
@@ -658,7 +658,7 @@ fn command_button(ui: &mut Ui, icon: Icon, label: &str, enabled: bool, selected:
         painter.rect_filled(rect, CornerRadius::same(RADIUS_SM), fill);
         let icon_rect =
             Rect::from_center_size(pos2(rect.center().x, rect.top() + 18.0), Vec2::splat(20.0));
-        paint_icon(painter, icon, icon_rect, ink, p);
+        paint_icon(painter, icon, icon_rect, ink);
         let text_pos = pos2(
             rect.center().x - galley.size().x * 0.5,
             rect.bottom() - 8.0 - galley.size().y,
