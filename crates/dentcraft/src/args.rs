@@ -67,6 +67,11 @@ pub struct Args {
     #[arg(long, value_name = "FDI@X,Y,Z", value_parser = parse_margin_click, allow_hyphen_values = true)]
     pub margin: Vec<(Fdi, DVec3)>,
 
+    /// Hand-traced margin on a tooth: FDI tooth number and waypoints in millimetres, e.g.
+    /// "33@1,2,3;4,5,6;7,8,9". Each point snaps to the nearest surface. Repeat per tooth.
+    #[arg(long, value_name = "FDI@X,Y,Z;X,Y,Z", value_parser = parse_margin_points, allow_hyphen_values = true)]
+    pub margin_points: Vec<(Fdi, Vec<DVec3>)>,
+
     /// Design step to open: scans, orient, margin, axis, inner, anatomy, contacts or export.
     #[arg(long, value_enum)]
     pub step: Option<StepArg>,
@@ -227,6 +232,26 @@ pub fn parse_margin_click(text: &str) -> Result<(Fdi, DVec3), String> {
         [x, y, z] if v.iter().all(|c| c.is_finite()) => Ok((tooth, DVec3::new(x, y, z))),
         _ => Err(bad()),
     }
+}
+
+/// Parses `FDI@x,y,z;x,y,z;...`: a tooth and at least three waypoints.
+pub fn parse_margin_points(text: &str) -> Result<(Fdi, Vec<DVec3>), String> {
+    let bad = || {
+        format!(
+            "invalid margin points `{text}` (expected FDI@x,y,z;x,y,z;x,y,z, e.g. 33@1,2,3;4,5,6;7,8,9)"
+        )
+    };
+    let (tooth, points) = text.split_once('@').ok_or_else(bad)?;
+    let tooth = parse_tooth(tooth)?;
+    let points: Vec<DVec3> = points
+        .split(';')
+        .map(|p| parse_margin_click(&format!("{tooth}@{p}")).map(|(_, v)| v))
+        .collect::<Result<_, _>>()
+        .map_err(|_| bad())?;
+    if points.len() < 3 {
+        return Err(bad());
+    }
+    Ok((tooth, points))
 }
 
 #[cfg(test)]
@@ -392,6 +417,41 @@ mod tests {
     fn step_contacts_opens_the_occlusion_step() {
         let args = Args::try_parse_from(["dentcraft", "--step", "contacts"]).unwrap();
         assert_eq!(args.step.map(StepId::from), Some(StepId::Occlusion));
+    }
+
+    #[test]
+    fn margin_points_parse_a_tooth_and_its_waypoints() {
+        let fdi = Fdi::new(33).unwrap();
+        let args =
+            Args::try_parse_from(["dentcraft", "--margin-points", "33@1,2,3;-4.5,5,6; 7,8,9"])
+                .unwrap();
+        assert_eq!(
+            args.margin_points,
+            vec![(
+                fdi,
+                vec![
+                    DVec3::new(1.0, 2.0, 3.0),
+                    DVec3::new(-4.5, 5.0, 6.0),
+                    DVec3::new(7.0, 8.0, 9.0)
+                ]
+            )]
+        );
+        for bad in [
+            "",
+            "33",
+            "33@",
+            "33@1,2,3;4,5,6",
+            "33@1,2,3;4,5,6;",
+            "33@1,2,3;4,5;7,8,9",
+            "33@1,2,3;4,5,6;x,y,z",
+            "33@1,2,3;4,5,6;NaN,0,0",
+            "99@1,2,3;4,5,6;7,8,9",
+        ] {
+            assert!(
+                parse_margin_points(bad).is_err(),
+                "`{bad}` should be rejected"
+            );
+        }
     }
 
     #[test]

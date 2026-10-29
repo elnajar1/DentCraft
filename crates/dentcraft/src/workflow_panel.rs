@@ -38,6 +38,12 @@ pub enum StepAction {
     DetectAgain,
     /// Remove the current tooth's margin.
     ClearMargin,
+    /// Trace the current tooth's margin by hand, point by point.
+    TraceByHand,
+    /// Store the hand-traced margin.
+    FinishTrace,
+    /// Drop the hand-traced margin in progress.
+    CancelTrace,
     /// Find the jaw's occlusal plane and midline.
     AutoOrient,
     /// Remove the jaw's orientation.
@@ -161,7 +167,14 @@ pub struct MarginCard {
     pub busy: Option<&'static str>,
     pub error: Option<String>,
     pub can_detect_again: bool,
+    /// Waypoints placed so far, while the margin is traced by hand.
+    pub waypoints: Option<usize>,
+    /// A hand-traced margin is ready to be stored.
+    pub can_finish: bool,
 }
+
+/// Hint shown while the margin is traced by hand.
+pub const MANUAL_HINT: &str = "Click 4\u{2013}8 points along the finish line around the tooth. The line follows the edge between them.";
 
 /// Hint shown until the tooth has a margin.
 pub const MARGIN_HINT: &str = "Click the top of the preparation";
@@ -722,7 +735,9 @@ fn margin_section(ui: &mut Ui, card: &MarginCard, case: &Case, p: &Palette) -> O
                     }
                 });
             });
-            let hint = if has_margin {
+            let hint = if card.waypoints.is_some() {
+                MANUAL_HINT
+            } else if has_margin {
                 "Drag a point along the surface. Click the line to add a point; Delete removes one."
             } else {
                 MARGIN_HINT
@@ -731,8 +746,35 @@ fn margin_section(ui: &mut Ui, card: &MarginCard, case: &Case, p: &Palette) -> O
             if let Some(error) = &card.error {
                 ui.label(RichText::new(error).size(SIZE_SMALL).color(p.danger));
             }
+            if let Some(count) = card.waypoints {
+                let noun = if count == 1 { "waypoint" } else { "waypoints" };
+                ui.label(
+                    RichText::new(format!("{count} {noun}"))
+                        .size(SIZE_SMALL)
+                        .color(p.text),
+                );
+            }
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
+                if card.waypoints.is_some() {
+                    if small_button(ui, "Done", card.can_finish, true)
+                        .on_hover_text("Store the traced margin (Enter)")
+                        .clicked()
+                    {
+                        action = Some(StepAction::FinishTrace);
+                    }
+                    if small_button(ui, "Cancel", true, false)
+                        .on_hover_text("Drop the trace (Escape)")
+                        .clicked()
+                    {
+                        action = Some(StepAction::CancelTrace);
+                    }
+                } else if small_button(ui, "Trace by hand", true, false)
+                    .on_hover_text("Click points along the finish line yourself")
+                    .clicked()
+                {
+                    action = Some(StepAction::TraceByHand);
+                }
                 if small_button(ui, "Detect again", card.can_detect_again, false)
                     .on_hover_text("Propose the margin again from the last click")
                     .on_disabled_hover_text(MARGIN_HINT)

@@ -39,7 +39,66 @@ pub enum Edit {
     Insert,
     Delete,
     Clear,
+    /// A margin traced by hand through waypoints.
+    Manual,
 }
+
+/// How the Margin step finds the margin of the current tooth.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Mode {
+    /// Automatic detection from a click on the preparation.
+    #[default]
+    Auto,
+    /// The tooth has a margin; its control points can be edited.
+    Edit,
+    /// The margin is traced by hand through waypoints.
+    Manual,
+}
+
+impl Mode {
+    /// The mode of a tooth outside manual tracing.
+    fn settled(has_margin: bool) -> Self {
+        if has_margin { Self::Edit } else { Self::Auto }
+    }
+
+    /// Done: manual tracing ends with the margin stored.
+    fn done(self) -> Self {
+        if self == Self::Manual {
+            Self::Edit
+        } else {
+            self
+        }
+    }
+
+    /// Escape: manual tracing is dropped, back to what the tooth had. `false` when there was
+    /// no manual trace to cancel.
+    fn escape(self, has_margin: bool) -> (Self, bool) {
+        if self == Self::Manual {
+            (Self::settled(has_margin), true)
+        } else {
+            (self, false)
+        }
+    }
+}
+
+/// The margin of a plausible tooth is this long, in millimetres.
+const MARGIN_LENGTH_MM: std::ops::RangeInclusive<f64> = 8.0..=45.0;
+/// ... and its centroid is at most this far from the click, in millimetres.
+const MAX_SEED_OFFSET_MM: f64 = 8.0;
+
+/// Whether a detected margin looks like the margin of the tooth clicked at `seed`.
+fn plausible(margin: &[DVec3], seed: DVec3) -> bool {
+    if margin.len() < 3 {
+        return false;
+    }
+    let centroid = margin.iter().sum::<DVec3>() / margin.len() as f64;
+    MARGIN_LENGTH_MM.contains(&curve_length(margin))
+        && centroid.distance(seed) <= MAX_SEED_OFFSET_MM
+}
+
+/// Shown when automatic detection found nothing usable; manual tracing starts at the same time.
+const MANUAL_PROMPT: &str = "Couldn't find the margin automatically. Click points along the \
+                             margin instead \u{2014} the line follows the edge between them.";
 
 impl Edit {
     pub fn label(self, tooth: Fdi) -> String {
@@ -49,6 +108,7 @@ impl Edit {
             Self::Insert => "Insert margin point".to_owned(),
             Self::Delete => "Delete margin point".to_owned(),
             Self::Clear => format!("Clear margin {tooth}"),
+            Self::Manual => format!("Trace margin {tooth}"),
         }
     }
 }
@@ -78,6 +138,89 @@ pub struct Shared {
     /// Last dragged or clicked control, which Delete removes when none is hovered.
     selected: Option<usize>,
     requests: Vec<Request>,
+    mode: Mode,
+    /// Manual mode: the clicked points, in loop order.
+    waypoints: Vec<DVec3>,
+    /// Manual mode: the loop traced through the waypoints, not yet stored.
+    manual_curve: Vec<DVec3>,
+    /// Done was asked for; the step stores the trace once the worker is idle.
+    finish_requested: bool,
+}
+
+impl Shared {
+    /// The tooth has a stored margin.
+    fn has_margin(&self) -> bool {
+        self.curve.len() >= 3
+    }
+
+    /// Starts a manual trace through `waypoints`.
+    fn enter_manual(&mut self, waypoints: Vec<DVec3>) {
+        self.leave_manual(Mode::Manual);
+        self.waypoints = waypoints;
+    }
+
+    /// Sets `mode` and drops the manual trace state.
+    fn leave_manual(&mut self, mode: Mode) {
+        self.mode = mode;
+        self.waypoints.clear();
+        self.manual_curve.clear();
+        self.finish_requested = false;
+        self.selected = None;
+        self.hovered = None;
+    }
+
+    /// Escape in manual mode: drops the trace in progress. False in any other mode.
+    fn cancel_manual(&mut self) -> bool {
+        let (mode, cancelled) = self.mode.escape(self.has_margin());
+        if cancelled {
+            self.leave_manual(mode);
+        }
+        cancelled
+    }
+
+    /// Asks for a trace through the waypoints; fewer than three have no loop yet.
+    fn trace_waypoints(&mut self, object: Option<usize>) {
+        if self.waypoints.len() >= 3 {
+            let controls = self.waypoints.clone();
+            self.requests.push(Request::Trace {
+                object,
+                controls,
+                edit: Edit::Manual,
+            });
+        } else {
+            self.manual_curve.clear();
+        }
+    }
+
+    /// A surface click in manual mode: selects the waypoint under it, else adds one: appended
+    /// up to three, then at the best position along the loop.
+    fn click_manual(&mut self, object: usize, p: DVec3) {
+        if let Some(i) = nearest(&self.waypoints, p, NEAR) {
+            self.selected = Some(i);
+            return;
+        }
+        let i = if self.waypoints.len() < 3 {
+            self.waypoints.len()
+        } else {
+            insertion_index(&self.waypoints, p)
+        };
+        self.waypoints.insert(i, p);
+        self.selected = Some(i);
+        self.trace_waypoints(Some(object));
+    }
+
+    /// Delete in manual mode: the hovered, else the selected, else the last waypoint.
+    fn delete_manual(&mut self) {
+        let n = self.waypoints.len();
+        if n == 0 {
+            return;
+        }
+        let i = self.hovered.or(self.selected).unwrap_or(n - 1).min(n - 1);
+        self.waypoints.remove(i);
+        self.hovered = None;
+        self.selected = None;
+        self.trace_waypoints(None);
+    }
 }
 
 /// Index of the point of `points` nearest to `p` within `radius`.
@@ -103,9 +246,14 @@ impl Tool for MarginTool {
 
     fn hover(&mut self, pointer: Option<&Pointer>) {
         let mut s = self.shared.borrow_mut();
+        let points = if s.mode == Mode::Manual {
+            &s.waypoints
+        } else {
+            &s.controls
+        };
         s.hovered = pointer
             .and_then(|p| p.hit)
-            .and_then(|h| nearest(&s.controls, h.point, NEAR));
+            .and_then(|h| nearest(points, h.point, NEAR));
     }
 
     fn click(&mut self, pointer: &Pointer) {
@@ -114,7 +262,9 @@ impl Tool for MarginTool {
         if s.tooth.is_none() {
             return;
         }
-        if s.controls.is_empty() {
+        if s.mode == Mode::Manual {
+            s.click_manual(hit.object, hit.point);
+        } else if s.controls.is_empty() {
             s.requests.push(Request::Propose {
                 object: hit.object,
                 seed: hit.point,
@@ -135,7 +285,12 @@ impl Tool for MarginTool {
     }
 
     fn handles(&self) -> Vec<DVec3> {
-        self.shared.borrow().controls.clone()
+        let s = self.shared.borrow();
+        if s.mode == Mode::Manual {
+            s.waypoints.clone()
+        } else {
+            s.controls.clone()
+        }
     }
 
     fn drag_start(&mut self, handle: usize, _pointer: &Pointer) {
@@ -145,6 +300,14 @@ impl Tool for MarginTool {
     fn drag(&mut self, handle: usize, pointer: &Pointer) {
         let Some(hit) = pointer.hit else { return };
         let mut s = self.shared.borrow_mut();
+        if s.mode == Mode::Manual {
+            match s.waypoints.get_mut(handle) {
+                Some(w) if *w != hit.point => *w = hit.point,
+                _ => return,
+            }
+            s.trace_waypoints(Some(hit.object));
+            return;
+        }
         let Some(c) = s.controls.get_mut(handle) else {
             return;
         };
@@ -164,8 +327,21 @@ impl Tool for MarginTool {
         self.shared.borrow_mut().requests.push(Request::DragEnd);
     }
 
+    fn cancel(&mut self) -> bool {
+        self.shared.borrow_mut().cancel_manual()
+    }
+
+    fn confirm(&mut self) {
+        let mut s = self.shared.borrow_mut();
+        s.finish_requested = s.mode == Mode::Manual;
+    }
+
     fn delete(&mut self) {
         let mut s = self.shared.borrow_mut();
+        if s.mode == Mode::Manual {
+            s.delete_manual();
+            return;
+        }
         let n = s.controls.len();
         if n <= MIN_CONTROLS {
             return;
@@ -186,6 +362,41 @@ impl Tool for MarginTool {
         let s = self.shared.borrow();
         let accent = rgb(palette.accent);
         let mut out = Vec::new();
+        if s.mode == Mode::Manual {
+            if s.manual_curve.len() >= 3 {
+                out.push(Overlay::Polyline {
+                    points: s.manual_curve.iter().map(|p| p.as_vec3()).collect(),
+                    closed: true,
+                    color: accent,
+                    width_px: 2.5,
+                });
+            }
+            if s.waypoints.len() >= 2 {
+                out.push(Overlay::Polyline {
+                    points: s.waypoints.iter().map(|p| p.as_vec3()).collect(),
+                    closed: false,
+                    color: [1.0; 3],
+                    width_px: 1.0,
+                });
+            }
+            if !s.waypoints.is_empty() {
+                out.push(Overlay::Points {
+                    points: s.waypoints.iter().map(|p| p.as_vec3()).collect(),
+                    color: accent,
+                    radius_px: 5.0,
+                    outline: Some([1.0; 3]),
+                });
+            }
+            if let Some(p) = s.hovered.or(s.selected).and_then(|i| s.waypoints.get(i)) {
+                out.push(Overlay::Points {
+                    points: vec![p.as_vec3()],
+                    color: [1.0; 3],
+                    radius_px: 7.0,
+                    outline: Some(accent),
+                });
+            }
+            return out;
+        }
         if s.curve.len() >= 2 {
             out.push(Overlay::Polyline {
                 points: s.curve.iter().map(|p| p.as_vec3()).collect(),
@@ -382,8 +593,18 @@ impl MarginStep {
         let building = self.tracers.values().any(|s| matches!(s, Slot::Building));
         MarginCard {
             tooth,
-            length_mm: (s.tooth == Some(tooth) && s.curve.len() >= 3)
-                .then(|| curve_length(&s.curve)),
+            length_mm: (s.tooth == Some(tooth))
+                .then(|| match s.mode {
+                    Mode::Manual => &s.manual_curve,
+                    _ => &s.curve,
+                })
+                .filter(|c| c.len() >= 3)
+                .map(|c| curve_length(c)),
+            waypoints: (s.mode == Mode::Manual).then_some(s.waypoints.len()),
+            can_finish: s.mode == Mode::Manual
+                && s.manual_curve.len() >= 3
+                && !self.busy()
+                && s.waypoints.len() >= 3,
             busy: if building {
                 Some("Preparing scan…")
             } else if self.busy() {
@@ -392,8 +613,69 @@ impl MarginStep {
                 None
             },
             error: self.error.clone(),
-            can_detect_again: self.seeds.contains_key(&tooth),
+            can_detect_again: s.mode == Mode::Manual || self.seeds.contains_key(&tooth),
         }
+    }
+
+    /// Starts tracing the margin by hand (the "Trace by hand" button).
+    pub fn trace_by_hand(&mut self) {
+        self.waiting.retain(|j| j.edit != Edit::Manual);
+        self.shared.borrow_mut().enter_manual(Vec::new());
+        self.error = None;
+    }
+
+    /// Starts a manual trace of `tooth` through `points` on `scan` (the `--margin-points` flag).
+    pub fn trace_points(&mut self, tooth: Fdi, scan: MeshId, points: Vec<DVec3>) {
+        self.trace_by_hand();
+        {
+            let mut s = self.shared.borrow_mut();
+            s.tooth = Some(tooth);
+            s.waypoints = points.clone();
+        }
+        self.synced.0 = Some(tooth);
+        self.push(Job {
+            tooth,
+            scan,
+            kind: JobKind::Trace(points),
+            edit: Edit::Manual,
+            group: None,
+        });
+    }
+
+    /// Done: the manual trace is stored once the worker has traced the latest waypoints.
+    pub fn finish_trace(&mut self) {
+        let mut s = self.shared.borrow_mut();
+        s.finish_requested = s.mode == Mode::Manual;
+    }
+
+    /// Cancel: the manual trace in progress is dropped.
+    pub fn cancel_trace(&mut self) {
+        self.waiting.retain(|j| j.edit != Edit::Manual);
+        self.shared.borrow_mut().cancel_manual();
+    }
+
+    /// Stores the finished manual trace as one undoable edit and returns to edit mode.
+    fn commit_manual(&mut self, design: &mut Design, history: &mut History) {
+        if !self.shared.borrow().finish_requested {
+            return;
+        }
+        if self.running || self.waiting.iter().any(|j| j.edit == Edit::Manual) {
+            return;
+        }
+        let mut s = self.shared.borrow_mut();
+        s.finish_requested = false;
+        let (Some(tooth), true) = (s.tooth, s.mode == Mode::Manual && s.manual_curve.len() >= 3)
+        else {
+            return;
+        };
+        let curve = std::mem::take(&mut s.manual_curve);
+        let label = Edit::Manual.label(tooth);
+        set_margin(design, history, tooth, Some(curve.clone()), &label, None);
+        let mode = s.mode.done();
+        s.leave_manual(mode);
+        s.controls = control_points(&curve, default_control_count(curve_length(&curve)));
+        s.curve = curve.clone();
+        self.synced = (Some(tooth), Some(curve));
     }
 
     /// Proposes a margin for `tooth` from `seed` on `scan`.
@@ -401,6 +683,8 @@ impl MarginStep {
     pub fn propose(&mut self, tooth: Fdi, scan: MeshId, seed: DVec3, axis: Option<DVec3>) {
         self.seeds.insert(tooth, (scan, seed));
         self.error = None;
+        self.waiting.retain(|j| j.edit != Edit::Manual);
+        self.shared.borrow_mut().leave_manual(Mode::Auto);
         self.push(Job {
             tooth,
             scan,
@@ -412,6 +696,9 @@ impl MarginStep {
 
     /// Proposes again from the last seed of `tooth`.
     pub fn detect_again(&mut self, tooth: Fdi, axis: Option<DVec3>) {
+        self.waiting.retain(|j| j.edit != Edit::Manual);
+        self.shared.borrow_mut().leave_manual(Mode::Auto);
+        self.error = None;
         if let Some(&(scan, seed)) = self.seeds.get(&tooth) {
             self.propose(tooth, scan, seed, axis);
         }
@@ -450,6 +737,9 @@ impl MarginStep {
         if self.synced.0 != tooth {
             self.error = None;
             self.scan = None;
+            s.leave_manual(Mode::settled(stored.is_some()));
+        } else if s.mode != Mode::Manual {
+            s.mode = Mode::settled(stored.is_some());
         }
         s.tooth = tooth;
         s.curve = stored.clone().unwrap_or_default();
@@ -528,6 +818,7 @@ impl MarginStep {
             }
         }
         self.start_next(f.objects);
+        self.commit_manual(f.design, f.history);
         self.close_drag(f.history);
     }
 
@@ -538,6 +829,41 @@ impl MarginStep {
         design: &mut Design,
         history: &mut History,
     ) {
+        if job.edit == Edit::Manual {
+            // A preview of the hand-traced loop; Done stores it.
+            let mut s = self.shared.borrow_mut();
+            if s.mode != Mode::Manual || s.waypoints.len() < 3 || s.tooth != Some(job.tooth) {
+                return;
+            }
+            match result {
+                Ok(m) if m.points.len() >= 3 => {
+                    s.manual_curve = m.points;
+                    self.scan = Some(job.scan);
+                    self.error = None;
+                }
+                Ok(_) => {
+                    s.manual_curve.clear();
+                    self.error = Some("No margin found there".to_owned());
+                }
+                Err(e) => {
+                    s.manual_curve.clear();
+                    self.error = Some(e);
+                }
+            }
+            return;
+        }
+        if let JobKind::Propose { seed, .. } = job.kind {
+            // A failed or implausible detection hands over to tracing by hand.
+            let found = result.as_ref().is_ok_and(|m| plausible(&m.points, seed));
+            if !found {
+                self.error = Some(match result {
+                    Err(e) => e,
+                    Ok(_) => MANUAL_PROMPT.to_owned(),
+                });
+                self.shared.borrow_mut().enter_manual(Vec::new());
+                return;
+            }
+        }
         let margin = match result {
             Ok(m) if m.points.len() >= 3 => m.points,
             Ok(_) => {
@@ -563,6 +889,7 @@ impl MarginStep {
             self.scan = Some(job.scan);
             let mut s = self.shared.borrow_mut();
             s.curve = margin.clone();
+            s.mode = Mode::Edit;
             if matches!(job.kind, JobKind::Propose { .. }) {
                 s.controls = control_points(&margin, default_control_count(curve_length(&margin)));
                 s.selected = None;
@@ -720,11 +1047,7 @@ fn user_message(kind: &JobKind, error: &DesignError) -> String {
              again."
                 .to_owned()
         }
-        (JobKind::Propose { .. }, _) => {
-            "Couldn't find a margin around this point. Click the top of the prepared tooth, or \
-             orient the jaw first."
-                .to_owned()
-        }
+        (JobKind::Propose { .. }, _) => MANUAL_PROMPT.to_owned(),
         (JobKind::Trace(_), _) => {
             "Couldn't run the margin through these points. Move the handles onto the finish \
              line, or click Detect again."
@@ -806,7 +1129,10 @@ mod tests {
                 assert!(text.ends_with('.'), "{text}");
             }
         }
-        assert!(user_message(&propose, &DesignError::InvalidMargin).contains("Click the top"));
+        assert_eq!(
+            user_message(&propose, &DesignError::InvalidMargin),
+            MANUAL_PROMPT
+        );
     }
 
     fn t(code: u8) -> Fdi {
@@ -988,5 +1314,193 @@ mod tests {
         step.shared.borrow_mut().controls.truncate(3);
         tool.delete();
         assert_eq!(step.shared.borrow().controls.len(), 3);
+    }
+
+    fn pointer(point: DVec3) -> Pointer {
+        use crate::tools::SurfaceHit;
+        Pointer {
+            pixel: glam::Vec2::ZERO,
+            hit: Some(SurfaceHit { object: 0, point }),
+            ray: None,
+        }
+    }
+
+    fn job(kind: JobKind, edit: Edit) -> Job {
+        Job {
+            tooth: t(33),
+            scan: MeshId(1),
+            kind,
+            edit,
+            group: None,
+        }
+    }
+
+    fn margin_of(points: Vec<DVec3>) -> Result<Margin, String> {
+        Ok(Margin {
+            points,
+            vertices: Vec::new(),
+        })
+    }
+
+    fn propose_job() -> Job {
+        let seed = DVec3::new(0.0, 0.0, 12.0);
+        job(JobKind::Propose { seed, axis: None }, Edit::Detect)
+    }
+
+    #[test]
+    fn a_failed_or_implausible_detection_switches_to_manual_tracing() {
+        let mut design = Design::default();
+        let mut history = History::default();
+        let mut step = MarginStep::new(None);
+        step.sync(&design, Some(t(33)));
+        assert_eq!(step.shared.borrow().mode, Mode::Auto);
+
+        // A detection failure: the panel text asks for points, and manual mode starts.
+        let kind = JobKind::Propose {
+            seed: DVec3::ZERO,
+            axis: None,
+        };
+        let text = user_message(&kind, &DesignError::InvalidMargin);
+        step.finish(propose_job(), Err(text), &mut design, &mut history);
+        assert_eq!(step.shared.borrow().mode, Mode::Manual);
+        assert_eq!(step.error.as_deref(), Some(MANUAL_PROMPT));
+        assert!(design.is_empty());
+
+        // Too short (6.3 mm), too long, and far from the click are all implausible.
+        let far = ring(4.0, 40).into_iter().map(|p| p + DVec3::X * 30.0);
+        for points in [ring(1.0, 40), ring(8.0, 40), far.collect()] {
+            step.shared.borrow_mut().leave_manual(Mode::Auto);
+            step.finish(propose_job(), margin_of(points), &mut design, &mut history);
+            assert_eq!(step.shared.borrow().mode, Mode::Manual);
+            assert!(design.is_empty(), "nothing stored");
+        }
+
+        // A plausible margin (25 mm, 4 mm from the click) is stored and edited as before.
+        step.shared.borrow_mut().leave_manual(Mode::Auto);
+        step.finish(
+            propose_job(),
+            margin_of(ring(4.0, 40)),
+            &mut design,
+            &mut history,
+        );
+        assert_eq!(step.shared.borrow().mode, Mode::Edit);
+        assert_eq!(history.undo_label(), Some("Detect margin 33"));
+    }
+
+    #[test]
+    fn done_stores_one_undoable_trace_and_returns_to_editing() {
+        let mut design = Design::default();
+        let mut history = History::default();
+        let mut step = MarginStep::new(None);
+        step.sync(&design, Some(t(33)));
+        let mut tool = step.tool();
+        step.trace_by_hand();
+        let points = ring(4.0, 40);
+        for p in [points[0], points[10], points[20], points[30]] {
+            tool.click(&pointer(p));
+        }
+        assert_eq!(step.shared.borrow().waypoints.len(), 4);
+        // Traces are requested from the third waypoint on.
+        assert_eq!(step.shared.borrow().requests.len(), 2);
+        step.shared.borrow_mut().requests.clear();
+        // Done before any trace arrived stores nothing.
+        step.finish_trace();
+        step.commit_manual(&mut design, &mut history);
+        assert!(design.is_empty());
+        assert_eq!(step.shared.borrow().mode, Mode::Manual);
+
+        // The worker's result becomes the preview; Done then stores it.
+        let traced = job(JobKind::Trace(points.clone()), Edit::Manual);
+        step.finish(traced, margin_of(points.clone()), &mut design, &mut history);
+        assert!(design.is_empty(), "the preview is not stored");
+        assert_eq!(step.card(t(33)).waypoints, Some(4));
+        step.finish_trace();
+        step.commit_manual(&mut design, &mut history);
+        assert_eq!(design.teeth[&t(33)].margin, Some(points));
+        assert_eq!(history.undo_label(), Some("Trace margin 33"));
+        {
+            let s = step.shared.borrow();
+            assert_eq!(s.mode, Mode::Edit);
+            assert!(s.waypoints.is_empty() && !s.controls.is_empty());
+        }
+        assert_eq!(
+            history.undo(&mut design).as_deref(),
+            Some("Trace margin 33")
+        );
+        assert!(design.is_empty());
+        assert_eq!(Mode::Manual.done(), Mode::Edit);
+        assert_eq!(Mode::Auto.done(), Mode::Auto);
+    }
+
+    #[test]
+    fn detect_again_and_escape_leave_manual_mode() {
+        let mut design = Design::default();
+        let mut step = MarginStep::new(None);
+        step.sync(&design, Some(t(33)));
+        let mut tool = step.tool();
+        // Detect again returns to automatic even without a stored click.
+        step.trace_by_hand();
+        assert_eq!(step.shared.borrow().mode, Mode::Manual);
+        step.detect_again(t(33), None);
+        assert_eq!(step.shared.borrow().mode, Mode::Auto);
+
+        // Escape drops the trace in progress; a second Escape leaves the tool.
+        step.trace_by_hand();
+        tool.click(&pointer(DVec3::ZERO));
+        assert!(tool.cancel());
+        {
+            let s = step.shared.borrow();
+            assert_eq!(s.mode, Mode::Auto);
+            assert!(s.waypoints.is_empty());
+        }
+        assert!(!tool.cancel());
+
+        // With a stored margin, Escape returns to editing it, untouched.
+        design.teeth.entry(t(33)).or_default().margin = Some(ring(4.0, 40));
+        step.sync(&design, Some(t(33)));
+        assert_eq!(step.shared.borrow().mode, Mode::Edit);
+        step.trace_by_hand();
+        tool.click(&pointer(DVec3::ZERO));
+        assert!(tool.cancel());
+        assert_eq!(step.shared.borrow().mode, Mode::Edit);
+        assert_eq!(step.shared.borrow().curve, ring(4.0, 40));
+        assert_eq!(Mode::Manual.escape(false), (Mode::Auto, true));
+        assert_eq!(Mode::Edit.escape(true), (Mode::Edit, false));
+    }
+
+    #[test]
+    fn waypoints_are_appended_then_inserted_along_the_loop() {
+        let mut step = MarginStep::new(None);
+        step.sync(&Design::default(), Some(t(33)));
+        let mut tool = step.tool();
+        step.trace_by_hand();
+        let p = |x, y| DVec3::new(x, y, 0.0);
+        for q in [p(0.0, 0.0), p(10.0, 0.0), p(10.0, 10.0)] {
+            tool.click(&pointer(q));
+        }
+        // The first three keep the click order; the fourth lands on the closing side.
+        tool.click(&pointer(p(0.0, 10.0)));
+        // A point beside the first side goes between its ends.
+        tool.click(&pointer(p(5.0, -1.0)));
+        let order = step.shared.borrow().waypoints.clone();
+        assert_eq!(
+            order,
+            vec![
+                p(0.0, 0.0),
+                p(5.0, -1.0),
+                p(10.0, 0.0),
+                p(10.0, 10.0),
+                p(0.0, 10.0)
+            ]
+        );
+        // Clicking on a waypoint selects it, and Delete removes it and re-traces.
+        step.shared.borrow_mut().requests.clear();
+        tool.click(&pointer(p(10.0, 10.0)));
+        assert_eq!(step.shared.borrow().selected, Some(3));
+        tool.delete();
+        assert_eq!(step.shared.borrow().waypoints.len(), 4);
+        assert!(!step.shared.borrow().waypoints.contains(&p(10.0, 10.0)));
+        assert_eq!(step.shared.borrow().requests.len(), 1);
+        assert_eq!(Edit::Manual.label(t(33)), "Trace margin 33");
     }
 }

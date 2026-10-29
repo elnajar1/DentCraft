@@ -61,6 +61,8 @@ pub struct StartOptions {
     pub orient: bool,
     /// Margin clicks (tooth, point) to replay at startup.
     pub margin: Vec<(Fdi, DVec3)>,
+    /// Hand-traced margins (tooth, waypoints) to replay at startup.
+    pub margin_points: Vec<(Fdi, Vec<DVec3>)>,
     /// Design step to open.
     pub step: Option<StepId>,
     /// Tooth the design steps work on.
@@ -158,6 +160,7 @@ pub struct DentCraftApp {
     pending_step: Option<StepId>,
     pending_tooth: Option<Fdi>,
     pending_margin: Vec<(Fdi, DVec3)>,
+    pending_margin_points: Vec<(Fdi, Vec<DVec3>)>,
 }
 
 /// The logo shipped with the app, decoded to RGBA.
@@ -233,6 +236,7 @@ impl DentCraftApp {
             pending_step: start.step,
             pending_tooth: start.tooth,
             pending_margin: start.margin,
+            pending_margin_points: start.margin_points,
             case,
             objects: Vec::new(),
             next_id: 1,
@@ -600,6 +604,18 @@ impl DentCraftApp {
                 }
                 return;
             }
+            StepAction::TraceByHand => {
+                self.margin.trace_by_hand();
+                return;
+            }
+            StepAction::FinishTrace => {
+                self.margin.finish_trace();
+                return;
+            }
+            StepAction::CancelTrace => {
+                self.margin.cancel_trace();
+                return;
+            }
             StepAction::ClearMargin => {
                 if let Some(tooth) = self.tooth {
                     self.margin
@@ -816,6 +832,19 @@ impl DentCraftApp {
                 None => self.fail("--margin: no scan to put the seed on".to_owned()),
             }
         }
+        for (tooth, points) in std::mem::take(&mut self.pending_margin_points) {
+            let snapped: Vec<_> = points
+                .iter()
+                .filter_map(|&p| margin_step::nearest_scan(&self.objects, p))
+                .collect();
+            match snapped.first() {
+                Some(&(scan, _)) if snapped.len() == points.len() => {
+                    let points = snapped.iter().map(|&(_, p)| p).collect();
+                    self.margin.trace_points(tooth, scan, points);
+                }
+                _ => self.fail("--margin-points: no scan to put the points on".to_owned()),
+            }
+        }
     }
 
     /// Clears the scene and makes `case` the open case.
@@ -1028,8 +1057,16 @@ impl DentCraftApp {
         if fit {
             self.viewport.fit(self.bounds().as_ref());
         }
-        let (escape, delete) =
-            ctx.input(|i| (i.key_pressed(Key::Escape), i.key_pressed(Key::Delete)));
+        let (escape, delete, enter) = ctx.input(|i| {
+            (
+                i.key_pressed(Key::Escape),
+                i.key_pressed(Key::Delete),
+                i.key_pressed(Key::Enter),
+            )
+        });
+        if enter {
+            self.tools.confirm();
+        }
         if escape {
             self.tools.escape();
         }

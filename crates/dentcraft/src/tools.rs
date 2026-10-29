@@ -81,6 +81,8 @@ pub trait Tool {
     fn cancel(&mut self) -> bool {
         false
     }
+    /// Enter: accept the work in progress.
+    fn confirm(&mut self) {}
     /// Delete: remove what the tool made.
     fn delete(&mut self) {}
     /// Curves and handles to draw over the scans.
@@ -188,6 +190,13 @@ impl Tools {
     pub fn delete(&mut self) {
         if let Some(t) = &mut self.active {
             t.delete();
+        }
+    }
+
+    /// Enter: the tool accepts its work in progress.
+    pub fn confirm(&mut self) {
+        if let Some(t) = &mut self.active {
+            t.confirm();
         }
     }
 

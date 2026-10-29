@@ -76,6 +76,7 @@ fn main() -> ExitCode {
         measure: args.measure,
         orient: args.orient,
         margin: args.margin,
+        margin_points: args.margin_points,
         step: args.step.map(Into::into),
         tooth: args.tooth,
         section: args.section,
