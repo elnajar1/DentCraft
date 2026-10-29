@@ -18,10 +18,7 @@
 ## Screenshots
 
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshot-dark.png" />
-    <img src="docs/assets/screenshot-light.png" alt="DentCraft with an upper-jaw scan in occlusal view, the tooth chart of a 24–26 bridge and an 11 veneer, and the design workflow" width="100%" />
-  </picture>
+  <img src="docs/assets/screenshot-dark.png" alt="DentCraft in its default dark theme with an upper-jaw scan in occlusal view, the tooth chart of a 24–26 bridge and an 11 veneer, and the design workflow" width="100%" />
 </p>
 
 <p align="center"><i>Anonymized intraoral scans. Design tools arrive in 0.2.</i></p>
