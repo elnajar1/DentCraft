@@ -10,6 +10,7 @@ mod loader;
 mod margin_edit;
 mod margin_step;
 mod objects;
+mod orient_step;
 mod ribbon;
 mod theme;
 mod tools;

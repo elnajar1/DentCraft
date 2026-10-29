@@ -30,6 +30,20 @@ pub enum StepAction {
     DetectAgain,
     /// Remove the current tooth's margin.
     ClearMargin,
+    /// Find the jaw's occlusal plane and midline.
+    AutoOrient,
+    /// Remove the jaw's orientation.
+    ResetOrient,
+}
+
+/// What the Orientation step's card shows.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OrientCard {
+    /// What the step is busy with.
+    pub busy: Option<&'static str>,
+    pub error: Option<String>,
+    /// The case has an orientation.
+    pub has_frame: bool,
 }
 
 /// What the Margin step's card shows.
@@ -64,6 +78,8 @@ pub struct WorkflowView<'a> {
     pub tooth: Option<Fdi>,
     /// The Margin step's card, when that step is active.
     pub margin: Option<MarginCard>,
+    /// The Orientation step's card, when that step is active.
+    pub orient: Option<OrientCard>,
 }
 
 impl WorkflowView<'_> {
@@ -437,6 +453,10 @@ fn active_card(
         if let Some(a) = margin_section(ui, card, view.case, p) {
             action = Some(a);
         }
+    } else if let Some(card) = view.orient.as_ref().filter(|_| id == StepId::Orient) {
+        if let Some(a) = orient_section(ui, card, p) {
+            action = Some(a);
+        }
     } else {
         let note = if id == StepId::Scans {
             if ready {
@@ -543,6 +563,51 @@ fn margin_section(ui: &mut Ui, card: &MarginCard, case: &Case, p: &Palette) -> O
                     .clicked()
                 {
                     action = Some(StepAction::ClearMargin);
+                }
+            });
+        });
+    action
+}
+
+/// The Orientation step's hint, busy state, error and commands.
+fn orient_section(ui: &mut Ui, card: &OrientCard, p: &Palette) -> Option<StepAction> {
+    let mut action = None;
+    egui::Frame::new()
+        .fill(p.panel)
+        .corner_radius(CornerRadius::same(8))
+        .inner_margin(Margin::symmetric(10, 7))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 4.0;
+            if let Some(busy) = card.busy {
+                ui.horizontal(|ui| {
+                    ui.add(egui::Spinner::new().size(12.0).color(p.accent));
+                    ui.label(RichText::new(busy).size(SIZE_SMALL).color(p.text_dim));
+                });
+            } else {
+                let hint = if card.has_frame {
+                    "Blue arrow: biting direction. Red arrow: towards the front teeth."
+                } else {
+                    "Find the occlusal plane and midline of the jaw so every view lines up."
+                };
+                ui.label(RichText::new(hint).size(SIZE_SMALL).color(p.text_dim));
+            }
+            if let Some(error) = &card.error {
+                ui.label(RichText::new(error).size(SIZE_SMALL).color(p.danger));
+            }
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                if small_button(ui, "Auto orient", card.busy.is_none(), true)
+                    .on_hover_text("Find the occlusal plane and midline from the jaw scan")
+                    .clicked()
+                {
+                    action = Some(StepAction::AutoOrient);
+                }
+                if small_button(ui, "Reset", card.has_frame, false)
+                    .on_hover_text("Remove the orientation")
+                    .clicked()
+                {
+                    action = Some(StepAction::ResetOrient);
                 }
             });
         });

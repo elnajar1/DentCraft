@@ -12,6 +12,7 @@ use eframe::egui::{
 };
 
 use crate::margin_step::MARGIN;
+use crate::orient_step::ORIENT;
 use crate::theme::{RADIUS_LG, RADIUS_MD, RADIUS_SM, SIZE_BODY, SIZE_HEADING, SIZE_SMALL};
 use crate::tools::MEASURE;
 use crate::widgets::{self, Icon, paint_icon};
@@ -84,6 +85,8 @@ pub enum Command {
     ShowRole(ScanRole, bool),
     /// Start or leave the Measure tool.
     Measure,
+    /// Open the Orientation step, or leave its tool.
+    Orient,
     /// Open the Margin step, or leave its tool.
     Margin,
 }
@@ -231,6 +234,15 @@ impl RibbonView<'_> {
         });
         divider(ui);
         group(ui, "Tools", |ui| {
+            let orient_planned = session.steps().iter().any(|s| s.id == StepId::Orient);
+            let orient_on = self.active_tool == Some(ORIENT);
+            if command_button(ui, Icon::Orient, "Orient", orient_planned, orient_on)
+                .on_hover_text("Find the jaw's occlusal plane and midline  (Esc leaves)")
+                .on_disabled_hover_text("The case has no Orientation step")
+                .clicked()
+            {
+                *command = Some(Command::Orient);
+            }
             let planned = session.steps().iter().any(|s| s.id == StepId::Margin);
             let on = self.active_tool == Some(MARGIN);
             if command_button(ui, Icon::Margin, "Margin", planned, on)

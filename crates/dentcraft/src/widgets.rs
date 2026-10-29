@@ -96,6 +96,8 @@ pub enum Icon {
     Ruler,
     /// Preparation with its margin ring and handles, for the margin tool.
     Margin,
+    /// Occlusal plane with the occlusal and forward arrows, for the orientation step.
+    Orient,
     /// Arrow curving back to the left.
     Undo,
     /// Arrow curving on to the right.
@@ -329,6 +331,19 @@ pub fn paint_icon(painter: &egui::Painter, icon: Icon, rect: Rect, ink: Color32,
             for (x, y) in [(-0.9, 0.5), (0.64, 0.73)] {
                 painter.circle_filled(c + vec2(x, y) * r, r * 0.17, ink);
             }
+        }
+        Icon::Orient => {
+            // A flat plane ring with an arrow rising from its centre and one along it.
+            let ring: Vec<(f32, f32)> = (0..20)
+                .map(|i| {
+                    let a = i as f32 * std::f32::consts::TAU / 20.0;
+                    (0.9 * a.cos(), 0.5 + 0.32 * a.sin())
+                })
+                .collect();
+            closed(&ring);
+            open(&[(0.0, 0.5), (0.0, -0.85)]);
+            open(&[(-0.3, -0.5), (0.0, -0.85), (0.3, -0.5)]);
+            open(&[(0.0, 0.5), (0.7, 0.8)]);
         }
         Icon::Undo | Icon::Redo => {
             // A hook: down the right side of an arc, then back along the top to the arrow tip.

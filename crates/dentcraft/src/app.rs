@@ -22,6 +22,7 @@ use crate::history::History;
 use crate::loader::Loader;
 use crate::margin_step::{self, MARGIN, MarginStep, StepFrame};
 use crate::objects::{self, ObjectState, SceneObject};
+use crate::orient_step::{self, ORIENT, OrientStep};
 use crate::ribbon::{self, Command, RibbonTab, RibbonView, WorkspaceMenu};
 use crate::theme::{self, Palette, RADIUS_LG, SIZE_SMALL, ThemeKind};
 use crate::tools::{self, MEASURE, Measure, Tools};
@@ -51,8 +52,7 @@ pub struct StartOptions {
     pub screenshot: Option<PathBuf>,
     /// Two points to measure between, snapped to the scans once they have loaded.
     pub measure: Option<[DVec3; 2]>,
-    /// Run the jaw orientation at startup (wired by the orientation step).
-    #[allow(dead_code)]
+    /// Run the jaw orientation at startup.
     pub orient: bool,
     /// Margin clicks (tooth, point) to replay at startup.
     pub margin: Vec<(Fdi, DVec3)>,
@@ -118,6 +118,10 @@ pub struct DentCraftApp {
     pending_measure: Option<[DVec3; 2]>,
     /// The Margin step's tracers, jobs and edits.
     margin: MarginStep,
+    /// The Orientation step's job and edits.
+    orient: OrientStep,
+    /// `--orient`, waiting for the scans to load.
+    pending_orient: bool,
     /// Tooth the per-tooth step works on.
     tooth: Option<Fdi>,
     /// `--step`, `--tooth` and `--margin`, waiting for the scans to load.
@@ -180,6 +184,8 @@ impl DentCraftApp {
             tools: Tools::default(),
             pending_measure: start.measure,
             margin: MarginStep::new(Some(cc.egui_ctx.clone())),
+            orient: OrientStep::new(Some(cc.egui_ctx.clone())),
+            pending_orient: start.orient,
             tooth: None,
             pending_step: start.step,
             pending_tooth: start.tooth,
@@ -400,6 +406,15 @@ impl DentCraftApp {
                 }
                 return;
             }
+            StepAction::AutoOrient => {
+                let teeth: Vec<Fdi> = self.case.units.iter().map(|u| u.tooth).collect();
+                self.orient.start(&self.objects, &teeth);
+                return;
+            }
+            StepAction::ResetOrient => {
+                self.orient.clear(&mut self.case.design, &mut self.history);
+                return;
+            }
             StepAction::ClearMargin => {
                 if let Some(tooth) = self.tooth {
                     self.margin
@@ -425,7 +440,11 @@ impl DentCraftApp {
             if self.tools.active_name() != Some(MARGIN) {
                 self.tools.activate(self.margin.tool());
             }
-        } else if self.tools.active_name() == Some(MARGIN) {
+        } else if step.is_some_and(|s| s.id == StepId::Orient) {
+            if self.tools.active_name() != Some(ORIENT) {
+                self.tools.activate(self.orient.tool());
+            }
+        } else if matches!(self.tools.active_name(), Some(MARGIN | ORIENT)) {
             self.tools.deactivate();
         }
     }
@@ -454,6 +473,10 @@ impl DentCraftApp {
                 self.fail(format!("--step: the case has no {} step", target.title()));
             }
         }
+        if std::mem::take(&mut self.pending_orient) {
+            let teeth: Vec<Fdi> = self.case.units.iter().map(|u| u.tooth).collect();
+            self.orient.start(&self.objects, &teeth);
+        }
         let axis = self.margin_axis();
         for (tooth, seed) in std::mem::take(&mut self.pending_margin) {
             match margin_step::nearest_scan(&self.objects, seed) {
@@ -474,6 +497,7 @@ impl DentCraftApp {
         self.workflow_error = None;
         self.history.clear();
         self.margin.reset();
+        self.orient.reset();
         self.tooth = None;
         self.case = case;
     }
@@ -795,6 +819,18 @@ impl DentCraftApp {
             Command::ShowRole(role, visible) => {
                 objects::set_role_visible(&mut self.objects, role, visible);
             }
+            Command::Orient => {
+                if self.tools.active_name() == Some(ORIENT) {
+                    self.tools.deactivate();
+                } else if let Some(index) = self
+                    .session
+                    .steps()
+                    .iter()
+                    .position(|s| s.id == StepId::Orient)
+                {
+                    self.apply_step_action(StepAction::GoTo(index));
+                }
+            }
             Command::Margin => {
                 if self.tools.active_name() == Some(MARGIN) {
                     self.tools.deactivate();
@@ -957,6 +993,7 @@ impl DentCraftApp {
             sections: &mut self.sections,
             tooth: self.tooth,
             margin: self.tooth.map(|t| self.margin.card(t)),
+            orient: Some(self.orient.card(self.case.design.jaw_frame.is_some())),
         }
         .show(ui);
         if let Some(action) = action {
@@ -1052,6 +1089,15 @@ impl DentCraftApp {
     fn central(&mut self, ui: &mut egui::Ui) {
         let rect = ui.max_rect();
         let bounds = self.bounds();
+        // The camera follows the jaw frame (undo, redo and case load included); a new frame
+        // turns the current preset view to it.
+        let frame = orient_step::camera_frame(self.case.design.jaw_frame.as_ref());
+        if self.viewport.camera.frame != frame {
+            self.viewport.camera.frame = frame;
+            if let Some(preset) = self.viewport.preset {
+                self.viewport.go_to(preset, bounds.as_ref());
+            }
+        }
         let options = self.palette().render_options(self.theme);
         let out = self.viewport.show(
             ui,
@@ -1077,6 +1123,7 @@ impl DentCraftApp {
             tooth,
             axis,
         });
+        self.orient.update(&mut self.case.design, &mut self.history);
         let p = self.palette();
         if self.objects.is_empty() {
             let mut clicked = false;
@@ -1179,6 +1226,8 @@ impl DentCraftApp {
             || self.pending_measure.is_some()
             || self.pending_step.is_some()
             || !self.pending_margin.is_empty()
+            || self.pending_orient
+            || self.orient.busy()
             || self.margin.busy()
             || self.viewport.camera.is_animating();
         let Some(job) = &mut self.screenshot else {
