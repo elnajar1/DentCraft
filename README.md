@@ -21,7 +21,18 @@
   <img src="docs/assets/screenshot-dark.png" alt="DentCraft in its default dark theme with an upper-jaw scan in occlusal view, the tooth chart of a 24–26 bridge and an 11 veneer, and the design workflow" width="100%" />
 </p>
 
-<p align="center"><i>Anonymized intraoral scans. Design tools arrive in 0.2.</i></p>
+<p align="center"><i>Anonymized intraoral scans in the default dark theme.</i></p>
+
+### Designing a crown, step by step
+
+| Margin line | Insertion axis and undercuts |
+|---|---|
+| <img src="docs/assets/workflow-margin.png" alt="Margin step: one click traces the margin on the finish line, with draggable control points" /> | <img src="docs/assets/workflow-axis.png" alt="Insertion axis step: the axis arrow with its handle and the undercut map in millimetres" /> |
+| **Inner surface (section view)** | **Crown from DentCraft's own tooth library** |
+| <img src="docs/assets/workflow-inner.png" alt="Inner surface step in a section view: the cement gap over the die" /> | <img src="docs/assets/workflow-crown.png" alt="Anatomy step: a library molar fitted to the margin with the minimum material thickness" /> |
+
+<p align="center"><i>A synthetic preparation made by DentCraft's test generator. The crown is
+exported as a closed STL: 0.08 mm at the margin, the material's minimum thickness everywhere else.</i></p>
 
 <p align="center">
   <a href="#the-design-workflow">Workflow</a> ·
