@@ -32,27 +32,101 @@ pub fn autosave_path(data: &Path, pid: u32) -> PathBuf {
 /// start-up.
 const LEGACY_FILE: &str = "autosave.dentcraft";
 
-/// A recovery file written this recently belongs to a live second window, not to a crash.
-pub const LIVE_WITHIN: Duration = Duration::from_secs(60);
+/// The lock file of the instance with this process id, in the recovery folder `dir`: held
+/// locked for as long as that instance runs.
+fn lock_path(dir: &Path, pid: u32) -> PathBuf {
+    dir.join(format!("autosave-{pid}.lock"))
+}
 
-/// The recovery file to offer at start-up: the newest one, other than this process's own, that
-/// has not been written for [`LIVE_WITHIN`] (a live second window's file is not offered). The
-/// pre-instance `autosave.dentcraft` counts as a candidate too.
-pub fn leftover(dir: &Path, own_pid: u32, now: SystemTime) -> Option<PathBuf> {
+/// This instance's sign of life to the others: an exclusive lock on its lock file, held until
+/// the process ends. The OS lets go of it when the process dies too (a crash or a kill), so a
+/// recovery file whose owner's lock can be taken was left behind.
+pub struct InstanceLock {
+    file: std::fs::File,
+    path: PathBuf,
+}
+
+impl InstanceLock {
+    /// Locks this instance's lock file in the recovery folder `dir`.
+    pub fn take(dir: &Path, pid: u32) -> Result<Self, String> {
+        let path = lock_path(dir, pid);
+        let fail = |e: &dyn std::fmt::Display| format!("cannot lock {}: {e}", path.display());
+        std::fs::create_dir_all(dir).map_err(|e| fail(&e))?;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+            .map_err(|e| fail(&e))?;
+        file.try_lock().map_err(|e| fail(&e))?;
+        Ok(Self { file, path })
+    }
+
+    /// Lets go of the lock and removes its file: the instance is closing normally.
+    pub fn release(self) {
+        drop(self.file);
+        remove(&self.path);
+    }
+}
+
+/// Starts this instance's recovery in the folder `dir`: takes its lock, then sets aside a
+/// recovery file already at its own path. That one was left by a dead instance with the same
+/// process id (Windows reuses them); renamed to `autosave-<pid>-<unix secs>.dentcraft` it has no
+/// owner, so it is offered as a leftover instead of being overwritten.
+pub fn start(dir: &Path, pid: u32) -> Result<InstanceLock, String> {
+    let lock = InstanceLock::take(dir, pid)?;
+    let own = dir.join(format!("autosave-{pid}.dentcraft"));
+    if let Ok(meta) = std::fs::metadata(&own) {
+        let secs = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+            .map_or(0, |d| d.as_secs());
+        let aside = dir.join(format!("autosave-{pid}-{secs}.dentcraft"));
+        std::fs::rename(&own, &aside)
+            .map_err(|e| format!("cannot move {} aside: {e}", own.display()))?;
+    }
+    Ok(lock)
+}
+
+/// Who wrote the recovery file called `name`: `Some(Some(pid))` for a running instance's own
+/// file, `Some(None)` for one without a live owner (the pre-instance file, or one set aside by
+/// [`start`]), `None` when it is not a recovery file (another app's, or a half-written .tmp).
+fn owner(name: &str) -> Option<Option<u32>> {
+    if name == LEGACY_FILE {
+        return Some(None);
+    }
+    let rest = name
+        .strip_prefix("autosave-")
+        .and_then(|rest| rest.strip_suffix(".dentcraft"))?;
+    if let Ok(pid) = rest.parse::<u32>() {
+        return Some(Some(pid));
+    }
+    let (pid, secs) = rest.split_once('-')?;
+    (pid.parse::<u32>().is_ok() && secs.parse::<u64>().is_ok()).then_some(None)
+}
+
+/// Whether the instance with this process id is still running: its lock file is there and
+/// held locked.
+fn is_live(dir: &Path, pid: u32) -> bool {
+    std::fs::File::open(lock_path(dir, pid))
+        .is_ok_and(|file| matches!(file.try_lock(), Err(std::fs::TryLockError::WouldBlock)))
+}
+
+/// The recovery file to offer at start-up: the newest one in the recovery folder `dir`, other
+/// than this process's own, whose owner is not running (a live second window's file is never
+/// offered). Set-aside files and the pre-instance `autosave.dentcraft` have no owner, so they
+/// are offered whatever their age.
+pub fn leftover(dir: &Path, own_pid: u32) -> Option<PathBuf> {
     let mut best: Option<(SystemTime, PathBuf)> = None;
     for entry in std::fs::read_dir(dir).ok()?.flatten() {
-        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+        let Some(owner) = entry.file_name().to_str().and_then(owner) else {
             continue;
         };
-        let pid = name
-            .strip_prefix("autosave-")
-            .and_then(|rest| rest.strip_suffix(".dentcraft"))
-            .and_then(|pid| pid.parse::<u32>().ok());
-        if pid.is_none() && name != LEGACY_FILE {
-            continue; // Not a recovery file (another app's, or a half-written .tmp).
-        }
-        if pid == Some(own_pid) {
-            continue; // Our own file.
+        if let Some(pid) = owner
+            && (pid == own_pid || is_live(dir, pid))
+        {
+            continue; // Our own file, or a live second window's.
         }
         let Ok(meta) = entry.metadata() else {
             continue;
@@ -60,22 +134,24 @@ pub fn leftover(dir: &Path, own_pid: u32, now: SystemTime) -> Option<PathBuf> {
         if !meta.is_file() {
             continue;
         }
-        let Ok(modified) = meta.modified() else {
-            continue;
-        };
-        // A write in the last minute means a live instance; a time ahead of ours (a clock set
-        // differently) proves a fresh write too, so both are left alone.
-        if !now
-            .duration_since(modified)
-            .is_ok_and(|age| age >= LIVE_WITHIN)
-        {
-            continue;
-        }
+        let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
         if best.as_ref().is_none_or(|(time, _)| modified > *time) {
             best = Some((modified, entry.path()));
         }
     }
     best.map(|(_, path)| path)
+}
+
+/// Removes a leftover recovery file the user restored or discarded, with its dead owner's lock
+/// file.
+pub fn discard(path: &Path) {
+    remove(path);
+    let owner = path.file_name().and_then(|n| n.to_str()).and_then(owner);
+    if let (Some(Some(pid)), Some(dir)) = (owner, path.parent())
+        && !is_live(dir, pid)
+    {
+        remove(&lock_path(dir, pid));
+    }
 }
 
 /// The unsaved case as of the last frame, for the panic hook (it cannot reach the app).
@@ -157,6 +233,8 @@ pub fn prompt_text(saved: SystemTime) -> String {
 /// Writes the open case to the recovery file while it has unsaved changes.
 pub struct Autosave {
     path: PathBuf,
+    /// This instance's lock, held until the clean exit.
+    lock: Option<InstanceLock>,
     /// The case last written this session.
     written: Option<Case>,
     /// When the pending changes are written.
@@ -166,9 +244,10 @@ pub struct Autosave {
 }
 
 impl Autosave {
-    pub fn new(path: PathBuf, panics: u64) -> Self {
+    pub fn new(path: PathBuf, lock: Option<InstanceLock>, panics: u64) -> Self {
         Self {
             path,
+            lock,
             written: None,
             due: None,
             panics,
@@ -217,11 +296,30 @@ impl Autosave {
         self.due.map(|d| d.saturating_duration_since(now))
     }
 
-    /// The app is closing normally: nothing needs recovering.
+    /// Takes over the leftover recovery file at `leftover`: reads its case and keeps it in this
+    /// instance's own file before the leftover goes, so a crash right after restoring loses
+    /// nothing. When the own file cannot be written the leftover stays for the next start.
+    pub fn restore(&mut self, leftover: &Path) -> Result<Case, String> {
+        let case = read(leftover)?;
+        match write(&self.path, &case) {
+            Ok(()) => {
+                self.written = Some(case.clone());
+                self.due = None;
+                discard(leftover);
+            }
+            Err(err) => eprintln!("dentcraft: autosave: {err}"),
+        }
+        Ok(case)
+    }
+
+    /// The app is closing normally: nothing needs recovering, and the instance is gone.
     pub fn clean_exit(&mut self) {
         remember(None);
         self.written = None;
         remove(&self.path);
+        if let Some(lock) = self.lock.take() {
+            lock.release();
+        }
     }
 }
 
@@ -280,7 +378,7 @@ mod tests {
     fn unsaved_changes_are_written_after_the_interval_and_removed_once_saved() {
         let dir = TempDir::new("tick");
         let path = recovery_path(&dir.0);
-        let mut auto = Autosave::new(path.clone(), 0);
+        let mut auto = Autosave::new(path.clone(), None, 0);
         let t0 = Instant::now();
         let case = case_with_scan();
 
@@ -302,7 +400,7 @@ mod tests {
     fn a_worker_panic_writes_at_once() {
         let dir = TempDir::new("panic");
         let path = recovery_path(&dir.0);
-        let mut auto = Autosave::new(path.clone(), 3);
+        let mut auto = Autosave::new(path.clone(), None, 3);
         let t0 = Instant::now();
         let case = case_with_scan();
         auto.tick(&case, true, t0, 3);
@@ -315,7 +413,7 @@ mod tests {
     fn a_clean_exit_removes_the_recovery_file() {
         let dir = TempDir::new("exit");
         let path = recovery_path(&dir.0);
-        let mut auto = Autosave::new(path.clone(), 0);
+        let mut auto = Autosave::new(path.clone(), None, 0);
         let t0 = Instant::now();
         auto.tick(&case_with_scan(), true, t0, 0);
         auto.tick(&case_with_scan(), true, t0 + AUTOSAVE_EVERY, 0);
@@ -363,38 +461,121 @@ mod tests {
         path
     }
 
-    #[test]
-    fn the_newest_stale_recovery_file_of_another_instance_is_chosen() {
-        let dir = TempDir::new("leftover");
+    /// The recovery folder of a fresh temp data folder.
+    fn rec_dir(dir: &TempDir) -> PathBuf {
         let rec = recovery_dir(&dir.0);
         std::fs::create_dir_all(&rec).unwrap();
-        let old = Duration::from_secs(3600);
-        let now = SystemTime::now();
-
-        // Nothing there: nothing offered.
-        assert_eq!(leftover(&rec, 1, now), None);
-        // Our own file never is, and a fresh file of another instance is a live window's.
-        leftover_file(&rec, "autosave-1.dentcraft", old);
-        leftover_file(&rec, "autosave-2.dentcraft", Duration::ZERO);
-        assert_eq!(leftover(&rec, 1, SystemTime::now()), None);
-        // A stale file of another instance is...
-        let stale = leftover_file(&rec, "autosave-3.dentcraft", old);
-        assert_eq!(leftover(&rec, 1, SystemTime::now()), Some(stale.clone()));
-        // ...and a newer one wins.
-        let newest = leftover_file(&rec, "autosave-4.dentcraft", old - Duration::from_secs(60));
-        assert_eq!(leftover(&rec, 1, SystemTime::now()), Some(newest.clone()));
-        // Other files in the folder are none of our business.
-        std::fs::write(rec.join("notes.txt"), "").unwrap();
-        assert_eq!(leftover(&rec, 1, SystemTime::now()), Some(newest));
+        rec
     }
 
     #[test]
-    fn an_old_style_recovery_file_is_still_chosen() {
-        let dir = TempDir::new("legacy");
-        let rec = recovery_dir(&dir.0);
-        std::fs::create_dir_all(&rec).unwrap();
-        assert_eq!(leftover(&rec, 1, SystemTime::now()), None);
-        let legacy = leftover_file(&rec, "autosave.dentcraft", Duration::from_secs(600));
-        assert_eq!(leftover(&rec, 1, SystemTime::now()), Some(legacy));
+    fn a_live_instances_recovery_file_is_offered_only_once_its_lock_is_free() {
+        let dir = TempDir::new("live");
+        let rec = rec_dir(&dir);
+        // Written long ago: age says nothing about whether its window is still open.
+        let file = leftover_file(&rec, "autosave-2.dentcraft", Duration::from_secs(3600));
+        let lock = InstanceLock::take(&rec, 2).unwrap();
+        assert_eq!(leftover(&rec, 1), None);
+        // The instance dies: the OS lets go of its lock, the lock file stays.
+        drop(lock);
+        assert!(lock_path(&rec, 2).exists());
+        assert_eq!(leftover(&rec, 1), Some(file));
+    }
+
+    #[test]
+    fn a_recovery_file_without_a_live_owner_is_offered_at_once() {
+        let dir = TempDir::new("leftover");
+        let rec = rec_dir(&dir);
+
+        // Nothing there: nothing offered.
+        assert_eq!(leftover(&rec, 1), None);
+        // Our own file never is; a crash's (no lock file at all) is, however fresh.
+        leftover_file(&rec, "autosave-1.dentcraft", Duration::from_secs(3600));
+        assert_eq!(leftover(&rec, 1), None);
+        let crashed = leftover_file(&rec, "autosave-3.dentcraft", Duration::from_secs(120));
+        assert_eq!(leftover(&rec, 1), Some(crashed));
+        // A newer one wins, whether written just now by a crash, set aside or old-style.
+        let aside = leftover_file(
+            &rec,
+            "autosave-1-1700000000.dentcraft",
+            Duration::from_secs(60),
+        );
+        assert_eq!(leftover(&rec, 1), Some(aside));
+        let legacy = leftover_file(&rec, "autosave.dentcraft", Duration::ZERO);
+        assert_eq!(leftover(&rec, 1), Some(legacy.clone()));
+        // Other files in the folder are none of our business.
+        std::fs::write(rec.join("notes.txt"), "").unwrap();
+        std::fs::write(rec.join("autosave-x.dentcraft"), "").unwrap();
+        assert_eq!(leftover(&rec, 1), Some(legacy));
+    }
+
+    #[test]
+    fn a_dead_instances_file_at_our_own_path_is_set_aside_and_offered() {
+        let dir = TempDir::new("pid-reuse");
+        let rec = rec_dir(&dir);
+        let own = rec.join("autosave-5.dentcraft");
+        let mut case = case_with_scan();
+        case.name = "Left by pid 5's crash".into();
+        write(&own, &case).unwrap();
+
+        let lock = start(&rec, 5).unwrap();
+        assert!(!own.exists());
+        let aside = leftover(&rec, 5).expect("the set-aside file is offered");
+        assert_ne!(aside, own);
+        assert_eq!(read(&aside).unwrap().name, case.name);
+        lock.release();
+        assert!(!lock_path(&rec, 5).exists());
+    }
+
+    #[test]
+    fn restoring_moves_the_case_into_our_own_file_and_drops_the_leftover() {
+        let dir = TempDir::new("restore");
+        let rec = rec_dir(&dir);
+        let file = leftover_file(&rec, "autosave-2.dentcraft", Duration::ZERO);
+        drop(InstanceLock::take(&rec, 2).unwrap()); // The crashed owner's lock file.
+        let own = rec.join("autosave-1.dentcraft");
+        let mut auto = Autosave::new(own.clone(), None, 0);
+
+        let case = auto.restore(&file).unwrap();
+        assert_eq!(case.name, case_with_scan().name);
+        assert!(!file.exists());
+        assert!(!lock_path(&rec, 2).exists());
+        assert_eq!(read(&own).unwrap().name, case.name);
+        assert_eq!(leftover(&rec, 1), None);
+        // Already kept: the tick has nothing to write.
+        assert_eq!(auto.tick(&case, true, Instant::now(), 0), None);
+    }
+
+    #[test]
+    fn a_leftover_stays_when_our_own_file_cannot_be_written() {
+        let dir = TempDir::new("restore-fail");
+        let rec = rec_dir(&dir);
+        let file = leftover_file(&rec, "autosave-2.dentcraft", Duration::ZERO);
+        // A file where the own file's folder should be: the write fails.
+        std::fs::write(dir.0.join("blocker"), "").unwrap();
+        let mut auto = Autosave::new(dir.0.join("blocker").join("autosave-1.dentcraft"), None, 0);
+
+        assert!(auto.restore(&file).is_ok());
+        assert!(file.exists());
+        assert_eq!(leftover(&rec, 1), Some(file));
+    }
+
+    #[test]
+    fn discarding_removes_only_the_chosen_leftover() {
+        let dir = TempDir::new("discard");
+        let rec = rec_dir(&dir);
+        let chosen = leftover_file(&rec, "autosave-2.dentcraft", Duration::ZERO);
+        drop(InstanceLock::take(&rec, 2).unwrap());
+        let other = leftover_file(&rec, "autosave-3.dentcraft", Duration::from_secs(60));
+        let live = leftover_file(&rec, "autosave-4.dentcraft", Duration::from_secs(60));
+        let _lock = InstanceLock::take(&rec, 4).unwrap();
+
+        discard(&chosen);
+        assert!(!chosen.exists());
+        assert!(!lock_path(&rec, 2).exists());
+        assert!(other.exists());
+        assert!(live.exists());
+        assert!(lock_path(&rec, 4).exists());
+        assert_eq!(leftover(&rec, 1), Some(other));
     }
 }

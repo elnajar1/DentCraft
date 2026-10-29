@@ -25,7 +25,7 @@ pub const PANIC_MESSAGE: &str = "Something went wrong while building the crown \
 
 /// Hidden switch for checking the safety net by hand: `DENTCRAFT_TEST_PANIC=worker` makes the
 /// next design job (not a scan load) panic; `=main` makes the UI thread panic at the first
-/// frame after the case's scans have loaded.
+/// frame with unsaved changes, right after the autosave tick has seen them.
 const TEST_PANIC_VAR: &str = "DENTCRAFT_TEST_PANIC";
 
 /// Worker names starting with this load scans; the test switch leaves them alone.

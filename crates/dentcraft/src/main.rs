@@ -30,7 +30,6 @@ mod workspace;
 
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
 
 use clap::Parser;
 use eframe::egui;
@@ -44,15 +43,23 @@ fn main() -> ExitCode {
     // Crash logs are kept for every run; a screenshot run never touches the user's recovery
     // files.
     let data = crash::data_dir();
-    let keeps_recovery = data.as_deref().filter(|_| !screenshot);
-    let recovery = keeps_recovery.map(recovery::recovery_path);
+    // Nor does an instance that cannot take its lock: other instances would take its file for a
+    // crash's.
+    let instance = data.as_deref().filter(|_| !screenshot).and_then(|data| {
+        match recovery::start(&recovery::recovery_dir(data), std::process::id()) {
+            Ok(lock) => Some((data, lock)),
+            Err(err) => {
+                eprintln!("dentcraft: recovery is off: {err}");
+                None
+            }
+        }
+    });
+    let recovery = instance
+        .as_ref()
+        .map(|(data, _)| recovery::recovery_path(data));
     // A recovery file left by another (crashed) instance is offered for restore at start-up.
-    let restore = keeps_recovery.and_then(|data| {
-        recovery::leftover(
-            &recovery::recovery_dir(data),
-            std::process::id(),
-            SystemTime::now(),
-        )
+    let restore = instance.as_ref().and_then(|(data, _)| {
+        recovery::leftover(&recovery::recovery_dir(data), std::process::id())
     });
     crash::install_panic_hook(data.as_deref().map(crash::crash_log_dir), recovery.clone());
     let [w, h] = args.size.unwrap_or(DEFAULT_SIZE);
@@ -100,6 +107,7 @@ fn main() -> ExitCode {
         section: args.section,
         export: args.export,
         recovery,
+        recovery_lock: instance.map(|(_, lock)| lock),
         restore,
         exit_after: args.exit_after,
         exit_code: exit_code.clone(),

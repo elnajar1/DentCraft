@@ -76,6 +76,8 @@ pub struct StartOptions {
     pub export: Option<PathBuf>,
     /// This instance's recovery file; `None` when unsaved work is not kept (screenshot runs).
     pub recovery: Option<PathBuf>,
+    /// This instance's lock on the recovery folder, held while it runs.
+    pub recovery_lock: Option<recovery::InstanceLock>,
     /// A recovery file left by another instance, offered for restore at start-up.
     pub restore: Option<PathBuf>,
     /// `--exit-after`: close the app cleanly after this long, without asking.
@@ -104,7 +106,7 @@ enum Discard {
 }
 
 /// A close of the window with unsaved changes, once it needs asking about or has been decided.
-#[derive(PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Closing {
     /// Waiting on the user: Save, Don't save or Cancel.
     Asking,
@@ -117,6 +119,45 @@ enum CloseChoice {
     Save,
     DontSave,
     Cancel,
+}
+
+/// What happens to the close of the window.
+#[derive(Debug)]
+enum CloseEvent {
+    /// The window was asked to close; `asks` when the close is asked about first (see
+    /// [`asks_before_close`]).
+    Requested { asks: bool },
+    /// The user chose Save; `true` when the case was written.
+    Saved(bool),
+    /// The user chose Don't save, or automation closes the app.
+    DontSave,
+    /// The user chose Cancel or dismissed the question.
+    Cancel,
+}
+
+/// What the window does about a [`CloseEvent`].
+#[derive(Debug, PartialEq)]
+enum CloseAction {
+    Nothing,
+    /// Keeps the window open while the user is asked.
+    CancelClose,
+    Close,
+}
+
+/// The close's state after `event`, and what the window does about it: a close that needs
+/// asking is held back (again, while the question is up) until it has been decided; a failed or
+/// cancelled save keeps the question.
+fn close_step(state: Option<Closing>, event: CloseEvent) -> (Option<Closing>, CloseAction) {
+    match event {
+        CloseEvent::Requested { asks: true } if state != Some(Closing::Decided) => {
+            (Some(Closing::Asking), CloseAction::CancelClose)
+        }
+        CloseEvent::Requested { .. } | CloseEvent::Saved(false) => (state, CloseAction::Nothing),
+        CloseEvent::Saved(true) | CloseEvent::DontSave => {
+            (Some(Closing::Decided), CloseAction::Close)
+        }
+        CloseEvent::Cancel => (None, CloseAction::Nothing),
+    }
 }
 
 /// Whether the close of a window is asked about first: only one with unsaved changes asks, and
@@ -263,7 +304,7 @@ impl DentCraftApp {
             exit_after: start.exit_after.map(|after| Instant::now() + after),
             autosave: start
                 .recovery
-                .map(|path| Autosave::new(path, crash::worker_panics())),
+                .map(|path| Autosave::new(path, start.recovery_lock, crash::worker_panics())),
             restore_file,
             recovery_prompt,
             window_title: String::new(),
@@ -1014,12 +1055,13 @@ impl DentCraftApp {
         self.add_scans(scans);
     }
 
-    /// Opens the recovery file left by another instance as an unsaved case.
+    /// Opens the recovery file left by another instance as an unsaved case; it becomes this
+    /// instance's own recovery file.
     fn restore_recovery(&mut self) {
-        let Some(path) = self.restore_file.clone() else {
+        let (Some(path), Some(autosave)) = (self.restore_file.clone(), &mut self.autosave) else {
             return;
         };
-        match recovery::read(&path) {
+        match autosave.restore(&path) {
             Ok(case) => {
                 self.show_case(case);
                 self.doc = Document::recovered(&self.case);
@@ -1070,7 +1112,7 @@ impl DentCraftApp {
             Some(false) => {
                 self.recovery_prompt = None;
                 if let Some(path) = &self.restore_file {
-                    recovery::remove(path);
+                    recovery::discard(path);
                 }
             }
             None => {}
@@ -1191,13 +1233,19 @@ impl DentCraftApp {
         if !ctx.input(|i| i.viewport().close_requested()) {
             return;
         }
-        let ask = self.closing != Some(Closing::Decided)
-            && asks_before_close(self.is_dirty(), self.screenshot.is_some());
-        if !ask {
-            return;
+        let asks = asks_before_close(self.is_dirty(), self.screenshot.is_some());
+        self.on_close_event(ctx, CloseEvent::Requested { asks });
+    }
+
+    /// Moves the close along by `event` (see [`close_step`]).
+    fn on_close_event(&mut self, ctx: &egui::Context, event: CloseEvent) {
+        let (closing, action) = close_step(self.closing, event);
+        self.closing = closing;
+        match action {
+            CloseAction::Nothing => {}
+            CloseAction::CancelClose => ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose),
+            CloseAction::Close => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
         }
-        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-        self.closing = Some(Closing::Asking);
     }
 
     /// "Save changes to … before closing?": Save / Don't save / Cancel, in the style of the
@@ -1251,23 +1299,18 @@ impl DentCraftApp {
         if choice.is_none() && modal.should_close() {
             choice = Some(CloseChoice::Cancel);
         }
-        match choice {
-            // A failed or cancelled save keeps the question: the user can still decide.
-            Some(CloseChoice::Save) => {
-                if self.save_case() {
-                    self.close(ctx);
-                }
-            }
-            Some(CloseChoice::DontSave) => self.close(ctx),
-            Some(CloseChoice::Cancel) => self.closing = None,
-            None => {}
-        }
+        let event = match choice {
+            Some(CloseChoice::Save) => CloseEvent::Saved(self.save_case()),
+            Some(CloseChoice::DontSave) => CloseEvent::DontSave,
+            Some(CloseChoice::Cancel) => CloseEvent::Cancel,
+            None => return,
+        };
+        self.on_close_event(ctx, event);
     }
 
     /// Closes the window without another question; the clean exit then drops the recovery file.
     fn close(&mut self, ctx: &egui::Context) {
-        self.closing = Some(Closing::Decided);
-        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        self.on_close_event(ctx, CloseEvent::DontSave);
     }
 
     /// `--exit-after SECONDS`: closes the app cleanly once the time is up, without asking.
@@ -2361,7 +2404,7 @@ pub fn group_thousands(n: usize) -> String {
     let digits = n.to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
     for (i, ch) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(ch);
@@ -2430,10 +2473,9 @@ impl eframe::App for DentCraftApp {
     }
 
     fn on_exit(&mut self) {
-        // An unanswered start-up prompt keeps its file for the next start.
-        if self.recovery_prompt.is_none()
-            && let Some(autosave) = &mut self.autosave
-        {
+        // Only this instance's own file goes: an unanswered start-up prompt's leftover is another
+        // file, kept for the next start.
+        if let Some(autosave) = &mut self.autosave {
             autosave.clean_exit();
         }
     }
@@ -2457,6 +2499,52 @@ mod tests {
         assert!(!asks_before_close(false, false));
         assert!(!asks_before_close(true, true));
         assert!(!asks_before_close(false, true));
+    }
+
+    #[test]
+    fn a_close_with_unsaved_changes_waits_for_the_users_decision() {
+        use CloseAction::{CancelClose, Close, Nothing};
+        let asked = CloseEvent::Requested { asks: true };
+        // A close that needs asking is held back, and held back again while the question is up.
+        assert_eq!(
+            close_step(None, asked),
+            (Some(Closing::Asking), CancelClose)
+        );
+        let again = CloseEvent::Requested { asks: true };
+        assert_eq!(
+            close_step(Some(Closing::Asking), again),
+            (Some(Closing::Asking), CancelClose)
+        );
+        // One that does not ask goes through.
+        let through = CloseEvent::Requested { asks: false };
+        assert_eq!(close_step(None, through), (None, Nothing));
+        // A failed or cancelled save keeps the question; a done one closes.
+        let failed = CloseEvent::Saved(false);
+        assert_eq!(
+            close_step(Some(Closing::Asking), failed),
+            (Some(Closing::Asking), Nothing)
+        );
+        let saved = CloseEvent::Saved(true);
+        assert_eq!(
+            close_step(Some(Closing::Asking), saved),
+            (Some(Closing::Decided), Close)
+        );
+        // Don't save closes too, and the close that follows is let through unasked.
+        let dont = CloseEvent::DontSave;
+        assert_eq!(
+            close_step(Some(Closing::Asking), dont),
+            (Some(Closing::Decided), Close)
+        );
+        let next = CloseEvent::Requested { asks: true };
+        assert_eq!(
+            close_step(Some(Closing::Decided), next),
+            (Some(Closing::Decided), Nothing)
+        );
+        // Cancel drops the question: the next close asks again.
+        assert_eq!(
+            close_step(Some(Closing::Asking), CloseEvent::Cancel),
+            (None, Nothing)
+        );
     }
 
     #[test]
