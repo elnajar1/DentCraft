@@ -12,14 +12,15 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use dentcraft_case::{Design, Fdi, ToothDesign};
-use dentcraft_design::{MarginTracer, UndercutParams, best_insertion_axis, undercut_map};
+use dentcraft_design::{
+    MarginTracer, UndercutParams, best_insertion_axis_with_margin, undercut_map,
+};
 use dentcraft_mesh::TriMesh;
 use dentcraft_render::{MeshData, MeshId, Overlay, colormap};
 use eframe::egui;
 use glam::DVec3;
 
 use crate::history::{EditGroup, History};
-use crate::margin_edit::{control_points, curve_length, default_control_count};
 use crate::margin_step::{MarginStep, arch_scan};
 use crate::objects::SceneObject;
 use crate::orient_step::arrow_points;
@@ -116,13 +117,15 @@ pub fn region_seed(
 }
 
 /// The preparation's triangles inside the stored margin `curve`, from `seed`.
+/// The barrier follows the curve itself (dense snapping, no re-trace through a
+/// few control points), so the region stays consistent with the curve the inner
+/// surface seals onto.
 pub fn prep_region(
     tracer: &MarginTracer,
     curve: &[DVec3],
     seed: DVec3,
 ) -> Result<Vec<u32>, String> {
-    let controls = control_points(curve, default_control_count(curve_length(curve)));
-    let margin = tracer.trace(&controls).map_err(|e| e.to_string())?;
+    let margin = tracer.follow(curve).map_err(|e| e.to_string())?;
     let region = tracer.region(&margin, seed);
     if region.is_empty() {
         Err("Cannot find the preparation inside the margin".to_owned())
@@ -296,13 +299,17 @@ fn run(job: Job) -> Result<Outcome, String> {
         }
     };
     let err = |e: dentcraft_design::DesignError| capitalize(&e.to_string());
+    // Seating the margin comes first: the search minimises the margin overhang
+    // (beyond the seal band), then occluded area, draft and tilt.
     let (result, best) = match job.want {
         Want::Best(initial) => (
-            best_insertion_axis(mesh, &prep.region, initial, MAX_TILT_DEG).map_err(err)?,
+            best_insertion_axis_with_margin(mesh, &prep.region, &job.key.1, initial, MAX_TILT_DEG)
+                .map_err(err)?,
             true,
         ),
         Want::Fixed(axis) => (
-            best_insertion_axis(mesh, &prep.region, Some(axis), 0.0).map_err(err)?,
+            best_insertion_axis_with_margin(mesh, &prep.region, &job.key.1, Some(axis), 0.0)
+                .map_err(err)?,
             false,
         ),
     };
@@ -668,13 +675,16 @@ mod tests {
             c.truncate().length() < 0.05 && c.z > 8.0 && c.z < 12.0,
             "{c}"
         );
-        let best = best_insertion_axis(&mesh, &region, Some(DVec3::Z), MAX_TILT_DEG).unwrap();
+        let best =
+            best_insertion_axis_with_margin(&mesh, &region, &margin, Some(DVec3::Z), MAX_TILT_DEG)
+                .unwrap();
         assert!(
             best.axis.angle_between(DVec3::Z).to_degrees() < 1.0,
             "{}",
             best.axis
         );
         assert!(best.undercut_area < 1e-6);
+        assert!(best.margin_overhang.unwrap().depth < 1e-9);
     }
 
     #[test]

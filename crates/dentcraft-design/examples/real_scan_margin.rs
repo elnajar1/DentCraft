@@ -10,17 +10,19 @@
 //! direction. Prints the peak coordinates and, per proposal, the error or the margin's length,
 //! point count and depth/radius ranges relative to the seed. Also tries the six reported manual
 //! clicks on the local lower-jaw 33 preparation (these coordinates apply only to that scan).
-//! For 33, compares the app's sparse-control retracing with the original region
-//! barrier, prints sector wall profiles, and builds the inner surface using the
-//! exact barrier and the margin-aware insertion axis. Gap extrema sample true
-//! 3D distances at vertices, edge midpoints and triangle centroids.
+//! For 33, prints sector wall profiles and then runs the app's chain: the stored curve is
+//! re-followed densely (no sparse-control re-trace), the region comes from that barrier, the
+//! axis search seats the margin and the inner surface seals onto the curve. Clearance
+//! verification samples true 3D distances at vertices, edge midpoints and triangle centroids
+//! and reports the worst samples with their height above the margin, sector, target and whether
+//! anything lies above them or below them along the axis (a scan hole).
 //! Scans are never part of the repository; pass a local path.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use dentcraft_design::{
-    InnerSurfaceParams, Margin, MarginTracer, best_insertion_axis, best_insertion_axis_with_margin,
+    InnerSurface, InnerSurfaceParams, Margin, MarginTracer, best_insertion_axis_with_margin,
     inner_surface, margin_overhang, occlusal_direction,
 };
 use dentcraft_mesh::{Bvh, TriMesh};
@@ -173,45 +175,48 @@ fn diagnose(
         "raw loop overhang {:?}",
         margin_overhang(mesh, &region, &raw, initial)?
     );
-    let controls = controls(&margin.points);
-    let retraced = tracer.trace(&controls)?;
-    let app_region = tracer.region(&retraced, seed);
-    let app_axis = best_insertion_axis(mesh, &app_region, Some(initial), 30.0)?;
-    let obstruction = margin_overhang(mesh, &app_region, &margin.points, app_axis.axis)?;
+    sectors(mesh, &margin.points, seed, initial);
+    // Reference chain: the exact barrier of the proposal, with the margin-aware
+    // axis over it. The app chain below instead follows the stored curve.
+    let reference = best_insertion_axis_with_margin(mesh, &region, &raw, Some(initial), 30.0)?;
     println!(
-        "app retraced region {} triangles axis {} tilt {:.3}; overhang {:?}",
+        "reference axis {} tilt {:.3} draft {:.3} area {:.3} overhang {:?}",
+        fmt(reference.axis),
+        reference.tilt_deg,
+        reference.min_draft_deg,
+        reference.undercut_area,
+        reference.margin_overhang
+    );
+    let start = std::time::Instant::now();
+    match inner_surface(
+        mesh,
+        &region,
+        &raw,
+        reference.axis,
+        &InnerSurfaceParams::default(),
+    ) {
+        Ok(inner) => verify(&inner, mesh, &region, &raw, reference.axis)?,
+        Err(e) => println!("reference inner ERROR {e}"),
+    }
+    println!(
+        "reference inner elapsed {:.2}s",
+        start.elapsed().as_secs_f64()
+    );
+    // The app's chain: the stored curve is followed densely, so the region's
+    // barrier stays within about one triangle of the curve the inner surface
+    // seals onto; the axis search seats the margin first.
+    let stored = &margin.points;
+    let followed = tracer.follow(stored)?;
+    let app_region = tracer.region(&followed, seed);
+    println!(
+        "\napp follow: {} barrier vertices, region {} triangles, overhang vs the stored curve {:?}",
+        followed.vertices.len(),
         app_region.len(),
-        fmt(app_axis.axis),
-        app_axis.tilt_deg,
-        obstruction
+        margin_overhang(mesh, &app_region, stored, initial)?
     );
-    let original = mesh.extract_triangles(&region);
-    let original_bvh = Bvh::build(&original);
+    let best = best_insertion_axis_with_margin(mesh, &app_region, stored, Some(initial), 30.0)?;
     println!(
-        "app obstruction distance to original region {:.3} mm",
-        obstruction.point.distance(
-            original_bvh
-                .closest_point(&original, obstruction.point)
-                .unwrap()
-                .point
-        )
-    );
-    let best = best_insertion_axis(mesh, &region, Some(initial), 30.0)?;
-    println!(
-        "axis {} tilt {:.3} draft {:.3} undercut area {:.3}",
-        fmt(best.axis),
-        best.tilt_deg,
-        best.min_draft_deg,
-        best.undercut_area
-    );
-    println!(
-        "legacy overhang {:?}",
-        margin_overhang(mesh, &region, &margin.points, best.axis)?
-    );
-    sectors(mesh, &margin.points, seed, app_axis.axis);
-    let best = best_insertion_axis_with_margin(mesh, &region, &raw, Some(initial), 30.0)?;
-    println!(
-        "margin-aware axis {} tilt {:.3} draft {:.3} area {:.3} overhang {:?}",
+        "app-chain axis {} tilt {:.3} draft {:.3} area {:.3} overhang {:?}",
         fmt(best.axis),
         best.tilt_deg,
         best.min_draft_deg,
@@ -221,71 +226,13 @@ fn diagnose(
     let start = std::time::Instant::now();
     match inner_surface(
         mesh,
-        &region,
-        &raw,
+        &app_region,
+        stored,
         best.axis,
         &InnerSurfaceParams::default(),
     ) {
         Ok(inner) => {
-            let prep = mesh.extract_triangles(&region);
-            let bvh = Bvh::build(&prep);
-            let mut lo = f64::INFINITY;
-            let mut hi = 0.0_f64;
-            let mut minimum_residual = f64::INFINITY;
-            let mut worst = DVec3::ZERO;
-            let mut worst_kind = 0;
-            for t in 0..inner.mesh.triangles.len() {
-                let [a, b, c] = inner.mesh.triangle(t);
-                let [ga, gb, gc] = inner.mesh.triangles[t].map(|v| inner.target_gaps[v as usize]);
-                for (kind, (p, target)) in [
-                    (a, ga),
-                    (b, gb),
-                    (c, gc),
-                    ((a + b) * 0.5, (ga + gb) * 0.5),
-                    ((b + c) * 0.5, (gb + gc) * 0.5),
-                    ((c + a) * 0.5, (gc + ga) * 0.5),
-                    ((a + b + c) / 3.0, (ga + gb + gc) / 3.0),
-                ]
-                .into_iter()
-                .enumerate()
-                {
-                    let hit = bvh.closest_point(&prep, p).unwrap();
-                    let normal = prep.triangle_cross(hit.triangle as usize).normalize();
-                    let gap = p.distance(hit.point)
-                        * if (p - hit.point).dot(normal) < 0.0 {
-                            -1.0
-                        } else {
-                            1.0
-                        };
-                    lo = lo.min(gap);
-                    hi = hi.max(gap);
-                    if gap - target < minimum_residual {
-                        minimum_residual = gap - target;
-                        worst = p;
-                        worst_kind = kind;
-                    }
-                }
-            }
-            println!(
-                "inner OK {} vertices; signed true 3D gap vertices/edges/centroids {lo:.6}..{hi:.6} mm; minimum clearance minus target {minimum_residual:.6} mm",
-                inner.mesh.positions.len()
-            );
-            if minimum_residual < -0.001 {
-                let mut support = f64::NEG_INFINITY;
-                for t in 0..prep.triangles.len() {
-                    let n = prep.triangle_cross(t).normalize();
-                    let offset = n.dot(prep.triangle(t)[0]);
-                    if prep.positions.iter().all(|p| n.dot(*p) <= offset + 1e-10) {
-                        support = support.max(n.dot(worst) - offset);
-                    }
-                }
-                println!(
-                    "worst point {} kind {worst_kind} certified supporting plane distance {support:.6}; upward hit {:?}",
-                    fmt(worst),
-                    bvh.raycast(&prep, worst + best.axis * 1e-7, best.axis)
-                );
-                return Err("inner clearance verification failed".into());
-            }
+            verify(&inner, mesh, &app_region, stored, best.axis)?;
         }
         Err(e) => println!("inner ERROR {e}"),
     }
@@ -293,26 +240,118 @@ fn diagnose(
     Ok(())
 }
 
-fn controls(curve: &[DVec3]) -> Vec<DVec3> {
-    let n = curve.len();
-    let total: f64 = (0..n).map(|i| curve[i].distance(curve[(i + 1) % n])).sum();
-    let count = ((total / 1.5).round() as usize).clamp(16, 24);
-    let (mut segment, mut walked) = (0, 0.0);
-    (0..count)
-        .map(|k| {
-            let target = total * k as f64 / count as f64;
-            loop {
-                let a = curve[segment % n];
-                let b = curve[(segment + 1) % n];
-                let length = a.distance(b);
-                if walked + length >= target - 1e-12 || segment + 1 >= n {
-                    return a.lerp(b, ((target - walked) / length).clamp(0.0, 1.0));
-                }
-                walked += length;
-                segment += 1;
+/// Signed true 3D distance from `p` to the preparation.
+fn signed_gap(prep: &TriMesh, bvh: &Bvh, p: DVec3) -> f64 {
+    let hit = bvh.closest_point(prep, p).unwrap();
+    let normal = prep.triangle_cross(hit.triangle as usize).normalize();
+    p.distance(hit.point)
+        * if (p - hit.point).dot(normal) < 0.0 {
+            -1.0
+        } else {
+            1.0
+        }
+}
+
+/// Check every vertex, edge midpoint and centroid against its interpolated
+/// target and print the clearance extrema plus the worst samples. Samples within
+/// the margin seal band are re-measured against the whole scan when the region
+/// alone reads them deficient: the smoothed curve crosses the barrier's
+/// triangles there and its chords dip into the finish-line valley by the input
+/// sampling sagitta, which is not an offset error. Fails when a sample beyond
+/// the band misses its target by more than 1 µm, or a band sample by more than
+/// 10 µm. Worst samples report height above the margin, sector, gap and target,
+/// and whether anything lies above or below them along the axis (a scan hole
+/// shows as no hit in either direction).
+fn verify(
+    inner: &InnerSurface,
+    mesh: &TriMesh,
+    region: &[u32],
+    margin: &[DVec3],
+    axis: DVec3,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let prep = mesh.extract_triangles(region);
+    let bvh = Bvh::build(&prep);
+    let whole = Bvh::build(mesh);
+    let nearest_margin = |p: DVec3| {
+        let mut nearest = (f64::INFINITY, DVec3::ZERO);
+        for i in 0..margin.len() {
+            let a = margin[i];
+            let b = margin[(i + 1) % margin.len()];
+            let t = ((p - a).dot(b - a) / (b - a).length_squared()).clamp(0.0, 1.0);
+            let q = a + (b - a) * t;
+            let d = p.distance(q);
+            if d < nearest.0 {
+                nearest = (d, q);
             }
-        })
-        .collect()
+        }
+        nearest
+    };
+    let mut samples: Vec<(f64, DVec3, f64, f64, bool)> = Vec::new();
+    let (mut lo, mut hi) = (f64::INFINITY, 0.0_f64);
+    for t in 0..inner.mesh.triangles.len() {
+        let [a, b, c] = inner.mesh.triangle(t);
+        let [ga, gb, gc] = inner.mesh.triangles[t].map(|v| inner.target_gaps[v as usize]);
+        for (p, target) in [
+            (a, ga),
+            (b, gb),
+            (c, gc),
+            ((a + b) * 0.5, (ga + gb) * 0.5),
+            ((b + c) * 0.5, (gb + gc) * 0.5),
+            ((c + a) * 0.5, (gc + ga) * 0.5),
+            ((a + b + c) / 3.0, (ga + gb + gc) / 3.0),
+        ] {
+            let gap = signed_gap(&prep, &bvh, p);
+            lo = lo.min(gap);
+            hi = hi.max(gap);
+            let mut residual = gap - target;
+            let mut band = false;
+            if residual < -0.001
+                && (p - nearest_margin(p).1).dot(axis).abs() <= dentcraft_design::SEAL_BAND_MM
+            {
+                // The margin's own vicinity: the smoothed curve crosses the
+                // barrier there and its 0.1 mm chords dip into the finish-line
+                // valley by the sampling sagitta, so re-measure against the scan.
+                band = true;
+                residual = signed_gap(mesh, &whole, p) - target;
+            }
+            samples.push((residual, p, gap, target, band));
+        }
+    }
+    samples.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let center = margin.iter().sum::<DVec3>() / margin.len() as f64;
+    let worst_band = samples
+        .iter()
+        .filter(|s| s.4)
+        .map(|s| s.0)
+        .fold(0.0_f64, f64::min);
+    let worst_core = samples
+        .iter()
+        .filter(|s| !s.4)
+        .map(|s| s.0)
+        .fold(f64::INFINITY, f64::min);
+    println!(
+        "inner OK {} vertices; signed true 3D gap at vertices/edges/centroids {lo:.6}..{hi:.6} mm; minimum clearance minus target {worst_core:.6} mm beyond the seal band, {worst_band:.6} mm within it (margin sampling sagitta)",
+        inner.mesh.positions.len(),
+    );
+    for &(residual, p, gap, target, band) in samples.iter().take(5) {
+        let height = (p - nearest_margin(p).1).dot(axis);
+        let d = p - center;
+        let side = axis.any_orthonormal_vector();
+        let sector = d.dot(axis.cross(side)).atan2(d.dot(side)).to_degrees();
+        let up = whole.raycast(mesh, p + axis * 1e-7, axis);
+        let down = whole.raycast(mesh, p - axis * 1e-7, -axis);
+        println!(
+            "worst {} {} residual {residual:.6}: gap {gap:.6} target {target:.6}, height above margin {height:.3} mm, sector {sector:.1} deg, above {:?}, below {:?}",
+            if band { "seal band" } else { "core" },
+            fmt(p),
+            up.map(|h| fmt(h.point)),
+            down.map(|h| fmt(h.point)),
+        );
+    }
+    if worst_core < -0.001 || worst_band < -0.01 {
+        return Err("inner clearance verification failed".into());
+    }
+    Ok(())
 }
 
 fn sectors(mesh: &TriMesh, margin: &[DVec3], seed: DVec3, axis: DVec3) {
