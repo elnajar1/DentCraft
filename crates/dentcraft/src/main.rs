@@ -30,6 +30,7 @@ mod workspace;
 
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
 use clap::Parser;
 use eframe::egui;
@@ -40,12 +41,19 @@ use crate::args::{Args, DEFAULT_SIZE, OpenArg};
 fn main() -> ExitCode {
     let args = Args::parse();
     let screenshot = args.screenshot.is_some();
-    // Crash logs are kept for every run; a screenshot run never touches the user's recovery file.
+    // Crash logs are kept for every run; a screenshot run never touches the user's recovery
+    // files.
     let data = crash::data_dir();
-    let recovery = data
-        .as_deref()
-        .filter(|_| !screenshot)
-        .map(recovery::recovery_path);
+    let keeps_recovery = data.as_deref().filter(|_| !screenshot);
+    let recovery = keeps_recovery.map(recovery::recovery_path);
+    // A recovery file left by another (crashed) instance is offered for restore at start-up.
+    let restore = keeps_recovery.and_then(|data| {
+        recovery::leftover(
+            &recovery::recovery_dir(data),
+            std::process::id(),
+            SystemTime::now(),
+        )
+    });
     crash::install_panic_hook(data.as_deref().map(crash::crash_log_dir), recovery.clone());
     let [w, h] = args.size.unwrap_or(DEFAULT_SIZE);
 
@@ -92,6 +100,8 @@ fn main() -> ExitCode {
         section: args.section,
         export: args.export,
         recovery,
+        restore,
+        exit_after: args.exit_after,
         exit_code: exit_code.clone(),
     };
     let result = eframe::run_native(

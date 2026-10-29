@@ -1,6 +1,7 @@
 //! Command line of the desktop application.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use clap::{Parser, ValueEnum};
 use dentcraft_case::{Fdi, ScanRole};
@@ -87,6 +88,11 @@ pub struct Args {
     /// Write every built crown as STL into this folder once the startup steps are done.
     #[arg(long, value_name = "DIR")]
     pub export: Option<PathBuf>,
+
+    /// Close the app cleanly after this many seconds (automation): unsaved changes are not
+    /// asked about. Fractions allowed, e.g. 30 or 0.5.
+    #[arg(long, value_name = "SECONDS", value_parser = parse_exit_after)]
+    pub exit_after: Option<Duration>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -217,6 +223,18 @@ pub fn parse_measure(text: &str) -> Result<[DVec3; 2], String> {
 fn parse_tooth(text: &str) -> Result<Fdi, String> {
     let bad = || format!("invalid tooth `{text}` (expected an FDI number from 11 to 48)");
     Fdi::new(text.trim().parse().map_err(|_| bad())?).map_err(|_| bad())
+}
+
+/// Parses a positive number of seconds (at most a day) to close the app after.
+pub fn parse_exit_after(text: &str) -> Result<Duration, String> {
+    let bad = || format!("invalid duration `{text}` (expected seconds, e.g. 30 or 0.5)");
+    let secs: f64 = text.trim().parse().map_err(|_| bad())?;
+    if !secs.is_finite() || secs <= 0.0 || secs > 86_400.0 {
+        return Err(format!(
+            "duration `{text}` is out of range (between 0 and 86400 seconds)"
+        ));
+    }
+    Ok(Duration::from_secs_f64(secs))
 }
 
 /// Parses `FDI@x,y,z`: a tooth and a point of finite numbers.
@@ -452,6 +470,26 @@ mod tests {
                 "`{bad}` should be rejected"
             );
         }
+    }
+
+    #[test]
+    fn exit_after_parses_seconds() {
+        assert_eq!(parse_exit_after("30"), Ok(Duration::from_secs(30)));
+        assert_eq!(parse_exit_after("0.5"), Ok(Duration::from_millis(500)));
+        let args = Args::try_parse_from(["dentcraft", "--exit-after", "10"]).unwrap();
+        assert_eq!(args.exit_after, Some(Duration::from_secs(10)));
+        assert_eq!(
+            Args::try_parse_from(["dentcraft"]).unwrap().exit_after,
+            None
+        );
+    }
+
+    #[test]
+    fn exit_after_rejects_malformed_and_out_of_range_values() {
+        for bad in ["", "abc", "-1", "0", "NaN", "inf", "86401"] {
+            assert!(parse_exit_after(bad).is_err(), "`{bad}` should be rejected");
+        }
+        assert!(Args::try_parse_from(["dentcraft", "--exit-after", "soon"]).is_err());
     }
 
     #[test]

@@ -24,7 +24,8 @@ pub const PANIC_MESSAGE: &str = "Something went wrong while building the crown \
                                  design is unchanged. Details were saved to the crash log.";
 
 /// Hidden switch for checking the safety net by hand: `DENTCRAFT_TEST_PANIC=worker` makes the
-/// next design job (not a scan load) panic.
+/// next design job (not a scan load) panic; `=main` makes the UI thread panic at the first
+/// frame after the case's scans have loaded.
 const TEST_PANIC_VAR: &str = "DENTCRAFT_TEST_PANIC";
 
 /// Worker names starting with this load scans; the test switch leaves them alone.
@@ -32,6 +33,7 @@ pub const LOAD_PREFIX: &str = "load ";
 
 static WORKER_PANICS: AtomicU64 = AtomicU64::new(0);
 static TEST_PANIC_USED: AtomicBool = AtomicBool::new(false);
+static TEST_PANIC_MAIN_USED: AtomicBool = AtomicBool::new(false);
 
 /// How many background jobs have panicked so far; the app saves the recovery file when it grows.
 pub fn worker_panics() -> u64 {
@@ -43,6 +45,13 @@ fn take_test_panic(name: &str) -> bool {
     !name.starts_with(LOAD_PREFIX)
         && std::env::var(TEST_PANIC_VAR).is_ok_and(|v| v == "worker")
         && !TEST_PANIC_USED.swap(true, Ordering::SeqCst)
+}
+
+/// `true` once, for the first frame after the case's scans have loaded, when the test switch
+/// asks for a panic on the UI thread.
+pub fn take_test_panic_main() -> bool {
+    std::env::var(TEST_PANIC_VAR).is_ok_and(|v| v == "main")
+        && !TEST_PANIC_MAIN_USED.swap(true, Ordering::SeqCst)
 }
 
 /// Runs `work` on a named background thread with a [`WORKER_STACK`] stack and hands its outcome

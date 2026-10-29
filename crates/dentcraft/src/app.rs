@@ -74,8 +74,12 @@ pub struct StartOptions {
     pub section: bool,
     /// Folder to export every built crown to once the startup steps are done.
     pub export: Option<PathBuf>,
-    /// The recovery file; `None` when unsaved work is not kept (screenshot runs).
+    /// This instance's recovery file; `None` when unsaved work is not kept (screenshot runs).
     pub recovery: Option<PathBuf>,
+    /// A recovery file left by another instance, offered for restore at start-up.
+    pub restore: Option<PathBuf>,
+    /// `--exit-after`: close the app cleanly after this long, without asking.
+    pub exit_after: Option<Duration>,
     /// Exit code of a screenshot run, read by `main` once the window has closed.
     pub exit_code: Arc<Mutex<Option<u8>>>,
 }
@@ -97,6 +101,28 @@ struct Toast {
 enum Discard {
     New,
     Open(PathBuf),
+}
+
+/// A close of the window with unsaved changes, once it needs asking about or has been decided.
+#[derive(PartialEq)]
+enum Closing {
+    /// Waiting on the user: Save, Don't save or Cancel.
+    Asking,
+    /// Decided by the user or by automation: the next close goes through unquestioned.
+    Decided,
+}
+
+/// What the user chose to do with unsaved changes before closing.
+enum CloseChoice {
+    Save,
+    DontSave,
+    Cancel,
+}
+
+/// Whether the close of a window is asked about first: only one with unsaved changes asks, and
+/// never in a screenshot run.
+fn asks_before_close(dirty: bool, screenshot: bool) -> bool {
+    dirty && !screenshot
 }
 
 pub struct DentCraftApp {
@@ -123,8 +149,14 @@ pub struct DentCraftApp {
     /// Undo and redo of the case's design.
     history: History,
     confirm_discard: Option<Discard>,
+    /// The close of the window, once it needs asking about or has been decided.
+    closing: Option<Closing>,
+    /// `--exit-after`: when to close the app cleanly, without asking.
+    exit_after: Option<Instant>,
     /// Writes unsaved work to the recovery file.
     autosave: Option<Autosave>,
+    /// The recovery file left by another instance, offered at start-up.
+    restore_file: Option<PathBuf>,
     /// The question of the start-up prompt to restore unsaved work left by a crash.
     recovery_prompt: Option<String>,
     window_title: String,
@@ -214,10 +246,11 @@ impl DentCraftApp {
         let initial_view = start.view.unwrap_or(ViewPreset::Occlusal);
         let case = Case::new(UNTITLED);
         let recovery_prompt = start
-            .recovery
+            .restore
             .as_deref()
             .and_then(|path| recovery::startup_prompt(path, start.screenshot.is_some()))
             .map(recovery::prompt_text);
+        let restore_file = start.restore.filter(|_| recovery_prompt.is_some());
         let mut app = Self {
             theme,
             session: Session::for_case(&case),
@@ -226,9 +259,12 @@ impl DentCraftApp {
             doc: Document::untitled(&case),
             history: History::default(),
             confirm_discard: None,
+            closing: None,
+            exit_after: start.exit_after.map(|after| Instant::now() + after),
             autosave: start
                 .recovery
                 .map(|path| Autosave::new(path, crash::worker_panics())),
+            restore_file,
             recovery_prompt,
             window_title: String::new(),
             ribbon_tab: start.tab.unwrap_or_default(),
@@ -371,6 +407,11 @@ impl DentCraftApp {
         }
         if self.objects.iter().all(|o| o.loaded().is_some()) && !self.objects.is_empty() {
             self.auto_fit = false;
+            // DENTCRAFT_TEST_PANIC=main: a panic on the UI thread at the first frame after the
+            // case's scans have loaded, to check the crash log and the recovery write.
+            if crash::take_test_panic_main() {
+                panic!("DENTCRAFT_TEST_PANIC: test panic on the UI thread");
+            }
             if let Some([a, b]) = self.pending_measure.take() {
                 let snap = |p| tools::snap_to_surface(&self.objects, p);
                 match (snap(a), snap(b)) {
@@ -978,9 +1019,9 @@ impl DentCraftApp {
         self.add_scans(scans);
     }
 
-    /// Opens the recovery file as an unsaved case.
+    /// Opens the recovery file left by another instance as an unsaved case.
     fn restore_recovery(&mut self) {
-        let Some(path) = self.autosave.as_ref().map(|a| a.path().to_path_buf()) else {
+        let Some(path) = self.restore_file.clone() else {
             return;
         };
         match recovery::read(&path) {
@@ -1033,18 +1074,18 @@ impl DentCraftApp {
             }
             Some(false) => {
                 self.recovery_prompt = None;
-                if let Some(autosave) = &self.autosave {
-                    recovery::remove(autosave.path());
+                if let Some(path) = &self.restore_file {
+                    recovery::remove(path);
                 }
             }
             None => {}
         }
     }
 
-    /// Keeps unsaved work in the recovery file; held back while the start-up prompt still
-    /// guards the previous session's file.
+    /// Keeps unsaved work in the recovery file; held back while a prompt still guards the
+    /// previous session's file, or while the user is asked about closing.
     fn autosave(&mut self, ctx: &egui::Context) {
-        if self.recovery_prompt.is_some() {
+        if self.recovery_prompt.is_some() || self.closing.is_some() {
             return;
         }
         let dirty = self.is_dirty();
@@ -1057,7 +1098,9 @@ impl DentCraftApp {
         }
     }
 
-    fn save_case(&mut self) {
+    /// Saves the case: to its file, or where the user picks when it has none yet. Returns
+    /// whether the case was written.
+    fn save_case(&mut self) -> bool {
         let path = match self.doc.path() {
             Some(path) => path.to_path_buf(),
             None => {
@@ -1067,14 +1110,20 @@ impl DentCraftApp {
                     .set_file_name(document::suggested_file_name(&self.case))
                     .save_file()
                 else {
-                    return;
+                    return false;
                 };
                 document::with_case_extension(path)
             }
         };
         match document::save(&self.case, &path) {
-            Ok(()) => self.doc.mark_saved(path, &self.case),
-            Err(err) => self.fail(err.to_string()),
+            Ok(()) => {
+                self.doc.mark_saved(path, &self.case);
+                true
+            }
+            Err(err) => {
+                self.fail(err.to_string());
+                false
+            }
         }
     }
 
@@ -1132,6 +1181,106 @@ impl DentCraftApp {
             },
             Some(false) => self.confirm_discard = None,
             None => {}
+        }
+    }
+
+    /// A close of the window: one with unsaved changes is asked about first (never a close the
+    /// user or automation has already decided on, and never in a screenshot run); any other
+    /// goes through, and `on_exit` cleans up after it.
+    fn handle_close(&mut self, ctx: &egui::Context) {
+        if !ctx.input(|i| i.viewport().close_requested()) {
+            return;
+        }
+        let ask = self.closing != Some(Closing::Decided)
+            && asks_before_close(self.is_dirty(), self.screenshot.is_some());
+        if !ask {
+            return;
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        self.closing = Some(Closing::Asking);
+    }
+
+    /// "Save changes to … before closing?": Save / Don't save / Cancel, in the style of the
+    /// New/Open confirm. Saving keeps the app open when the save fails or is cancelled; Don't
+    /// save closes (the clean exit drops the recovery file with the changes); Cancel keeps the
+    /// app open.
+    fn confirm_close_modal(&mut self, ctx: &egui::Context) {
+        if self.closing != Some(Closing::Asking) {
+            return;
+        }
+        let p = self.palette();
+        let name = document::display_name(&self.case).to_owned();
+        let mut choice = None;
+        let modal = egui::Modal::new(egui::Id::unique("close_unsaved_case"))
+            .frame(
+                egui::Frame::new()
+                    .fill(p.panel)
+                    .stroke(Stroke::new(1.0, p.border))
+                    .corner_radius(CornerRadius::same(RADIUS_LG))
+                    .inner_margin(Margin::same(20)),
+            )
+            .show(ctx, |ui| {
+                ui.set_width(360.0);
+                ui.label(
+                    RichText::new(format!(
+                        "Save changes to \u{201c}{name}\u{201d} before closing?"
+                    ))
+                    .heading()
+                    .color(p.text),
+                );
+                ui.label(
+                    RichText::new(
+                        "The case has changes that are not saved. They will be lost if you \
+                         close without saving.",
+                    )
+                    .color(p.text_dim),
+                );
+                ui.add_space(12.0);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if small_button(ui, "Save", true, true).clicked() {
+                        choice = Some(CloseChoice::Save);
+                    }
+                    if small_button(ui, "Don't save", true, false).clicked() {
+                        choice = Some(CloseChoice::DontSave);
+                    }
+                    if small_button(ui, "Cancel", true, false).clicked() {
+                        choice = Some(CloseChoice::Cancel);
+                    }
+                });
+            });
+        if choice.is_none() && modal.should_close() {
+            choice = Some(CloseChoice::Cancel);
+        }
+        match choice {
+            // A failed or cancelled save keeps the question: the user can still decide.
+            Some(CloseChoice::Save) => {
+                if self.save_case() {
+                    self.close(ctx);
+                }
+            }
+            Some(CloseChoice::DontSave) => self.close(ctx),
+            Some(CloseChoice::Cancel) => self.closing = None,
+            None => {}
+        }
+    }
+
+    /// Closes the window without another question; the clean exit then drops the recovery file.
+    fn close(&mut self, ctx: &egui::Context) {
+        self.closing = Some(Closing::Decided);
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+
+    /// `--exit-after SECONDS`: closes the app cleanly once the time is up, without asking.
+    fn exit_after(&mut self, ctx: &egui::Context) {
+        let Some(deadline) = self.exit_after else {
+            return;
+        };
+        let now = Instant::now();
+        if now >= deadline {
+            self.exit_after = None;
+            self.close(ctx);
+        } else {
+            ctx.request_repaint_after(deadline - now);
         }
     }
 
@@ -1322,7 +1471,9 @@ impl DentCraftApp {
         match command {
             Command::New => self.request_new(),
             Command::Open => self.request_open(),
-            Command::Save => self.save_case(),
+            Command::Save => {
+                self.save_case();
+            }
             Command::Import => self.pick_files(),
             Command::Step(action) => self.apply_step_action(action),
             Command::View(preset) => self.viewport.go_to(preset, self.bounds().as_ref()),
@@ -2223,6 +2374,7 @@ impl eframe::App for DentCraftApp {
         let ctx = ui.ctx().clone();
         self.receive_loads();
         self.handle_input(&ctx);
+        self.handle_close(&ctx);
         let p = self.palette();
         let bar = |m: Margin| egui::Frame::new().fill(p.panel).inner_margin(m);
 
@@ -2258,10 +2410,12 @@ impl eframe::App for DentCraftApp {
             .show(ui, |ui| self.central(ui));
 
         self.confirm_discard_modal(&ctx);
+        self.confirm_close_modal(&ctx);
         self.recovery_modal(&ctx);
         self.autosave(&ctx);
         self.update_title(&ctx);
         self.drive_screenshot(&ctx);
+        self.exit_after(&ctx);
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -2295,6 +2449,14 @@ mod tests {
         assert_eq!(group_thousands(999), "999");
         assert_eq!(group_thousands(1000), "1,000");
         assert_eq!(group_thousands(1234567), "1,234,567");
+    }
+
+    #[test]
+    fn closing_asks_only_for_unsaved_changes_outside_screenshot_runs() {
+        assert!(asks_before_close(true, false));
+        assert!(!asks_before_close(false, false));
+        assert!(!asks_before_close(true, true));
+        assert!(!asks_before_close(false, true));
     }
 
     #[test]

@@ -1,6 +1,6 @@
-//! Autosave of unsaved work and its recovery after a crash: the open case is written to one
-//! recovery file while it has unsaved changes, removed on a clean exit, and offered back at the
-//! next start when it is still there.
+//! Autosave of unsaved work and its recovery after a crash: the open case is written to a
+//! recovery file of its own while it has unsaved changes, removed on a clean exit, and offered
+//! back at the next start when it is still there.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, TryLockError};
@@ -12,9 +12,70 @@ use dentcraft_case::Case;
 /// How often unsaved changes are written.
 pub const AUTOSAVE_EVERY: Duration = Duration::from_secs(30);
 
-/// The recovery file under the data folder.
+/// The recovery folder under the data folder.
+pub fn recovery_dir(data: &Path) -> PathBuf {
+    data.join("recovery")
+}
+
+/// This instance's recovery file under the data folder: one per running app, so a second open
+/// window never overwrites the first one's unsaved work.
 pub fn recovery_path(data: &Path) -> PathBuf {
-    data.join("recovery").join("autosave.dentcraft")
+    autosave_path(data, std::process::id())
+}
+
+/// The recovery file of the instance with this process id.
+pub fn autosave_path(data: &Path, pid: u32) -> PathBuf {
+    recovery_dir(data).join(format!("autosave-{pid}.dentcraft"))
+}
+
+/// The pre-instance recovery file: one shared file for every running app, still offered at
+/// start-up.
+const LEGACY_FILE: &str = "autosave.dentcraft";
+
+/// A recovery file written this recently belongs to a live second window, not to a crash.
+pub const LIVE_WITHIN: Duration = Duration::from_secs(60);
+
+/// The recovery file to offer at start-up: the newest one, other than this process's own, that
+/// has not been written for [`LIVE_WITHIN`] (a live second window's file is not offered). The
+/// pre-instance `autosave.dentcraft` counts as a candidate too.
+pub fn leftover(dir: &Path, own_pid: u32, now: SystemTime) -> Option<PathBuf> {
+    let mut best: Option<(SystemTime, PathBuf)> = None;
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        let pid = name
+            .strip_prefix("autosave-")
+            .and_then(|rest| rest.strip_suffix(".dentcraft"))
+            .and_then(|pid| pid.parse::<u32>().ok());
+        if pid.is_none() && name != LEGACY_FILE {
+            continue; // Not a recovery file (another app's, or a half-written .tmp).
+        }
+        if pid == Some(own_pid) {
+            continue; // Our own file.
+        }
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        let Ok(modified) = meta.modified() else {
+            continue;
+        };
+        // A write in the last minute means a live instance; a time ahead of ours (a clock set
+        // differently) proves a fresh write too, so both are left alone.
+        if !now
+            .duration_since(modified)
+            .is_ok_and(|age| age >= LIVE_WITHIN)
+        {
+            continue;
+        }
+        if best.as_ref().is_none_or(|(time, _)| modified > *time) {
+            best = Some((modified, entry.path()));
+        }
+    }
+    best.map(|(_, path)| path)
 }
 
 /// The unsaved case as of the last frame, for the panic hook (it cannot reach the app).
@@ -112,10 +173,6 @@ impl Autosave {
             due: None,
             panics,
         }
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
     }
 
     /// Runs once a frame. Writes a dirty case [`AUTOSAVE_EVERY`] after it changed, or at once
@@ -280,5 +337,64 @@ mod tests {
             text.starts_with("Restore your last unsaved case (saved "),
             "{text}"
         );
+    }
+
+    #[test]
+    fn the_recovery_file_is_named_after_the_running_instance() {
+        let dir = TempDir::new("naming");
+        assert_eq!(
+            recovery_path(&dir.0),
+            recovery_dir(&dir.0).join(format!("autosave-{}.dentcraft", std::process::id()))
+        );
+        assert_eq!(
+            autosave_path(&dir.0, 7),
+            recovery_dir(&dir.0).join("autosave-7.dentcraft")
+        );
+        assert_eq!(LEGACY_FILE, "autosave.dentcraft");
+    }
+
+    /// Writes a recovery file of another instance, `age` old, into `dir`.
+    fn leftover_file(dir: &Path, name: &str, age: Duration) -> PathBuf {
+        let path = dir.join(name);
+        write(&path, &case_with_scan()).unwrap();
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_times(std::fs::FileTimes::new().set_modified(SystemTime::now() - age))
+            .unwrap();
+        path
+    }
+
+    #[test]
+    fn the_newest_stale_recovery_file_of_another_instance_is_chosen() {
+        let dir = TempDir::new("leftover");
+        let rec = recovery_dir(&dir.0);
+        std::fs::create_dir_all(&rec).unwrap();
+        let old = Duration::from_secs(3600);
+        let now = SystemTime::now();
+
+        // Nothing there: nothing offered.
+        assert_eq!(leftover(&rec, 1, now), None);
+        // Our own file never is, and a fresh file of another instance is a live window's.
+        leftover_file(&rec, "autosave-1.dentcraft", old);
+        leftover_file(&rec, "autosave-2.dentcraft", Duration::ZERO);
+        assert_eq!(leftover(&rec, 1, SystemTime::now()), None);
+        // A stale file of another instance is...
+        let stale = leftover_file(&rec, "autosave-3.dentcraft", old);
+        assert_eq!(leftover(&rec, 1, SystemTime::now()), Some(stale.clone()));
+        // ...and a newer one wins.
+        let newest = leftover_file(&rec, "autosave-4.dentcraft", old - Duration::from_secs(60));
+        assert_eq!(leftover(&rec, 1, SystemTime::now()), Some(newest.clone()));
+        // Other files in the folder are none of our business.
+        std::fs::write(rec.join("notes.txt"), "").unwrap();
+        assert_eq!(leftover(&rec, 1, SystemTime::now()), Some(newest));
+    }
+
+    #[test]
+    fn an_old_style_recovery_file_is_still_chosen() {
+        let dir = TempDir::new("legacy");
+        let rec = recovery_dir(&dir.0);
+        std::fs::create_dir_all(&rec).unwrap();
+        assert_eq!(leftover(&rec, 1, SystemTime::now()), None);
+        let legacy = leftover_file(&rec, "autosave.dentcraft", Duration::from_secs(600));
+        assert_eq!(leftover(&rec, 1, SystemTime::now()), Some(legacy));
     }
 }
