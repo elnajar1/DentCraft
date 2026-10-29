@@ -104,6 +104,8 @@ pub enum Icon {
     Inner,
     /// A molar crown with cusps, for the anatomy step.
     Anatomy,
+    /// Two crowns side by side with a contact mark between them, for the contacts step.
+    Contacts,
     /// Arrow rising out of a tray, for writing files out.
     Export,
     /// Arrow curving back to the left.

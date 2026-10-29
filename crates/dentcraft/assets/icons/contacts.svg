@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>Contacts</title>
+  <path d="M25 50H13C9 50 8 44 8 38V22C8 16 11 14 15 14C20 14 22 18 25 18" fill="none" stroke="currentColor" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M39 50H51C55 50 56 44 56 38V22C56 16 53 14 49 14C44 14 42 18 39 18" fill="none" stroke="currentColor" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M32 28V40" fill="none" stroke="currentColor" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
+</svg>

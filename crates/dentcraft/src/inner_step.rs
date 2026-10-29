@@ -424,7 +424,6 @@ impl InnerStep {
     }
 
     /// The preparation the up-to-date inner surface of `tooth` was computed on.
-    #[allow(dead_code)] // For the Occlusion step, whose app wiring follows.
     pub(crate) fn prep(&self, tooth: Fdi) -> Option<Arc<Prep>> {
         self.surface(tooth)?;
         self.prep.clone().filter(|p| p.tooth == tooth)

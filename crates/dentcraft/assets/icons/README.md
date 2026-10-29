@@ -31,6 +31,6 @@ DentCraft in the same style and released under the repository licence.
 | `measure.svg` | SolidCraft `model/measure.svg`, made monochrome, guide line removed |
 | `new.svg` | DentCraft, after SolidCraft `model/new.svg` |
 | `back.svg`, `next.svg`, `skip.svg` | DentCraft |
-| `orient.svg`, `margin.svg`, `axis.svg`, `inner.svg`, `anatomy.svg` | DentCraft (design steps) |
+| `orient.svg`, `margin.svg`, `axis.svg`, `inner.svg`, `anatomy.svg`, `contacts.svg` | DentCraft (design steps) |
 | `view_occlusal.svg`, `view_facial.svg`, `view_lingual.svg`, `view_left.svg`, `view_right.svg`, `view_bottom.svg` | DentCraft (view presets) |
 | `ws_crown_bridge.svg`, `ws_model_builder.svg`, `ws_implant.svg`, `ws_splint.svg`, `ws_denture.svg`, `ws_smile.svg` | DentCraft (workspaces) |

@@ -67,7 +67,7 @@ pub struct Args {
     #[arg(long, value_name = "FDI@X,Y,Z", value_parser = parse_margin_click, allow_hyphen_values = true)]
     pub margin: Vec<(Fdi, DVec3)>,
 
-    /// Design step to open: scans, orient, margin, axis, inner, anatomy or export.
+    /// Design step to open: scans, orient, margin, axis, inner, anatomy, contacts or export.
     #[arg(long, value_enum)]
     pub step: Option<StepArg>,
 
@@ -92,6 +92,7 @@ pub enum StepArg {
     Axis,
     Inner,
     Anatomy,
+    Contacts,
     Export,
 }
 
@@ -104,6 +105,7 @@ impl From<StepArg> for StepId {
             StepArg::Axis => StepId::InsertionAxis,
             StepArg::Inner => StepId::InnerSurface,
             StepArg::Anatomy => StepId::Anatomy,
+            StepArg::Contacts => StepId::Occlusion,
             StepArg::Export => StepId::Finish,
         }
     }
@@ -384,6 +386,12 @@ mod tests {
         let none = Args::try_parse_from(["dentcraft"]).unwrap();
         assert!(!none.orient && none.margin.is_empty() && none.step.is_none());
         assert_eq!(none.tooth, None);
+    }
+
+    #[test]
+    fn step_contacts_opens_the_occlusion_step() {
+        let args = Args::try_parse_from(["dentcraft", "--step", "contacts"]).unwrap();
+        assert_eq!(args.step.map(StepId::from), Some(StepId::Occlusion));
     }
 
     #[test]

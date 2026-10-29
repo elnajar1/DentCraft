@@ -13,6 +13,7 @@ use eframe::egui::{
 
 use crate::anatomy_step::ANATOMY;
 use crate::axis_step::AXIS;
+use crate::contacts_step::CONTACTS;
 use crate::inner_step::INNER;
 use crate::margin_step::MARGIN;
 use crate::orient_step::ORIENT;
@@ -98,6 +99,8 @@ pub enum Command {
     Inner,
     /// Open the Anatomy step, or leave its tool.
     Anatomy,
+    /// Open the Occlusion & contacts step, or leave its tool.
+    Contacts,
     /// Open the Finish & export step.
     Export,
 }
@@ -295,6 +298,15 @@ impl RibbonView<'_> {
                 .clicked()
             {
                 *command = Some(Command::Anatomy);
+            }
+            let planned = session.steps().iter().any(|s| s.id == StepId::Occlusion);
+            let on = self.active_tool == Some(CONTACTS);
+            if command_button(ui, Icon::Contacts, "Contacts", planned, on)
+                .on_hover_text("Adapt the crown to its neighbours and the antagonist  (Esc leaves)")
+                .on_disabled_hover_text("The case has no Occlusion & contacts step")
+                .clicked()
+            {
+                *command = Some(Command::Contacts);
             }
             let on = session.current().is_some_and(|s| s.id == StepId::Finish);
             if command_button(ui, Icon::Export, "Export", true, on)

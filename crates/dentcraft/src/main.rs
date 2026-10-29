@@ -6,8 +6,6 @@ mod args;
 mod axis_step;
 mod browser;
 mod chart;
-// Groundwork: the app, panel, ribbon and startup wiring of the Occlusion step follow.
-#[allow(dead_code)]
 mod contacts_step;
 mod document;
 mod export_step;

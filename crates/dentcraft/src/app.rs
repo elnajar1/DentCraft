@@ -19,6 +19,7 @@ use crate::anatomy_step::{self, ANATOMY, AnatomyStep};
 use crate::axis_step::{self, AXIS, AxisStep};
 use crate::browser::{self, SECTIONS_KEY, Section, Sections};
 use crate::chart::{self, ChartEdit};
+use crate::contacts_step::{self, CONTACTS, ContactsStep};
 use crate::document::{self, Document};
 use crate::export_step::{self, ExportStep, PlanItem};
 use crate::history::History;
@@ -134,14 +135,16 @@ pub struct DentCraftApp {
     inner: InnerStep,
     /// The Anatomy step's jobs and crown.
     anatomy: AnatomyStep,
+    /// The Occlusion & contacts step's jobs, adapted crowns and distance map.
+    contacts: ContactsStep,
     /// `--step inner` or `--step anatomy`: the start went through the Insertion axis step and
     /// moves on to this step once the tooth has an axis.
     pending_inner: Option<StepId>,
     /// The Finish & export step's options, worker and results.
     export: ExportStep,
-    /// `--step export`: the start went through the Anatomy step and moves on to Finish & export
-    /// once the crown is built (or has failed).
-    pending_finish: bool,
+    /// `--step contacts` or `--step export`: the start went through the Anatomy step and moves on
+    /// to this step (Occlusion or Finish & export) once the crown is built (or has failed).
+    pending_finish: Option<StepId>,
     /// The Anatomy or Finish step was entered, or a first crown was built: frame the crown
     /// once it is there.
     frame_crown: bool,
@@ -219,9 +222,10 @@ impl DentCraftApp {
                 inner
             },
             anatomy: AnatomyStep::new(Some(cc.egui_ctx.clone())),
+            contacts: ContactsStep::new(Some(cc.egui_ctx.clone())),
             pending_inner: None,
             export: ExportStep::new(Some(cc.egui_ctx.clone())),
-            pending_finish: false,
+            pending_finish: None,
             frame_crown: false,
             pending_export: start.export,
             pending_orient: start.orient,
@@ -417,7 +421,11 @@ impl DentCraftApp {
             .filter(|s| {
                 matches!(
                     s.id,
-                    StepId::Margin | StepId::InsertionAxis | StepId::InnerSurface | StepId::Anatomy
+                    StepId::Margin
+                        | StepId::InsertionAxis
+                        | StepId::InnerSurface
+                        | StepId::Anatomy
+                        | StepId::Occlusion
                 )
             })
             .map(|s| s.teeth.clone());
@@ -546,6 +554,27 @@ impl DentCraftApp {
                 }
                 return;
             }
+            StepAction::SetContact(param, value, dragging) => {
+                if let Some(tooth) = self.tooth {
+                    self.contacts.set_param(
+                        &mut self.case.design,
+                        &mut self.history,
+                        tooth,
+                        param,
+                        value,
+                        dragging,
+                    );
+                }
+                return;
+            }
+            StepAction::EndContactDrag => {
+                self.contacts.end_drag(&mut self.history);
+                return;
+            }
+            StepAction::AdaptContacts => {
+                self.contacts.request_adapt();
+                return;
+            }
             StepAction::ToggleSection => {
                 self.inner.toggle_section();
                 return;
@@ -592,7 +621,8 @@ impl DentCraftApp {
                 .filter(|t| s.teeth.contains(t))
                 .or_else(|| s.teeth.first().copied())
         });
-        self.frame_crown = step.is_some_and(|s| matches!(s.id, StepId::Anatomy | StepId::Finish));
+        self.frame_crown = step
+            .is_some_and(|s| matches!(s.id, StepId::Anatomy | StepId::Occlusion | StepId::Finish));
         if step.is_some_and(|s| s.id == StepId::Margin) && self.tooth.is_some() {
             if self.tools.active_name() != Some(MARGIN) {
                 self.tools.activate(self.margin.tool());
@@ -613,9 +643,13 @@ impl DentCraftApp {
             if self.tools.active_name() != Some(ANATOMY) {
                 self.tools.activate(self.anatomy.tool());
             }
+        } else if step.is_some_and(|s| s.id == StepId::Occlusion) && self.tooth.is_some() {
+            if self.tools.active_name() != Some(CONTACTS) {
+                self.tools.activate(self.contacts.tool());
+            }
         } else if matches!(
             self.tools.active_name(),
-            Some(MARGIN | ORIENT | AXIS | INNER | ANATOMY)
+            Some(MARGIN | ORIENT | AXIS | INNER | ANATOMY | CONTACTS)
         ) {
             self.tools.deactivate();
         }
@@ -682,27 +716,27 @@ impl DentCraftApp {
     /// Every unit of the case with its current crown.
     fn export_plan(&self) -> Vec<PlanItem> {
         export_step::plan(&self.case.units, |tooth| {
-            self.anatomy.crown(&self.case, tooth)
+            let base = self.anatomy.crown(&self.case, tooth)?;
+            Some(
+                self.contacts
+                    .adapted(&self.case, &self.objects, tooth, &base)
+                    .unwrap_or(base),
+            )
         })
     }
 
     /// `--step export`: once the Anatomy step has built (or failed to build) the crown, moves
     /// on to Finish & export.
     fn pending_finish_step(&mut self) {
-        if !self.pending_finish
-            || self.pending_inner.is_some()
-            || self.inner.busy()
-            || self.anatomy.busy()
-        {
+        let Some(target) = self.pending_finish else {
+            return;
+        };
+        if self.pending_inner.is_some() || self.inner.busy() || self.anatomy.busy() {
             return;
         }
-        self.pending_finish = false;
+        self.pending_finish = None;
         let tooth = self.tooth;
-        while self
-            .session
-            .current()
-            .is_some_and(|s| s.id != StepId::Finish)
-        {
+        while self.session.current().is_some_and(|s| s.id != target) {
             if self.session.complete().is_err() {
                 break;
             }
@@ -716,11 +750,12 @@ impl DentCraftApp {
             || self.pending_step.is_some()
             || !self.pending_margin.is_empty()
             || self.pending_inner.is_some()
-            || self.pending_finish
+            || self.pending_finish.is_some()
             || self.margin.busy()
             || self.axis.busy()
             || self.inner.busy()
-            || self.anatomy.busy();
+            || self.anatomy.busy()
+            || self.contacts.busy();
         if waiting {
             return;
         }
@@ -737,12 +772,13 @@ impl DentCraftApp {
     /// Opens `--step` for `--tooth` and proposes the `--margin` seeds, once the scans are in.
     fn start_design(&mut self) {
         if let Some(mut target) = self.pending_step.take() {
-            // Finish & export needs the crowns: open the Anatomy step first and move on once
-            // the crown is built.
-            if target == StepId::Finish
+            // Occlusion and Finish & export need the crowns: open the Anatomy step first and
+            // move on once the crown is built.
+            if matches!(target, StepId::Finish | StepId::Occlusion)
                 && self.session.steps().iter().any(|s| s.id == StepId::Anatomy)
+                && self.session.steps().iter().any(|s| s.id == target)
             {
-                self.pending_finish = true;
+                self.pending_finish = Some(target);
                 target = StepId::Anatomy;
             }
             // The inner surface (and the crown on it) needs the tooth's axis: open the Insertion
@@ -797,6 +833,7 @@ impl DentCraftApp {
         self.axis.reset();
         self.inner.reset();
         self.anatomy.reset();
+        self.contacts.reset();
         self.export.reset();
         self.tooth = None;
         self.case = case;
@@ -1192,6 +1229,20 @@ impl DentCraftApp {
                     self.apply_step_action(StepAction::Tooth(index, tooth));
                 }
             }
+            Command::Contacts => {
+                if self.tools.active_name() == Some(CONTACTS) {
+                    self.tools.deactivate();
+                } else if let Some(index) = self
+                    .session
+                    .steps()
+                    .iter()
+                    .position(|s| s.id == StepId::Occlusion)
+                {
+                    let teeth = &self.session.steps()[index].teeth;
+                    let tooth = self.tooth.filter(|t| teeth.contains(t)).unwrap_or(teeth[0]);
+                    self.apply_step_action(StepAction::Tooth(index, tooth));
+                }
+            }
             Command::Export => {
                 if let Some(index) = self
                     .session
@@ -1389,6 +1440,19 @@ impl DentCraftApp {
                     inner.error.filter(|_| inner.has_margin && inner.has_axis),
                 )
             }),
+            contacts: self.tooth.map(|t| {
+                let inner = self.inner.card(&self.case.design, &self.case.material, t);
+                let base = self.anatomy.crown(&self.case, t);
+                self.contacts.card(
+                    &self.case,
+                    &self.objects,
+                    t,
+                    base.as_ref(),
+                    inner
+                        .busy
+                        .or(self.anatomy.busy().then_some("Building crown\u{2026}")),
+                )
+            }),
             export,
         }
         .show(ui);
@@ -1541,7 +1605,12 @@ impl DentCraftApp {
         let tooth = self
             .session
             .current()
-            .filter(|s| matches!(s.id, StepId::InnerSurface | StepId::Anatomy))
+            .filter(|s| {
+                matches!(
+                    s.id,
+                    StepId::InnerSurface | StepId::Anatomy | StepId::Occlusion
+                )
+            })
             .and(self.tooth);
         self.inner.update(inner_step::StepFrame {
             design: &self.case.design,
@@ -1554,12 +1623,33 @@ impl DentCraftApp {
         let tooth = self
             .session
             .current()
-            .filter(|s| s.id == StepId::Anatomy)
+            .filter(|s| matches!(s.id, StepId::Anatomy | StepId::Occlusion))
             .and(self.tooth);
         self.anatomy.update(anatomy_step::StepFrame {
             case: &self.case,
             tooth,
             surface: tooth.and_then(|t| self.inner.surface(t)),
+        });
+        let tooth = self
+            .session
+            .current()
+            .filter(|s| s.id == StepId::Occlusion)
+            .and(self.tooth);
+        let jaw = tooth.and_then(|t| {
+            let id = margin_step::arch_scan(&self.objects, t)?;
+            match self.margin.tracer(id, &self.objects) {
+                Ok(Some(tracer)) => Some((id, tracer.mesh().clone())),
+                _ => None,
+            }
+        });
+        self.contacts.update(contacts_step::StepFrame {
+            case: &self.case,
+            objects: &self.objects,
+            tooth,
+            placed: tooth.and_then(|t| self.anatomy.placed(&self.case, t)),
+            surface: tooth.and_then(|t| self.inner.surface(t)),
+            prep: tooth.and_then(|t| self.inner.prep(t)),
+            jaw,
         });
         self.pending_finish_step();
         self.pending_export_run();
@@ -1587,7 +1677,7 @@ impl DentCraftApp {
             let on_anatomy = self
                 .session
                 .current()
-                .is_some_and(|s| s.id == StepId::Anatomy);
+                .is_some_and(|s| matches!(s.id, StepId::Anatomy | StepId::Occlusion));
             let crowns: Vec<Aabb> = self
                 .case
                 .units
@@ -1712,7 +1802,8 @@ impl DentCraftApp {
             || self.pending_inner.is_some()
             || self.inner.busy()
             || self.anatomy.busy()
-            || self.pending_finish
+            || self.contacts.busy()
+            || self.pending_finish.is_some()
             || self.pending_export.is_some()
             || self.export.busy()
             || self.viewport.camera.is_animating();

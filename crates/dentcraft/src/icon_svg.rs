@@ -47,6 +47,7 @@ pub fn source(icon: Icon) -> &'static str {
         Icon::Axis => svg!("axis"),
         Icon::Inner => svg!("inner"),
         Icon::Anatomy => svg!("anatomy"),
+        Icon::Contacts => svg!("contacts"),
         Icon::Undo => svg!("undo"),
         Icon::Redo => svg!("redo"),
         Icon::View(preset) => match preset {
@@ -153,6 +154,7 @@ mod tests {
             Icon::Axis,
             Icon::Inner,
             Icon::Anatomy,
+            Icon::Contacts,
             Icon::Export,
             Icon::Undo,
             Icon::Redo,

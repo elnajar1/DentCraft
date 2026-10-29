@@ -11,6 +11,9 @@ use crate::anatomy_step::{AnatomyParam, NUDGE_MM};
 use crate::app::group_thousands;
 use crate::browser::{self, Section, Sections};
 use crate::chart::{ON_FILL, kind_color};
+use crate::contacts_step::{
+    ContactParam, ContactsCard, MAP_MAX_MM, MAP_MIN_MM, NO_ANTAGONIST, THIN_WARNING, distance_color,
+};
 use crate::export_step::{ExportCard, format_bytes};
 use crate::inner_step::InnerParam;
 use crate::theme::{Palette, RADIUS_SM, SIZE_SMALL};
@@ -60,6 +63,12 @@ pub enum StepAction {
     NudgeAnatomy(usize, f64),
     /// Put the current tooth's crown back to the library shape and automatic placement.
     ResetAnatomy,
+    /// Set a contact target of the current tooth in millimetres; `true` while it is dragged.
+    SetContact(ContactParam, f64, bool),
+    /// A drag of a contact slider ended.
+    EndContactDrag,
+    /// Adapt the current tooth's crown to its neighbours and antagonist.
+    AdaptContacts,
     /// Simplify the crowns before writing them (or not).
     SetSimplify(bool),
     /// Pick a folder and write every ready crown into it as STL.
@@ -195,6 +204,8 @@ pub struct WorkflowView<'a> {
     pub inner: Option<InnerCard>,
     /// The Anatomy step's card, when that step is active.
     pub anatomy: Option<AnatomyCard>,
+    /// The Occlusion & contacts step's card, when that step is active.
+    pub contacts: Option<ContactsCard>,
     /// The Finish & export step's card, when that step is active.
     pub export: Option<ExportCard>,
 }
@@ -611,6 +622,14 @@ fn active_card(
             step(StepId::InnerSurface),
         ];
         if let Some(a) = anatomy_section(ui, card, steps, p) {
+            action = Some(a);
+        }
+    } else if let Some(card) = view.contacts.as_ref().filter(|_| id == StepId::Occlusion) {
+        let anatomy_step = session
+            .steps()
+            .iter()
+            .position(|s| s.id == StepId::Anatomy && s.teeth.contains(&card.tooth));
+        if let Some(a) = contacts_section(ui, card, anatomy_step, p) {
             action = Some(a);
         }
     } else if let Some(card) = view.export.as_ref().filter(|_| id == StepId::Finish) {
@@ -1074,6 +1093,127 @@ fn anatomy_section(
     action
 }
 
+/// The Occlusion & contacts step's card. `anatomy_step` is the Anatomy step's index for the
+/// tooth, for the button to a missing crown.
+fn contacts_section(
+    ui: &mut Ui,
+    card: &ContactsCard,
+    anatomy_step: Option<usize>,
+    p: &Palette,
+) -> Option<StepAction> {
+    let mut action = None;
+    egui::Frame::new()
+        .fill(p.panel)
+        .corner_radius(CornerRadius::same(8))
+        .inner_margin(Margin::symmetric(10, 7))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 4.0;
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(format!("Tooth {}", card.tooth))
+                        .strong()
+                        .color(p.text),
+                );
+                if let Some(busy) = card.busy {
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.label(RichText::new(busy).size(SIZE_SMALL).color(p.text_dim));
+                        ui.add(egui::Spinner::new().size(12.0).color(p.accent));
+                    });
+                }
+            });
+            if !card.has_crown {
+                ui.label(
+                    RichText::new("This tooth has no crown yet.")
+                        .size(SIZE_SMALL)
+                        .color(p.text_dim),
+                );
+                if let Some(index) = anatomy_step
+                    && small_button(ui, "Anatomy step", true, true).clicked()
+                {
+                    action = Some(StepAction::Tooth(index, card.tooth));
+                }
+                return;
+            }
+            ui.spacing_mut().slider_width = (ui.available_width() - 150.0).max(60.0);
+            for (param, &value) in ContactParam::ALL.into_iter().zip(&card.values) {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(param.name())
+                            .size(SIZE_SMALL)
+                            .color(p.text_dim),
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let mut v = value;
+                        let r = ui.add(
+                            egui::Slider::new(&mut v, param.range())
+                                .step_by(0.01)
+                                .fixed_decimals(2)
+                                .suffix(" mm"),
+                        );
+                        if r.changed() {
+                            action = Some(StepAction::SetContact(param, v, r.dragged()));
+                        } else if r.drag_stopped() {
+                            action = Some(StepAction::EndContactDrag);
+                        }
+                    });
+                });
+            }
+            if !card.antagonist {
+                ui.label(
+                    RichText::new(NO_ANTAGONIST)
+                        .size(SIZE_SMALL)
+                        .color(p.text_dim),
+                );
+            }
+            if small_button(ui, "Adapt", card.busy.is_none(), true)
+                .on_hover_text("Adapt the crown to its neighbours and the antagonist")
+                .clicked()
+            {
+                action = Some(StepAction::AdaptContacts);
+            }
+            if card.outdated {
+                ui.label(
+                    RichText::new("Outdated \u{2014} press Adapt")
+                        .size(SIZE_SMALL)
+                        .color(p.accent),
+                );
+            }
+            if let Some(report) = &card.report {
+                let mm = |v: Option<f64>| {
+                    v.map_or("\u{2014}".to_owned(), |v| {
+                        format!("{} mm", widgets::fmt_mm(v, 2))
+                    })
+                };
+                let rows = [
+                    ("Mesial contact", mm(report.mesial)),
+                    ("Distal contact", mm(report.distal)),
+                    ("Min occlusal distance", mm(report.occlusal)),
+                    (
+                        "Moved area",
+                        format!("{} mm\u{b2}", widgets::fmt_mm(report.moved_area, 1)),
+                    ),
+                ];
+                for (name, text) in rows {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(name).size(SIZE_SMALL).color(p.text_dim));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            ui.label(RichText::new(text).color(p.text).strong());
+                        });
+                    });
+                }
+                if !report.thickness_ok {
+                    ui.label(RichText::new(THIN_WARNING).size(SIZE_SMALL).color(p.danger));
+                }
+                distance_legend(ui, p);
+            }
+            if let Some(error) = &card.error {
+                ui.label(RichText::new(error).size(SIZE_SMALL).color(p.danger));
+            }
+        });
+    action
+}
+
 /// The Finish & export step's card: every unit's crown, the options and the export.
 fn export_section(ui: &mut Ui, card: &ExportCard, p: &Palette) -> Option<StepAction> {
     let mut action = None;
@@ -1193,6 +1333,38 @@ fn undercut_legend(ui: &mut Ui, p: &Palette) {
         for i in 0..steps {
             let t = i as f32 / (steps - 1) as f32;
             let [r, g, b, _] = dentcraft_render::colormap::sequential(t, 0.0, 1.0);
+            let byte = |c: f32| (c * 255.0).round() as u8;
+            let x0 = rect.left() + rect.width() * i as f32 / steps as f32;
+            let x1 = rect.left() + rect.width() * (i + 1) as f32 / steps as f32;
+            ui.painter().rect_filled(
+                Rect::from_min_max(
+                    egui::pos2(x0, rect.top()),
+                    egui::pos2(x1 + 0.5, rect.bottom()),
+                ),
+                0.0,
+                egui::Color32::from_rgb(byte(r), byte(g), byte(b)),
+            );
+        }
+    });
+}
+
+/// A colour bar for the contacts step's distance map, [`MAP_MIN_MM`] to [`MAP_MAX_MM`].
+fn distance_legend(ui: &mut Ui, p: &Palette) {
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new(format!(
+                "Distance {} \u{2013} {} mm",
+                widgets::fmt_signed(MAP_MIN_MM, 1),
+                widgets::fmt_signed(MAP_MAX_MM, 1)
+            ))
+            .size(SIZE_SMALL)
+            .color(p.text_dim),
+        );
+        let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 8.0), Sense::hover());
+        let steps = 24;
+        for i in 0..steps {
+            let t = (i as f64 + 0.5) / steps as f64;
+            let [r, g, b, _] = distance_color(MAP_MIN_MM + t * (MAP_MAX_MM - MAP_MIN_MM));
             let byte = |c: f32| (c * 255.0).round() as u8;
             let x0 = rect.left() + rect.width() * i as f32 / steps as f32;
             let x1 = rect.left() + rect.width() * (i + 1) as f32 / steps as f32;
