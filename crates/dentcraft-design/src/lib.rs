@@ -27,7 +27,7 @@ pub use synthetic::{PreparedStump, StumpParams, prepared_stump};
 pub mod margin;
 pub mod orient;
 pub use margin::{Margin, MarginTracer};
-pub use orient::{JawFrame, jaw_frame, occlusal_direction};
+pub use orient::{JawFrame, arch_front, jaw_frame, occlusal_direction};
 pub use synthetic::{FinishLine, ToothParams, prepared_tooth};
 
 /// Deterministic pseudo-random inputs for tests, so tolerances are reproducible.

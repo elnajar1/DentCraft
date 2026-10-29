@@ -370,6 +370,165 @@ fn anterior(mesh: &TriMesh, centroid: DVec3, occlusal: DVec3) -> Result<DVec3, D
     Ok(forward.normalize_or_zero())
 }
 
+/// Grid resolution of [`arch_front`]: cells across the longer side of the projection.
+const FRONT_GRID: f64 = 150.0;
+/// Half-width of the midline strip, as a share of the projection's bounding diagonal.
+const FRONT_STRIP: f64 = 0.06;
+/// The closed end must have a midline cell within this share of the arch depth of its tip.
+const FRONT_CLOSED_ZONE: f64 = 0.15;
+/// The open end must have an empty midline over this share of the arch depth from its tip,
+/// with occupied cells (the two arms) on both sides of the strip there.
+const FRONT_OPEN_ZONE: f64 = 0.35;
+/// The arch depth along the candidate direction must be at least this share of its width,
+/// which rejects shallow quadrants (a C-shaped arc is closed at one end by construction).
+const FRONT_MIN_DEPTH: f64 = 0.6;
+
+/// The in-plane direction towards the closed end of a (possibly partial or edentulous)
+/// arch, from its shape alone, or `None` when the shape does not say.
+///
+/// The triangles are projected onto the plane perpendicular to `occlusal` and rasterised
+/// into an occupancy grid (150 cells across, so the result does not depend on mesh
+/// density). For each of the four directions along the two principal axes of the occupied
+/// cells, the midline strip (half-width 6% of the bounding diagonal, through the cell
+/// centroid) must be occupied within 15% of the depth of the tip (the closed end, where
+/// the anterior ridge joins the two sides), while the opposite end must have an empty strip
+/// over its outer 35% with cells on both sides of it (the open gap between the arms). The
+/// depth along the direction must be at least 60% of the width. Exactly one direction may
+/// qualify; a disc is closed at both ends and a quadrant is too shallow, so both give `None`.
+pub fn arch_front(mesh: &TriMesh, occlusal: DVec3) -> Option<DVec3> {
+    let occlusal = occlusal.try_normalize()?;
+    let e0 = occlusal.any_orthonormal_vector();
+    let e1 = occlusal.cross(e0);
+    let points: Vec<(f64, f64)> = mesh
+        .positions
+        .iter()
+        .map(|p| (p.dot(e0), p.dot(e1)))
+        .collect();
+    let mut lo = (f64::INFINITY, f64::INFINITY);
+    let mut hi = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for t in &mesh.triangles {
+        for &i in t {
+            let p = *points.get(i as usize)?;
+            if !(p.0.is_finite() && p.1.is_finite()) {
+                return None;
+            }
+            lo = (lo.0.min(p.0), lo.1.min(p.1));
+            hi = (hi.0.max(p.0), hi.1.max(p.1));
+        }
+    }
+    let span = (hi.0 - lo.0).max(hi.1 - lo.1);
+    if span.is_nan() || span <= 0.0 {
+        return None;
+    }
+    let cell = span / FRONT_GRID;
+    let nx = ((hi.0 - lo.0) / cell).ceil() as usize + 1;
+    let ny = ((hi.1 - lo.1) / cell).ceil() as usize + 1;
+    if nx.checked_mul(ny).is_none_or(|n| n > MAX_GRID_CELLS) {
+        return None;
+    }
+    let mut occupied = vec![false; nx * ny];
+    let cross = |p: (f64, f64), q: (f64, f64), r: (f64, f64)| {
+        (q.0 - p.0) * (r.1 - p.1) - (q.1 - p.1) * (r.0 - p.0)
+    };
+    let cell_of = |v: f64, min: f64, n: usize| (((v - min) / cell) as usize).min(n - 1);
+    for t in &mesh.triangles {
+        let [a, b, c] = t.map(|i| points[i as usize]);
+        let area = cross(a, b, c);
+        if area.abs() < 1e-12 {
+            continue;
+        }
+        let (x0, x1) = (a.0.min(b.0).min(c.0), a.0.max(b.0).max(c.0));
+        let (y0, y1) = (a.1.min(b.1).min(c.1), a.1.max(b.1).max(c.1));
+        for iy in cell_of(y0, lo.1, ny)..=cell_of(y1, lo.1, ny) {
+            for ix in cell_of(x0, lo.0, nx)..=cell_of(x1, lo.0, nx) {
+                let q = (
+                    lo.0 + (ix as f64 + 0.5) * cell,
+                    lo.1 + (iy as f64 + 0.5) * cell,
+                );
+                if [cross(a, b, q), cross(b, c, q), cross(c, a, q)]
+                    .iter()
+                    .all(|v| v * area >= 0.0)
+                {
+                    occupied[ix + iy * nx] = true;
+                }
+            }
+        }
+    }
+    let cells: Vec<(f64, f64)> = occupied
+        .iter()
+        .enumerate()
+        .filter(|(_, o)| **o)
+        .map(|(i, _)| {
+            (
+                lo.0 + ((i % nx) as f64 + 0.5) * cell,
+                lo.1 + ((i / nx) as f64 + 0.5) * cell,
+            )
+        })
+        .collect();
+    if cells.len() < 3 {
+        return None;
+    }
+    let n = cells.len() as f64;
+    let mean = cells
+        .iter()
+        .fold((0.0, 0.0), |s, c| (s.0 + c.0 / n, s.1 + c.1 / n));
+    let (mut sxx, mut syy, mut sxy) = (0.0, 0.0, 0.0);
+    for c in &cells {
+        let (x, y) = (c.0 - mean.0, c.1 - mean.1);
+        sxx += x * x;
+        syy += y * y;
+        sxy += x * y;
+    }
+    let angle = 0.5 * (2.0 * sxy).atan2(sxx - syy);
+    let major = (angle.cos(), angle.sin());
+    let strip = FRONT_STRIP * (hi.0 - lo.0).hypot(hi.1 - lo.1);
+
+    let mut found = None;
+    for axis in [major, (-major.1, major.0)] {
+        for sign in [1.0, -1.0] {
+            let d = (axis.0 * sign, axis.1 * sign);
+            // (along, across) of every cell relative to the centroid.
+            let local: Vec<(f64, f64)> = cells
+                .iter()
+                .map(|c| {
+                    let (x, y) = (c.0 - mean.0, c.1 - mean.1);
+                    (x * d.0 + y * d.1, -x * d.1 + y * d.0)
+                })
+                .collect();
+            let range = |pick: fn(&(f64, f64)) -> f64| {
+                local
+                    .iter()
+                    .map(pick)
+                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
+                        (lo.min(v), hi.max(v))
+                    })
+            };
+            let (tmin, tmax) = range(|p| p.0);
+            let (smin, smax) = range(|p| p.1);
+            let depth = tmax - tmin;
+            if depth < FRONT_MIN_DEPTH * (smax - smin) {
+                continue;
+            }
+            let closed = local
+                .iter()
+                .any(|p| p.1.abs() <= strip && p.0 >= tmax - FRONT_CLOSED_ZONE * depth);
+            // The opposite (open) end, at `tmin`.
+            let zone = tmin + FRONT_OPEN_ZONE * depth;
+            let open = !local.iter().any(|p| p.1.abs() <= strip && p.0 <= zone)
+                && local.iter().any(|p| p.1 > strip && p.0 <= zone)
+                && local.iter().any(|p| p.1 < -strip && p.0 <= zone);
+            if closed && open {
+                if found.is_some() {
+                    return None;
+                }
+                found = Some(d);
+            }
+        }
+    }
+    let d = found?;
+    (e0 * d.0 + e1 * d.1).try_normalize()
+}
+
 /// Eigenvalues (ascending) and unit eigenvectors of a symmetric 3×3 matrix, by
 /// cyclic Jacobi rotations to convergence. Exact for diagonal input.
 pub(crate) fn eigen3(m: [[f64; 3]; 3]) -> ([f64; 3], [DVec3; 3]) {
@@ -645,5 +804,56 @@ mod tests {
         let q = DQuat::from_xyzw(0.0, 0.0, 0.0, 1.0);
         assert_eq!(Lcg::new(1).rotation(), Lcg::new(1).rotation());
         assert_ne!(Lcg::new(1).rotation(), q);
+    }
+
+    /// The synthetic open arch without its anterior teeth: only the gingiva band
+    /// remains there, so the anterior ridge is a bare band. Anterior is +Y.
+    fn edentulous_arch() -> TriMesh {
+        let mut mesh = crate::synthetic::open_arch_scaled(1.0);
+        let positions = mesh.positions.clone();
+        mesh.triangles.retain(|t| {
+            !t.iter().any(|&v| {
+                let p = positions[v as usize];
+                p.z > 3.2 && p.y > 10.0
+            })
+        });
+        mesh
+    }
+
+    fn rotated(mesh: &TriMesh, q: DQuat) -> TriMesh {
+        let mut out = mesh.clone();
+        for p in &mut out.positions {
+            *p = q * *p;
+        }
+        out
+    }
+
+    #[test]
+    fn arch_front_finds_the_closed_end_of_an_edentulous_arch() {
+        let base = edentulous_arch();
+        for (axis, degrees) in [
+            (DVec3::Z, 0.0),
+            (DVec3::Z, 37.0),
+            (DVec3::Z, 150.0),
+            (DVec3::Z, 250.0),
+            (DVec3::X, 20.0),
+            (DVec3::new(1.0, 2.0, 0.5), 140.0),
+            (DVec3::new(-1.0, 0.3, 1.0), 200.0),
+        ] {
+            let q = DQuat::from_axis_angle(axis.normalize(), f64::to_radians(degrees));
+            let mesh = rotated(&base, q);
+            let front = arch_front(&mesh, q * DVec3::Z).expect("front");
+            assert!(front.dot(q * DVec3::Z).abs() < 1e-9);
+            let angle = angle_between(front, q * DVec3::Y);
+            assert!(angle < 15.0, "{axis:?} {degrees}: {angle}");
+        }
+    }
+
+    #[test]
+    fn arch_front_is_none_for_quadrants_and_blobs() {
+        let quadrant = crate::synthetic::open_arch_cut(1.0, 8.0);
+        assert_eq!(arch_front(&quadrant, DVec3::Z), None);
+        let blob = TriMesh::uv_sphere(20.0, 32, 20);
+        assert_eq!(arch_front(&blob, DVec3::Z), None);
     }
 }

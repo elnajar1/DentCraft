@@ -165,34 +165,36 @@ fn orient_mesh(mesh: &TriMesh, hints: FrontHints) -> Result<(Found, bool), Strin
     match dentcraft_design::jaw_frame(mesh) {
         Ok(found) => Ok((found, false)),
         Err(DesignError::PartialArch) => estimated_frame(mesh, hints)
-            .map(|f| (f, true))
             .ok_or_else(|| capitalize(&DesignError::PartialArch.to_string())),
         Err(e) => Err(capitalize(&e.to_string())),
     }
 }
 
-fn estimated_frame(mesh: &TriMesh, hints: FrontHints) -> Option<Found> {
+/// The partial arch's frame, and whether its front is a guess: the shape of the arch
+/// (`arch_front`) comes first, then the anterior units, then the camera's up.
+fn estimated_frame(mesh: &TriMesh, hints: FrontHints) -> Option<(Found, bool)> {
     let occlusal = dentcraft_design::occlusal_direction(mesh).ok()?;
     let (centroid, _) = area_centroid(mesh)?;
     let in_plane = |v: DVec3| {
         let flat = v - occlusal * v.dot(occlusal);
         (flat.length() > 1e-6).then(|| flat.normalize())
     };
-    let forward = hints
-        .anterior
-        .and_then(|a| in_plane(a - centroid))
+    let from_shape = dentcraft_design::arch_front(mesh, occlusal);
+    let forward = from_shape
+        .or_else(|| hints.anterior.and_then(|a| in_plane(a - centroid)))
         .or_else(|| in_plane(hints.up))
         .or_else(|| in_plane(occlusal.any_orthogonal_vector()))?;
     let mut heights: Vec<f64> = mesh.positions.iter().map(|p| p.dot(occlusal)).collect();
     heights.sort_by(f64::total_cmp);
     let cusp = heights[((heights.len() - 1) as f64 * 0.95) as usize];
     let origin = centroid + occlusal * (cusp - centroid.dot(occlusal));
-    Some(Found {
+    let found = Found {
         origin,
         occlusal,
         forward,
         right: forward.cross(occlusal),
-    })
+    };
+    Some((found, from_shape.is_none()))
 }
 
 /// Area-weighted centroid of the triangles, with the total area.
