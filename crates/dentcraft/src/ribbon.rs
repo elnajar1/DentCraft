@@ -120,6 +120,7 @@ pub struct RibbonView<'a> {
     pub workspace_menu: &'a mut WorkspaceMenu,
     pub session: &'a Session,
     pub has_jaw_scan: bool,
+    pub has_units: bool,
     /// Where Save writes, if the case has been saved before.
     pub save_path: Option<String>,
     /// The view the camera was last sent to.
@@ -223,12 +224,14 @@ impl RibbonView<'_> {
             {
                 *command = Some(Command::Step(StepAction::Back));
             }
-            let ready = step.is_some_and(|s| workflow_panel::can_complete(s.id, self.has_jaw_scan));
+            let blocker =
+                step.and_then(|s| workflow_panel::blocker(s.id, self.has_jaw_scan, self.has_units));
+            let ready = step.is_some() && blocker.is_none();
             let next = command_button(ui, Icon::Next, next_label(session), ready, false);
             let next = match step {
                 Some(_) => next
                     .on_hover_text("Complete this step")
-                    .on_disabled_hover_text(workflow_panel::NEEDS_JAW_SCAN),
+                    .on_disabled_hover_text(blocker.unwrap_or(workflow_panel::NEEDS_JAW_SCAN)),
                 None => next.on_disabled_hover_text("Every step is done"),
             };
             if next.clicked() {

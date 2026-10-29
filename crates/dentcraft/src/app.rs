@@ -374,6 +374,18 @@ impl DentCraftApp {
         self.doc.is_dirty(&self.case)
     }
 
+    /// Starts the automatic orientation, with the camera's up direction and the case's front
+    /// teeth as hints for an arch that does not show its front.
+    fn start_orient(&mut self) {
+        let teeth: Vec<Fdi> = self.case.units.iter().map(|u| u.tooth).collect();
+        let up = self.viewport.camera.up();
+        let hints = orient_step::FrontHints {
+            anterior: orient_step::anterior_centre(&self.case.design, &teeth),
+            up: glam::DVec3::new(up.x.into(), up.y.into(), up.z.into()),
+        };
+        self.orient.start(&self.objects, &teeth, hints);
+    }
+
     /// Whether a jaw scan has loaded, which the Scans step needs.
     fn has_jaw_scan(&self) -> bool {
         self.objects
@@ -420,9 +432,13 @@ impl DentCraftApp {
                 } else if forward {
                     match self.session.current() {
                         Some(step)
-                            if !workflow_panel::can_complete(step.id, self.has_jaw_scan()) =>
+                            if let Some(why) = workflow_panel::blocker(
+                                step.id,
+                                self.has_jaw_scan(),
+                                !self.case.units.is_empty(),
+                            ) =>
                         {
-                            self.workflow_error = Some(workflow_panel::NEEDS_JAW_SCAN.to_owned());
+                            self.workflow_error = Some(why.to_owned());
                             return;
                         }
                         _ => (self.session.complete(), None),
@@ -451,8 +467,7 @@ impl DentCraftApp {
                 return;
             }
             StepAction::AutoOrient => {
-                let teeth: Vec<Fdi> = self.case.units.iter().map(|u| u.tooth).collect();
-                self.orient.start(&self.objects, &teeth);
+                self.start_orient();
                 return;
             }
             StepAction::ResetOrient => {
@@ -759,8 +774,7 @@ impl DentCraftApp {
             }
         }
         if std::mem::take(&mut self.pending_orient) {
-            let teeth: Vec<Fdi> = self.case.units.iter().map(|u| u.tooth).collect();
-            self.orient.start(&self.objects, &teeth);
+            self.start_orient();
         }
         let axis = self.margin_axis();
         for (tooth, seed) in std::mem::take(&mut self.pending_margin) {
@@ -1083,6 +1097,7 @@ impl DentCraftApp {
             workspace_menu: &mut self.workspace_menu,
             session: &self.session,
             has_jaw_scan,
+            has_units: !self.case.units.is_empty(),
             save_path: self.doc.path().map(|p| p.display().to_string()),
             preset: self.viewport.preset,
             upper_visible: objects::role_visible(&self.objects, ScanRole::Upper),
@@ -1223,6 +1238,7 @@ impl DentCraftApp {
         }
 
         let n = self.case.units.len();
+        let header_top = ui.cursor().top();
         browser::header(
             ui,
             Section::Teeth,
@@ -1233,6 +1249,20 @@ impl DentCraftApp {
                 }
             },
         );
+        if n == 0 {
+            // Until a unit exists, the section pulses to say where to start.
+            let rect = egui::Rect::from_min_max(
+                egui::pos2(ui.max_rect().left(), header_top),
+                egui::pos2(ui.max_rect().right(), ui.cursor().top()),
+            );
+            let t = ui.input(|i| i.time) as f32;
+            let alpha = 0.5 + 0.5 * (t * 3.0).sin();
+            let stroke = egui::Stroke::new(2.0, p.accent.gamma_multiply(0.35 + 0.65 * alpha));
+            ui.painter()
+                .rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Inside);
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(50));
+        }
         if self.sections.is_open(Section::Teeth) {
             let edit = browser::body(ui, |ui| {
                 let edit = chart::tooth_chart(ui, &self.case);

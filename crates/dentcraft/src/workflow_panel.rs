@@ -19,6 +19,7 @@ use crate::widgets::{self, Icon, paint_icon, small_button};
 /// Shown on every step whose design tools are not built yet.
 pub const NOT_YET_NOTE: &str = "Design tools for this step arrive in DentCraft 0.2.";
 /// Why the Scans step cannot be completed yet.
+pub const NEEDS_RESTORATION: &str = "Add a restoration in the tooth chart to continue.";
 pub const NEEDS_JAW_SCAN: &str = "Import an upper or lower jaw scan to continue.";
 
 /// What the user asked the session to do.
@@ -135,6 +136,8 @@ pub struct OrientCard {
     /// What the step is busy with.
     pub busy: Option<&'static str>,
     pub error: Option<String>,
+    /// A gentle note, such as an estimated front of the arch.
+    pub note: Option<String>,
     /// The case has an orientation.
     pub has_frame: bool,
 }
@@ -154,9 +157,22 @@ pub struct MarginCard {
 /// Hint shown until the tooth has a margin.
 pub const MARGIN_HINT: &str = "Click the top of the preparation";
 
-/// Whether the active step may be completed: the Scans step needs a jaw scan.
-pub fn can_complete(step: StepId, has_jaw_scan: bool) -> bool {
-    step != StepId::Scans || has_jaw_scan
+/// Call to action shown while the case has no restoration.
+pub const ADD_RESTORATION: &str =
+    "Add a restoration: click a tooth in the chart on the left, then choose the restoration type.";
+
+/// Why the active step cannot be completed yet: the Scans step needs a jaw scan and a
+/// restoration to design.
+pub fn blocker(step: StepId, has_jaw_scan: bool, has_units: bool) -> Option<&'static str> {
+    if step != StepId::Scans {
+        None
+    } else if !has_jaw_scan {
+        Some(NEEDS_JAW_SCAN)
+    } else if !has_units {
+        Some(NEEDS_RESTORATION)
+    } else {
+        None
+    }
 }
 
 pub struct WorkflowView<'a> {
@@ -548,7 +564,13 @@ fn active_card(
         });
     }
     ui.add_space(4.0);
-    let ready = can_complete(id, view.has_jaw_scan);
+    let has_units = !view.case.units.is_empty();
+    let blocker = blocker(id, view.has_jaw_scan, has_units);
+    let ready = blocker.is_none();
+    if !has_units {
+        ui.label(RichText::new(ADD_RESTORATION).color(p.accent).strong());
+        ui.add_space(4.0);
+    }
     if let Some(card) = view.margin.as_ref().filter(|_| id == StepId::Margin) {
         if let Some(a) = margin_section(ui, card, view.case, p) {
             action = Some(a);
@@ -597,7 +619,7 @@ fn active_card(
         }
     } else {
         let note = if id == StepId::Scans {
-            if ready {
+            if view.has_jaw_scan {
                 "Jaw scan loaded. Check each scan's role in the case panel."
             } else {
                 NEEDS_JAW_SCAN
@@ -635,7 +657,10 @@ fn active_card(
             let last = session.progress().0 + 1 == total;
             let label = if last { "Finish" } else { "Next" };
             let next = small_button(ui, label, ready, true);
-            if next.on_disabled_hover_text(NEEDS_JAW_SCAN).clicked() {
+            if next
+                .on_disabled_hover_text(blocker.unwrap_or(NEEDS_JAW_SCAN))
+                .clicked()
+            {
                 action = Some(StepAction::Next);
             }
         });
@@ -1209,6 +1234,9 @@ fn orient_section(ui: &mut Ui, card: &OrientCard, p: &Palette) -> Option<StepAct
             if let Some(error) = &card.error {
                 ui.label(RichText::new(error).size(SIZE_SMALL).color(p.danger));
             }
+            if let Some(note) = &card.note {
+                ui.label(RichText::new(note).size(SIZE_SMALL).color(p.text_dim));
+            }
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
                 if small_button(ui, "Auto orient", card.busy.is_none(), true)
@@ -1265,10 +1293,12 @@ mod tests {
 
     #[test]
     fn only_the_scans_step_needs_a_jaw_scan() {
-        assert!(!can_complete(StepId::Scans, false));
-        assert!(can_complete(StepId::Scans, true));
+        assert!(blocker(StepId::Scans, false, true).is_some());
+        assert!(blocker(StepId::Scans, true, false).is_some());
+        assert!(blocker(StepId::Scans, true, true).is_none());
+        assert_eq!(blocker(StepId::Scans, true, false), Some(NEEDS_RESTORATION));
         for id in StepId::ALL.into_iter().filter(|id| *id != StepId::Scans) {
-            assert!(can_complete(id, false), "{id:?}");
+            assert!(blocker(id, false, false).is_none(), "{id:?}");
         }
     }
 }
