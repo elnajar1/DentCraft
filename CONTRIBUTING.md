@@ -47,6 +47,18 @@ zero-area triangles, open boundaries).
 - By contributing you agree that your work is licensed under MIT OR Apache-2.0, like the
   rest of the project.
 
+## Releasing
+
+Before publishing Windows binaries, check that every imported function is wired up:
+
+```sh
+python -I scripts/check-windows-exe.py target/release/dentcraft.exe target/release/dentcraft-cli.exe
+```
+
+A windows-gnu build linked with LLVM's `dlltool` (or `llvm-ar` renamed to it) drops import
+descriptors silently, and the program then crashes with an access violation before it starts. Use
+the MinGW `dlltool` that ships with your GNU toolchain.
+
 ## Conduct
 
 This project follows the [Code of Conduct](CODE_OF_CONDUCT.md).
