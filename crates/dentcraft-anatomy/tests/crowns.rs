@@ -248,33 +248,93 @@ fn the_lingual_cusp_of_a_lower_molar_is_the_highest() {
     assert!(by_name("distobuccal") > by_name("distal"));
 }
 
+/// Quadrants 2 and 4 are the mirror images of their generated counterparts in quadrants 1 and 3
+/// (26 of 16, 46 of 36): `x` negated, winding swapped, cervical loop reversed.
 #[test]
-fn left_teeth_are_mirrors_of_right_teeth() {
-    let r = template(11);
-    let l = template(21);
-    assert_eq!(r.mesh.positions.len(), l.mesh.positions.len());
-    for (pr, pl) in r.mesh.positions.iter().zip(&l.mesh.positions) {
-        assert!((pr.x + pl.x).abs() < 1e-9, "x not mirrored");
-        assert!((pr.y - pl.y).abs() < 1e-9, "y changed");
-        assert!((pr.z - pl.z).abs() < 1e-9, "z changed");
+fn quadrants_two_and_four_are_mirrors_of_one_and_three() {
+    for (generated, mirrored) in [(11u8, 21u8), (16, 26), (36, 46), (33, 43)] {
+        let r = template(generated);
+        let l = template(mirrored);
+        assert_eq!(r.mesh.positions.len(), l.mesh.positions.len());
+        for (pr, pl) in r.mesh.positions.iter().zip(&l.mesh.positions) {
+            assert!((pr.x + pl.x).abs() < 1e-9, "{mirrored}: x not mirrored");
+            assert!((pr.y - pl.y).abs() < 1e-9, "{mirrored}: y changed");
+            assert!((pr.z - pl.z).abs() < 1e-9, "{mirrored}: z changed");
+        }
+        assert_eq!(r.mesh.triangles.len(), l.mesh.triangles.len());
+        for (tr, tl) in r.mesh.triangles.iter().zip(&l.mesh.triangles) {
+            assert_eq!(
+                (tr[0], tr[2], tr[1]),
+                (tl[0], tl[1], tl[2]),
+                "{mirrored}: winding not swapped"
+            );
+        }
+        // The cervical loop runs the other way round, same vertices.
+        let n = r.cervical.len();
+        assert_eq!(l.cervical.len(), n);
+        for k in 0..n {
+            assert_eq!(
+                l.cervical[k],
+                r.cervical[n - 1 - k],
+                "{mirrored}: cervical not reversed"
+            );
+        }
     }
-    assert_eq!(r.mesh.triangles.len(), l.mesh.triangles.len());
-    for (tr, tl) in r.mesh.triangles.iter().zip(&l.mesh.triangles) {
-        assert_eq!(
-            (tr[0], tr[2], tr[1]),
-            (tl[0], tl[1], tl[2]),
-            "winding not swapped"
+}
+
+/// Every template, placed in the mouth by a rigid transform built from its facial and occlusal
+/// directions at its arch position, has its mesial contact towards the midline (anteriors) or
+/// anteriorly (posteriors): the template has the real tooth's handedness.
+///
+/// Mouth frame: `+x` patient's right, `+y` anterior, `+z` superior (right-handed). The arch is
+/// the parabola `y = -x^2 / 40` in the occlusal plane; the facial direction is its outward
+/// normal, the occlusal direction is down for uppers and up for lowers.
+#[test]
+fn templates_placed_by_a_rotation_have_the_real_teeth_handedness() {
+    use glam::DMat3;
+    // Distance of each FDI position (1..=8) from the midline along x, in mm.
+    const ARCH_X: [f64; 8] = [4.0, 10.0, 15.0, 19.0, 23.0, 29.0, 36.0, 42.0];
+    for fdi in Fdi::all() {
+        let t = crown(fdi, &CrownParams::default());
+        // Patient's right for quadrants 1 and 4.
+        let side = if matches!(fdi.quadrant(), 1 | 4) {
+            1.0
+        } else {
+            -1.0
+        };
+        let x = side * ARCH_X[fdi.position() as usize - 1];
+        let facial = DVec3::new(x / 20.0, 1.0, 0.0).normalize();
+        let occlusal = if fdi.arch() == Arch::Upper {
+            DVec3::NEG_Z
+        } else {
+            DVec3::Z
+        };
+        let rotation = DMat3::from_cols(facial.cross(occlusal), facial, occlusal);
+        assert!(
+            (rotation.determinant() - 1.0).abs() < 1e-12,
+            "{fdi}: placement is not a rotation"
         );
-    }
-    // The cervical loop runs the other way round, same vertices.
-    let n = r.cervical.len();
-    assert_eq!(l.cervical.len(), n);
-    for k in 0..n {
-        assert_eq!(
-            l.cervical[k],
-            r.cervical[n - 1 - k],
-            "cervical not reversed"
-        );
+        let mesial = rotation * t.mesh.positions[t.landmarks.mesial_contact as usize];
+        let distal = rotation * t.mesh.positions[t.landmarks.distal_contact as usize];
+        if fdi.is_anterior() {
+            // Towards the midline: -side * x grows.
+            assert!(
+                -side * mesial.x > 0.0 && -side * (mesial.x - distal.x) > 2.0,
+                "{fdi}: mesial contact {mesial:?} does not point towards the midline"
+            );
+        } else {
+            assert!(
+                mesial.y > 0.0 && mesial.y - distal.y > 2.0,
+                "{fdi}: mesial contact {mesial:?} does not point anteriorly"
+            );
+        }
+        if let (Some(m), Some(d)) = (t.landmarks.incisal_mesial, t.landmarks.incisal_distal) {
+            let (m, d) = (
+                rotation * t.mesh.positions[m as usize],
+                rotation * t.mesh.positions[d as usize],
+            );
+            assert!(-side * (m.x - d.x) > 1.0, "{fdi}: incisal angles swapped");
+        }
     }
 }
 
@@ -390,7 +450,7 @@ fn all_32_teeth_are_covered_by_the_arch_iteration() {
 /// For every triangle, a point 0.01 mm off its centroid along its normal must lie outside the
 /// crown closed with a cervical fan (an even number of crossings along a ray), and no two
 /// triangles sharing an edge may turn their normals more than ~110 degrees apart (a fold-over
-/// crease rather than anatomy). Right-side teeth only: the left ones are exact mirrors.
+/// crease rather than anatomy). One tooth of each mirror pair: mirroring preserves both.
 #[test]
 fn no_triangle_faces_into_the_crown() {
     let codes = [

@@ -15,11 +15,23 @@
 //! - origin at the centre of the cervical outline, mid-facial CEJ at `z = 0`;
 //! - `+Z` occlusal (or incisal);
 //! - `+Y` facial (labial / buccal);
-//! - `+X` mesial for the right quadrants (FDI 1 and 4).
+//! - `+X = Y × Z`: the frame is always right-handed.
 //!
-//! Teeth of the left quadrants (FDI 2 and 3) are built as their right counterparts and then
-//! mirrored: `x` negated, triangle winding swapped, cervical loop reversed, so their mesial
-//! direction is `-X` and the meshes remain outward-oriented.
+//! A template is placed in the mouth with a rigid transform (a rotation, determinant +1) that
+//! maps `+Y` to the tooth's facial direction and `+Z` to its occlusal direction, so each
+//! template has the handedness of the real tooth. In the mouth `Y × Z` points:
+//!
+//! | quadrant | `+X` |
+//! |---|---|
+//! | 1 (upper right), 3 (lower left) | mesial |
+//! | 2 (upper left), 4 (lower right) | distal |
+//!
+//! (Upper right first molar: facial = patient's right, occlusal = down, so `Y × Z` points
+//! anteriorly, i.e. mesially. Lower right: occlusal = up, so `Y × Z` points distally.)
+//!
+//! The anatomy is generated with `+X` mesial; teeth of quadrants 2 and 4 are then mirrored:
+//! `x` negated, triangle winding swapped, cervical loop reversed, so their mesial direction is
+//! `-X` and the meshes remain outward-oriented. 26 is the mirror image of 16, 46 of 36.
 //!
 //! Crown height is the `Z` extent from the mid-facial CEJ (`z = 0`) to the highest vertex; the
 //! mesiodistal and buccolingual extents of the mesh equal the published averages exactly (up to
@@ -52,7 +64,8 @@ pub struct CrownTemplate {
     /// smooth (~18k triangles), outward normals, no self-intersections by construction.
     pub mesh: TriMesh,
     /// The single boundary loop of `mesh`, ordered along the loop, starting at the mid-facial
-    /// cervix (for right teeth: counter-clockwise seen from the occlusal side).
+    /// cervix (quadrants 1 and 3: counter-clockwise seen from the occlusal side; 2 and 4:
+    /// clockwise).
     pub cervical: Vec<u32>,
     /// Named surface points; every landmark is a vertex of `mesh`, so it lies on the surface
     /// exactly.
@@ -75,9 +88,10 @@ pub struct CrownLandmarks {
     pub lingual_contour: u32,
     /// Lowest vertex near the centre of the table (posteriors only).
     pub central_fossa: Option<u32>,
-    /// Mesial incisal angle (anteriors only): vertex maximising `x + z`.
+    /// Mesial incisal angle (anteriors only): vertex maximising `m x + z`, where `m = ±1` is
+    /// the sign of the mesial direction along `X`.
     pub incisal_mesial: Option<u32>,
-    /// Distal incisal angle (anteriors only): vertex maximising `-x + z`.
+    /// Distal incisal angle (anteriors only): vertex maximising `-m x + z`.
     pub incisal_distal: Option<u32>,
 }
 

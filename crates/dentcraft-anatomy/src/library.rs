@@ -1,11 +1,12 @@
-//! The library itself: one anatomy spec per tooth (16 right-side teeth; the left quadrants are
-//! mirrors), assembly into a [`CrownTemplate`], and landmark search.
+//! The library itself: one anatomy spec per tooth (16 right-side teeth; quadrants 2 and 4 are
+//! mirrored, see the frame in the crate docs), assembly into a [`CrownTemplate`], and landmark
+//! search.
 //!
 //! Morphology guidance for the occlusal fields (cusp counts, which cusps are tallest, groove
 //! patterns, ridge locations) comes from the same public textbook as the dimensions:
 //! Nelson & Ash, *Wheeler's Dental Anatomy, Physiology and Occlusion*, 9th ed., 2010, plus
-//! standard FDI / ISO 3950 notation. All coordinates below are in the canonical right-tooth
-//! frame (+X mesial, +Y facial, +Z occlusal); xy positions are fractions of the half
+//! standard FDI / ISO 3950 notation. All coordinates below are in the generation frame
+//! (+X mesial, +Y facial, +Z occlusal; the in-mouth handedness of quadrants 1 and 3); xy positions are fractions of the half
 //! mesiodistal / half buccolingual widths, sizes and heights as documented in `shape`.
 
 use crate::dimensions::dimensions;
@@ -756,8 +757,9 @@ pub(crate) fn build_crown(fdi: Fdi, params: &CrownParams) -> CrownTemplate {
     };
     let landmarks = find_landmarks(&positions, &spec.field, &field_ctx, fdi.is_anterior());
 
-    // Left teeth: build right, mirror (+X mesial becomes -X mesial).
-    if matches!(fdi.quadrant(), 2 | 3) {
+    // Quadrants 2 and 4: in the mouth +X = facial x occlusal points distally, so the
+    // generated tooth (+X mesial) is mirrored to keep the real tooth's handedness.
+    if matches!(fdi.quadrant(), 2 | 4) {
         for q in &mut positions {
             q.x = -q.x;
         }
