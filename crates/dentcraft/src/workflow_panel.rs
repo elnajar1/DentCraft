@@ -1180,15 +1180,19 @@ fn contacts_section(
                 );
             }
             if let Some(report) = &card.report {
-                let mm = |v: Option<f64>| {
-                    v.map_or("\u{2014}".to_owned(), |v| {
-                        format!("{} mm", widgets::fmt_mm(v, 2))
-                    })
+                let mm = |v: Option<f64>, none: &str| {
+                    v.map_or_else(
+                        || none.to_owned(),
+                        |v| format!("{} mm", widgets::fmt_mm(v, 2)),
+                    )
                 };
                 let rows = [
-                    ("Mesial contact", mm(report.mesial)),
-                    ("Distal contact", mm(report.distal)),
-                    ("Min occlusal distance", mm(report.occlusal)),
+                    ("Mesial contact", mm(report.mesial, "no neighbour")),
+                    ("Distal contact", mm(report.distal, "no neighbour")),
+                    (
+                        "Min occlusal distance",
+                        mm(report.occlusal, "no antagonist"),
+                    ),
                     (
                         "Moved area",
                         format!("{} mm\u{b2}", widgets::fmt_mm(report.moved_area, 1)),

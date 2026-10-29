@@ -1807,6 +1807,8 @@ impl DentCraftApp {
             || self.pending_export.is_some()
             || self.export.busy()
             || self.viewport.camera.is_animating();
+        // The settled frame logs the contacts report, so a screenshot run quotes it.
+        let contacts = self.contacts_log();
         let Some(job) = &mut self.screenshot else {
             return;
         };
@@ -1844,6 +1846,9 @@ impl DentCraftApp {
         job.settled_frames = if busy { 0 } else { job.settled_frames + 1 };
         if job.settled_frames >= SCREENSHOT_SETTLE_FRAMES {
             job.requested = true;
+            if let Some(line) = contacts {
+                eprintln!("dentcraft: {line}");
+            }
             let slot = job.image.clone();
             let repaint = ctx.clone();
             ctx.request_screenshot(move |image: Arc<ColorImage>| {
@@ -1853,6 +1858,17 @@ impl DentCraftApp {
                 repaint.request_repaint();
             });
         }
+    }
+
+    /// The current tooth's contacts report as one log line, for screenshot runs.
+    fn contacts_log(&self) -> Option<String> {
+        let tooth = self.tooth?;
+        let base = self.anatomy.crown(&self.case, tooth)?;
+        let card = self
+            .contacts
+            .card(&self.case, &self.objects, tooth, Some(&base), None);
+        card.report
+            .map(|r| format!("tooth {tooth}: {}", contacts_step::report_line(&r)))
     }
 }
 

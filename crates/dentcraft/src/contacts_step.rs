@@ -1,9 +1,11 @@
 //! The Occlusion & contacts step: the tooth's crown adapted to its mesial and distal neighbours
 //! and to the antagonist, coloured by its distance to them.
 //!
-//! The neighbours come from the tooth's own jaw scan: everything more than [`EXCLUDE_MM`] from
-//! the preparation and within [`KEEP_MM`] of the crown, split by the plane through the
-//! preparation's centroid across the crown's mesial direction. The antagonist is the opposing
+//! The neighbours come from the tooth's own jaw scan: the triangles that belong to another tooth
+//! beside the crown — near the crown, away from the preparation, above the gum and model base
+//! under it, outside the margin polygon grown by [`MARGIN_GROW_MM`] and within a mesial (or
+//! distal) band of the crown ([`neighbours`]). A side with no such triangle reports "no
+//! neighbour" instead of failing. The antagonist is the opposing
 //! jaw's scan, when one is loaded. The contact targets are an undoable part of the tooth's design
 //! ([`ContactDesign`]); "Adapt" (run once automatically for each new crown from the Anatomy step)
 //! deforms a copy of the Anatomy step's crown on a worker. The adapted crown is kept with what it
@@ -44,6 +46,19 @@ pub struct ContactReport {
     pub thickness_ok: bool,
 }
 
+/// [`ContactReport`] as one line for logs: each distance in mm, or which side had nothing to
+/// adapt to.
+pub fn report_line(report: &ContactReport) -> String {
+    let mm =
+        |v: Option<f64>, none: &str| v.map_or_else(|| none.to_owned(), |v| format!("{v:.3} mm"));
+    format!(
+        "mesial contact {}, distal contact {}, occlusal {}",
+        mm(report.mesial, "none (no neighbour)"),
+        mm(report.distal, "none (no neighbour)"),
+        mm(report.occlusal, "none (no antagonist)")
+    )
+}
+
 /// What the step's card shows.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ContactsCard {
@@ -69,6 +84,30 @@ pub const CONTACTS: &str = "Contacts";
 pub const EXCLUDE_MM: f64 = 1.5;
 /// Scan farther than this (mm) outside the crown's bounds is ignored.
 pub const KEEP_MM: f64 = 6.0;
+/// The margin polygon, projected onto the occlusal plane, is grown by this much (mm) when
+/// excluding what belongs to the prepared tooth itself: its root or stump wall below the
+/// margin and the gum cuff under the crown, which all sit inside the crown's footprint.
+/// Tuned on the synthetic case `scratch/case/prep-neighbours.dentcraft`: 0.8 mm takes in a
+/// root that flares outward by 3° below the margin while staying clear of a neighbour tooth
+/// whose facing wall is 0.3 mm from the crown.
+pub const MARGIN_GROW_MM: f64 = 0.8;
+/// A neighbour triangle is at least this high, in mm along the tooth's insertion axis above
+/// the margin's lowest point minus this much: anything lower is deep gum or the model's base
+/// plate under the crown, not another tooth. The 1 mm slack keeps a neighbour whose own
+/// gumline dips slightly below the prepared tooth's margin.
+pub const BELOW_MARGIN_MM: f64 = 1.0;
+/// A neighbour stands beside the crown: along the mesial (or distal) direction it reaches
+/// from this far behind the crown's own extreme, in mm. The 1.5 mm slack covers the crown
+/// being slightly smaller than the space, and the 0.28 mm an adaptation moves it.
+pub const BEHIND_EXTREME_MM: f64 = 1.5;
+/// A neighbour reaches at most this far (mm) beyond the crown's mesial (or distal) extreme:
+/// a facing wall 0.3 mm away sits at +0.3, and 4 mm still takes in the neighbour's whole
+/// facing surface without reaching past it to the tooth after next.
+pub const BEYOND_EXTREME_MM: f64 = 4.0;
+/// A neighbour also has to sit within the crown's buccolingual extent: at most the crown's
+/// half-depth plus this slack (mm), so buccal or lingual walls of the scan that merely pass
+/// beside the crown are not mistaken for a proximal neighbour.
+pub const BESIDE_CROWN_MM: f64 = 1.0;
 /// Range of the distance colour map, in mm: penetration red, contact white, gap blue.
 pub const MAP_MIN_MM: f64 = -0.1;
 pub const MAP_MAX_MM: f64 = 0.3;
@@ -161,9 +200,9 @@ pub fn distance_color(d: f64) -> [f32; 4] {
     colormap::diverging(t as f32, 0.0, 1.0)
 }
 
-/// The triangles of `scan` whose centroids lie within `keep` mm of `bounds` and, with `exclude`,
-/// at least `EXCLUDE_MM` from that surface, as compact meshes: the first holds the triangles
-/// for which `side` is true. Zero-area triangles are dropped.
+/// The triangles of `scan` whose centroids lie within `keep` mm of `bounds`, not within
+/// [`EXCLUDE_MM`] of `exclude`, sorted by `classify` into the mesial part (0), the distal
+/// part (1) or none. Zero-area triangles are dropped.
 /// Positions and triangles of one part of a cropped scan.
 type Part = (Vec<DVec3>, Vec<[u32; 3]>);
 
@@ -172,7 +211,7 @@ fn crop(
     bounds: &Aabb,
     keep: f64,
     exclude: Option<(&TriMesh, &Bvh)>,
-    side: impl Fn(DVec3) -> bool,
+    classify: impl Fn(DVec3) -> Option<usize>,
 ) -> [Option<TriMesh>; 2] {
     let (lo, hi) = (
         bounds.min - DVec3::splat(keep),
@@ -197,33 +236,102 @@ fn crop(
         {
             continue;
         }
-        let k = usize::from(!side(centre));
-        let (positions, triangles) = &mut parts[k];
-        let tri = tri.map(|v| {
-            let slot = &mut map[k][v as usize];
-            if *slot == u32::MAX {
-                *slot = positions.len() as u32;
-                positions.push(scan.positions[v as usize]);
-            }
-            *slot
-        });
-        triangles.push(tri);
+        if let Some(k) = classify(centre) {
+            let (positions, triangles) = &mut parts[k];
+            let tri = tri.map(|v| {
+                let slot = &mut map[k][v as usize];
+                if *slot == u32::MAX {
+                    *slot = positions.len() as u32;
+                    positions.push(scan.positions[v as usize]);
+                }
+                *slot
+            });
+            triangles.push(tri);
+        }
     }
     parts.map(|(positions, triangles)| {
         (!triangles.is_empty()).then(|| TriMesh::new(positions, triangles))
     })
 }
 
-/// The mesial and distal neighbours of a preparation in its jaw `scan`: the scan away from the
-/// preparation (`region`, triangles of `scan`) and near the crown (`bounds`), split by the plane
-/// through `centroid` across `mesial`.
+/// Whether the 2-D point `q` lies inside `ring` or within `grow` of its boundary: inside the
+/// polygon grown by `grow`, which need not be convex. Fewer than three vertices exclude
+/// nothing.
+fn inside_grown(ring: &[(f64, f64)], q: (f64, f64), grow: f64) -> bool {
+    let n = ring.len();
+    if n < 3 {
+        return false;
+    }
+    let mut inside = false;
+    for i in 0..n {
+        let a = ring[i];
+        let b = ring[(i + 1) % n];
+        if (a.1 > q.1) != (b.1 > q.1) && q.0 < (b.0 - a.0) * (q.1 - a.1) / (b.1 - a.1) + a.0 {
+            inside = !inside;
+        }
+        let ab = (b.0 - a.0, b.1 - a.1);
+        let len2 = ab.0 * ab.0 + ab.1 * ab.1;
+        if len2 > 0.0 {
+            let t = (((q.0 - a.0) * ab.0 + (q.1 - a.1) * ab.1) / len2).clamp(0.0, 1.0);
+            let dx = a.0 + t * ab.0 - q.0;
+            let dy = a.1 + t * ab.1 - q.1;
+            if dx * dx + dy * dy <= grow * grow {
+                return true;
+            }
+        }
+    }
+    inside
+}
+
+/// The mesial and distal neighbours of a preparation in its jaw `scan`: the triangles that
+/// belong to another tooth beside the crown, never to the prepared tooth itself or the gum
+/// under it. A triangle qualifies when it is near the crown, away from the preparation
+/// (`region`, its triangles in `scan`), above deep gum and the model base ([`BELOW_MARGIN_MM`]
+/// below the margin's lowest point along the insertion `axis`), outside the `margin` polygon
+/// grown by [`MARGIN_GROW_MM`] in the occlusal plane, and within the crown's mesial (or
+/// distal) band: from [`BEHIND_EXTREME_MM`] behind to [`BEYOND_EXTREME_MM`] beyond the crown's
+/// extreme along `mesial`, and within the crown's half-depth plus [`BESIDE_CROWN_MM`]
+/// buccolingually. `crown` is the crown to adapt; a side with no such triangle is `None`.
 pub fn neighbours(
     scan: &TriMesh,
     region: &[u32],
-    centroid: DVec3,
+    margin: &[DVec3],
+    axis: DVec3,
     mesial: DVec3,
-    bounds: &Aabb,
+    crown: &TriMesh,
 ) -> [Option<TriMesh>; 2] {
+    let (Some(axis), Some(bounds)) = (axis.try_normalize(), crown.bounds()) else {
+        return [None, None];
+    };
+    let mesial = mesial - axis * mesial.dot(axis);
+    let Some(mesial) = mesial.try_normalize() else {
+        return [None, None];
+    };
+    let lateral = axis.cross(mesial);
+    let flat = |p: DVec3| (p.dot(mesial), p.dot(lateral));
+    let ring: Vec<_> = margin.iter().map(|&p| flat(p)).collect();
+    let floor = margin
+        .iter()
+        .map(|p| p.dot(axis))
+        .fold(f64::NEG_INFINITY, f64::max)
+        - BELOW_MARGIN_MM;
+    let extent = |d: DVec3| {
+        crown
+            .positions
+            .iter()
+            .map(|p| p.dot(d))
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
+                (lo.min(v), hi.max(v))
+            })
+    };
+    let (u_min, u_max) = extent(mesial);
+    let (v_min, v_max) = extent(lateral);
+    let (v_centre, v_half) = ((v_min + v_max) / 2.0, (v_max - v_min) / 2.0);
+    let band = |c: DVec3, extreme: f64, sign: f64| {
+        let d = (c.dot(mesial) - extreme) * sign;
+        (-BEHIND_EXTREME_MM..=BEYOND_EXTREME_MM).contains(&d)
+            && (c.dot(lateral) - v_centre).abs() <= v_half + BESIDE_CROWN_MM
+    };
     let prep = TriMesh::new(
         scan.positions.clone(),
         region
@@ -233,14 +341,22 @@ pub fn neighbours(
     );
     let bvh = Bvh::build(&prep);
     let exclude = (!prep.triangles.is_empty()).then_some((&prep, &bvh));
-    crop(scan, bounds, KEEP_MM, exclude, |c| {
-        (c - centroid).dot(mesial) >= 0.0
+    crop(scan, &bounds, KEEP_MM, exclude, |c| {
+        if c.dot(axis) < floor || inside_grown(&ring, flat(c), MARGIN_GROW_MM) {
+            None
+        } else if band(c, u_max, 1.0) {
+            Some(0)
+        } else if band(c, u_min, -1.0) {
+            Some(1)
+        } else {
+            None
+        }
     })
 }
 
 /// The part of the antagonist scan near the crown.
 pub fn antagonist_near(scan: &TriMesh, bounds: &Aabb) -> Option<TriMesh> {
-    let [near, _] = crop(scan, bounds, KEEP_MM, None, |_| true);
+    let [near, _] = crop(scan, bounds, KEEP_MM, None, |_| Some(0));
     near
 }
 
@@ -293,6 +409,9 @@ struct Job {
     antagonist: Option<Arc<TriMesh>>,
     prep: Arc<Prep>,
     mesial: DVec3,
+    /// The tooth's stored margin polygon and insertion axis, for choosing the neighbours.
+    margin: Vec<DVec3>,
+    axis: DVec3,
 }
 
 struct Outcome {
@@ -313,9 +432,10 @@ fn run(job: Job) -> Result<Outcome, String> {
     let [mesial, distal] = neighbours(
         &job.jaw,
         &job.prep.region,
-        job.prep.centroid,
+        &job.margin,
+        job.axis,
         job.mesial,
-        &bounds,
+        &job.shown.crown.mesh,
     );
     let antagonist = job
         .antagonist
@@ -693,6 +813,13 @@ impl ContactsStep {
         let Some(prep) = f.prep else {
             return;
         };
+        let tooth_design = f.case.design.teeth.get(&tooth);
+        let margin = tooth_design
+            .and_then(|t| t.margin.clone())
+            .unwrap_or_default();
+        let axis = tooth_design
+            .and_then(|t| t.insertion_axis)
+            .unwrap_or(DVec3::ZERO);
         self.running = Some(adapt.is_some());
         let job = Job {
             shown: wanted,
@@ -701,6 +828,8 @@ impl ContactsStep {
             antagonist,
             prep,
             mesial,
+            margin,
+            axis,
         };
         let tx = self.tx.clone();
         let repaint = self.repaint.clone();
@@ -718,7 +847,9 @@ impl ContactsStep {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dentcraft_design::synthetic::{ToothParams, prepared_tooth, rounded_box};
+    use dentcraft_design::synthetic::{ToothParams, crown_template, prepared_tooth, rounded_box};
+    use dentcraft_design::{InnerSurfaceParams, auto_placement, build_crown, inner_surface};
+    use std::f64::consts::TAU;
 
     fn t(code: u8) -> Fdi {
         Fdi::new(code).unwrap()
@@ -731,80 +862,218 @@ mod tests {
         mesh
     }
 
-    /// A prepared tooth on the origin along +Z (margin radius 4 at height 8) with box teeth
-    /// 1 mm beyond the margin along +Y (mesial) and -Y (distal), merged into one scan.
-    fn scene() -> (TriMesh, Vec<u32>, Aabb) {
-        let tooth = prepared_tooth(&ToothParams::default()).unwrap();
-        let mut scan = tooth.mesh.clone();
-        let region = tooth.region.clone();
-        for y in [8.5, -8.5] {
-            let b = moved(
-                rounded_box(DVec3::new(4.0, 3.5, 4.0), 1.0, 8).unwrap(),
-                DVec3::new(0.0, y, 9.0),
-            );
-            let offset = scan.positions.len() as u32;
-            scan.positions.extend(b.positions);
-            scan.triangles
-                .extend(b.triangles.iter().map(|t| t.map(|v| v + offset)));
-        }
-        let crown = Aabb {
-            min: DVec3::new(-5.0, -5.0, 7.5),
-            max: DVec3::new(5.0, 5.0, 14.0),
-        };
-        (scan, region, crown)
+    /// Clear gap between the crown and each neighbour box, mm.
+    const GAP: f64 = 0.3;
+    /// Half-extents of the neighbour boxes (mesial, buccolingual, occlusal), mm.
+    const BOX: DVec3 = DVec3::new(2.0, 3.0, 4.0);
+    /// Height of the boxes' centres, mm.
+    const BOX_CENTRE_Z: f64 = 10.0;
+
+    /// The scene of the neighbour tests: a preparation on the origin along +Z (margin radius 4
+    /// at height 8) with its base plate and root below the margin and a gum band around the
+    /// root, a crown on it, and two rounded-box teeth [`GAP`] mm from the crown's mesial and
+    /// distal extremes (±X), merged into one jaw scan.
+    struct Scene {
+        scan: TriMesh,
+        region: Vec<u32>,
+        margin: Vec<DVec3>,
+        axis: DVec3,
+        crown: Crown,
+        inner: InnerSurface,
+        params: BuildParams,
+        /// The crown's outer extremes along the mesial axis: [distal, mesial].
+        sides: [f64; 2],
     }
 
-    #[test]
-    fn neighbours_split_by_side_and_leave_out_the_preparation() {
-        let (scan, region, crown) = scene();
-        let [mesial, distal] =
-            neighbours(&scan, &region, DVec3::new(0.0, 0.0, 10.0), DVec3::Y, &crown);
-        let (mesial, distal) = (mesial.unwrap(), distal.unwrap());
-        assert!(
-            mesial.positions.iter().all(|p| p.y >= -0.5),
-            "mesial side only"
-        );
-        assert!(
-            distal.positions.iter().all(|p| p.y <= 0.5),
-            "distal side only"
-        );
-        // Both boxes are found: their facing walls at |y| = 5 are within reach.
-        assert!(mesial.positions.iter().any(|p| (p.y - 5.0).abs() < 0.01));
-        assert!(distal.positions.iter().any(|p| (p.y + 5.0).abs() < 0.01));
-        // Nothing within the exclusion distance of the preparation survives.
-        let prep = TriMesh::new(
-            scan.positions.clone(),
-            region.iter().map(|&i| scan.triangles[i as usize]).collect(),
-        );
-        let bvh = Bvh::build(&prep);
-        for part in [&mesial, &distal] {
-            for i in 0..part.triangles.len() {
-                let [a, b, c] = part.triangle(i);
-                let d = bvh
-                    .closest_point(&prep, (a + b + c) / 3.0)
-                    .unwrap()
-                    .distance;
-                assert!(d >= EXCLUDE_MM, "triangle {d} mm from the preparation");
+    fn scene() -> Scene {
+        let die = prepared_tooth(&ToothParams {
+            segments: 128,
+            wall_steps: 24,
+            ..Default::default()
+        })
+        .unwrap();
+        let inner = inner_surface(
+            &die.mesh,
+            &die.region,
+            &die.margin,
+            die.axis,
+            &InnerSurfaceParams {
+                grid_step: 0.08,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let (template, cervical) = crown_template(4.0, 5.5, 64, 18).unwrap();
+        let params = BuildParams::new(0.8, 0.5);
+        let mut placement = auto_placement(&inner, &template, &cervical, die.axis, None);
+        placement.scale.x *= 1.35;
+        placement.scale.y *= 1.35;
+        placement.scale.z *= 1.12;
+        let crown = build_crown(&inner, &template, &cervical, placement, &params).unwrap();
+        let outer = &crown.mesh.positions[inner.mesh.positions.len()..];
+        let left = outer.iter().map(|p| p.x).fold(f64::INFINITY, f64::min);
+        let right = outer.iter().map(|p| p.x).fold(f64::NEG_INFINITY, f64::max);
+        let mut scan = die.mesh.clone();
+        gum_band(&mut scan, 4.5, 6.4, 7.9);
+        for centre in [right + GAP + BOX.x, left - GAP - BOX.x] {
+            scan.merge(&moved(
+                rounded_box(BOX, 0.5, 16).unwrap(),
+                DVec3::new(centre, 0.0, BOX_CENTRE_Z),
+            ));
+        }
+        Scene {
+            scan,
+            region: die.region.clone(),
+            margin: die.margin.clone(),
+            axis: die.axis,
+            crown,
+            inner,
+            params,
+            sides: [left, right],
+        }
+    }
+
+    /// A gum band (open tube) of `radius` around the root from `z0` up to `z1`, like a gingiva
+    /// cuff whose crest sits just below the margin.
+    fn gum_band(scan: &mut TriMesh, radius: f64, z0: f64, z1: f64) {
+        let n = 128;
+        let base = scan.positions.len() as u32;
+        for z in [z0, z1] {
+            for i in 0..n {
+                let a = TAU * i as f64 / n as f64;
+                scan.positions
+                    .push(DVec3::new(radius * a.cos(), radius * a.sin(), z));
             }
         }
-        // Far scan (the boxes' far ends beyond the reach of the crown) is left out.
-        assert!(mesial.positions.iter().all(|p| p.y <= 5.0 + KEEP_MM + 1.0));
+        for i in 0..n as u32 {
+            let a = base + i;
+            let b = base + (i + 1) % n as u32;
+            let (c, d) = (b + n as u32, a + n as u32);
+            scan.triangles.extend([[a, b, c], [a, c, d]]);
+        }
     }
 
     #[test]
-    fn neighbours_of_an_empty_or_far_scan_are_none() {
-        let (scan, region, _) = scene();
-        let far = Aabb {
+    fn neighbours_are_only_the_teeth_beside_the_crown() {
+        let s = scene();
+        let [mesial, distal] = neighbours(
+            &s.scan,
+            &s.region,
+            &s.margin,
+            s.axis,
+            DVec3::X,
+            &s.crown.mesh,
+        );
+        for (part, facing, [lo, hi]) in [
+            (
+                mesial.as_ref(),
+                s.sides[1] + GAP,
+                [s.sides[1] + GAP, s.sides[1] + GAP + 2.0 * BOX.x],
+            ),
+            (
+                distal.as_ref(),
+                s.sides[0] - GAP,
+                [s.sides[0] - GAP - 2.0 * BOX.x, s.sides[0] - GAP],
+            ),
+        ] {
+            let part = part.expect("the neighbour tooth is found");
+            assert!(
+                part.positions.iter().any(|p| (p.x - facing).abs() < 0.01),
+                "its facing wall, {GAP} mm from the crown"
+            );
+            for p in &part.positions {
+                assert!(
+                    p.x >= lo - 0.01
+                        && p.x <= hi + 0.01
+                        && p.y.abs() <= BOX.y + 0.01
+                        && (p.z - BOX_CENTRE_Z).abs() <= BOX.z + 0.01,
+                    "{p:?} is not part of the neighbour box"
+                );
+            }
+        }
+        // Each side's triangles lie beyond the crown's extreme on that side: nothing of the
+        // preparation, its root, the plate or the gum band survived.
+        let (m, d) = (mesial.unwrap(), distal.unwrap());
+        assert!(m.positions.iter().all(|p| p.x > 0.0));
+        assert!(d.positions.iter().all(|p| p.x < 0.0));
+    }
+
+    #[test]
+    fn the_scene_adapts_to_light_contacts_on_both_sides() {
+        let s = scene();
+        let [mesial, distal] = neighbours(
+            &s.scan,
+            &s.region,
+            &s.margin,
+            s.axis,
+            DVec3::X,
+            &s.crown.mesh,
+        );
+        let mut crown = s.crown.clone();
+        let report = adapt_to_neighbours(
+            &mut crown,
+            &s.inner,
+            &s.params,
+            &AdaptParams::default(),
+            mesial.as_ref(),
+            distal.as_ref(),
+            None,
+        )
+        .unwrap();
+        assert!(
+            (report.mesial_contact.unwrap() + 0.02).abs() <= 0.005,
+            "{report:?}"
+        );
+        assert!(
+            (report.distal_contact.unwrap() + 0.02).abs() <= 0.005,
+            "{report:?}"
+        );
+    }
+
+    #[test]
+    fn a_side_without_a_neighbour_reports_no_neighbour() {
+        let s = scene();
+        let mut far = s.crown.mesh.clone();
+        for p in &mut far.positions {
+            p.x += 100.0;
+        }
+        assert!(
+            neighbours(&s.scan, &s.region, &s.margin, s.axis, DVec3::X, &far)
+                .iter()
+                .all(Option::is_none),
+            "nothing near the far crown"
+        );
+        // A missing neighbour is not an error for the adaptation itself.
+        let mut crown = s.crown.clone();
+        let report = adapt_to_neighbours(
+            &mut crown,
+            &s.inner,
+            &s.params,
+            &AdaptParams::default(),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(report.mesial_contact.is_none() && report.distal_contact.is_none());
+        let empty = TriMesh::new(vec![], vec![]);
+        let far_bounds = Aabb {
             min: DVec3::splat(100.0),
             max: DVec3::splat(101.0),
         };
-        assert!(
-            neighbours(&scan, &region, DVec3::ZERO, DVec3::Y, &far)
-                .iter()
-                .all(Option::is_none)
-        );
-        let empty = TriMesh::new(vec![], vec![]);
-        assert!(antagonist_near(&empty, &far).is_none());
+        assert!(antagonist_near(&empty, &far_bounds).is_none());
+    }
+
+    #[test]
+    fn the_grown_margin_takes_the_cuff_and_leaves_the_neighbour() {
+        let square = [(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)];
+        assert!(inside_grown(&square, (2.0, 2.0), 0.8), "well inside");
+        assert!(inside_grown(&square, (4.5, 2.0), 0.8), "0.5 mm outside");
+        assert!(!inside_grown(&square, (5.0, 2.0), 0.8), "1.0 mm outside");
+        assert!(inside_grown(&square, (2.0, -0.7), 0.8), "below an edge");
+        assert!(!inside_grown(&square, (10.0, 10.0), 0.8), "far away");
+        assert!(!inside_grown(&[], (2.0, 2.0), 0.8), "no margin");
+        assert!(!inside_grown(&square[..2], (2.0, 2.0), 0.8), "degenerate");
     }
 
     #[test]
