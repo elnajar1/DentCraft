@@ -31,6 +31,7 @@ use crate::orient_step::{self, ORIENT, OrientStep};
 use crate::ribbon::{self, Command, RibbonTab, RibbonView, WorkspaceMenu};
 use crate::theme::{self, Palette, RADIUS_LG, SIZE_SMALL, ThemeKind};
 use crate::tools::{self, MEASURE, Measure, Tools};
+use crate::tooth_view::{self, FrameTrigger};
 use crate::viewport::Viewport;
 use crate::widgets::{Icon, icon_button, paint_icon, small_button};
 use crate::workflow_panel::{self, StepAction, WorkflowView};
@@ -150,6 +151,8 @@ pub struct DentCraftApp {
     /// The Anatomy or Finish step was entered, or a first crown was built: frame the crown
     /// once it is there.
     frame_crown: bool,
+    /// Frames the tooth once per (step, tooth) entry, when its margin is there.
+    tooth_frame: FrameTrigger,
     /// `--export DIR`, waiting for the startup chain to finish.
     pending_export: Option<PathBuf>,
     /// `--orient`, waiting for the scans to load.
@@ -230,6 +233,7 @@ impl DentCraftApp {
             export: ExportStep::new(Some(cc.egui_ctx.clone())),
             pending_finish: None,
             frame_crown: false,
+            tooth_frame: FrameTrigger::default(),
             pending_export: start.export,
             pending_orient: start.orient,
             tooth: None,
@@ -416,6 +420,37 @@ impl DentCraftApp {
             }
         }
         self.replan();
+    }
+
+    /// The box around the current tooth: its margin grown a little, and its crown if built.
+    fn tooth_bounds(&self) -> Option<Aabb> {
+        let tooth = self.tooth?;
+        let margin = self.case.design.teeth.get(&tooth)?.margin.as_ref()?;
+        let crown = self
+            .anatomy
+            .crown(&self.case, tooth)
+            .and_then(|c| c.mesh.bounds());
+        tooth_view::frame_bounds(margin, crown)
+    }
+
+    /// Frames the current tooth from the current view direction; keeps the view without a margin.
+    fn fit_tooth(&mut self) {
+        if let Some(b) = self.tooth_bounds() {
+            self.viewport.fit(Some(&b));
+        }
+    }
+
+    /// The F key: the tooth while a per-tooth step is active, else the whole scene.
+    fn fit_key(&mut self) {
+        let on_tooth = self
+            .session
+            .current()
+            .is_some_and(|s| tooth_view::is_tooth_step(s.id));
+        if on_tooth && self.tooth_bounds().is_some() {
+            self.fit_tooth();
+        } else {
+            self.viewport.fit(self.bounds().as_ref());
+        }
     }
 
     fn apply_step_action(&mut self, action: StepAction) {
@@ -1055,7 +1090,7 @@ impl DentCraftApp {
             self.viewport.go_to(preset, self.bounds().as_ref());
         }
         if fit {
-            self.viewport.fit(self.bounds().as_ref());
+            self.fit_key();
         }
         let (escape, delete, enter) = ctx.input(|i| {
             (
@@ -1191,6 +1226,7 @@ impl DentCraftApp {
             Command::Step(action) => self.apply_step_action(action),
             Command::View(preset) => self.viewport.go_to(preset, self.bounds().as_ref()),
             Command::Fit => self.viewport.fit(self.bounds().as_ref()),
+            Command::FitTooth => self.fit_tooth(),
             Command::ShowRole(role, visible) => {
                 objects::set_role_visible(&mut self.objects, role, visible);
             }
@@ -1695,9 +1731,20 @@ impl DentCraftApp {
         {
             eprintln!("dentcraft: export to {}: {}", s.dir.display(), s.line());
         }
+        // Entering a per-tooth step, or changing tooth: frame the tooth once its margin is there.
+        let entry = self
+            .session
+            .current()
+            .filter(|s| tooth_view::is_tooth_step(s.id))
+            .zip(self.tooth)
+            .map(|(s, t)| (s.id, t));
+        let has_margin = self.tooth_bounds().is_some();
+        if self.tooth_frame.due(entry, has_margin) {
+            self.fit_tooth();
+        }
         // Entering the step on a tooth: widen the view to take in the axis and its handle.
         if self.axis.take_new_prep()
-            && let Some(mut b) = self.bounds()
+            && let Some(mut b) = self.tooth_bounds().or_else(|| self.bounds())
         {
             for h in self.tools.handles() {
                 b.min = b.min.min(h);
@@ -1726,7 +1773,10 @@ impl DentCraftApp {
                 && let Some(scene) = self.bounds()
             {
                 self.frame_crown = false;
-                let both = objects::union_bounds([scene, crowns]);
+                let both = self
+                    .tooth_bounds()
+                    .filter(|_| on_anatomy)
+                    .or_else(|| objects::union_bounds([scene, crowns]));
                 self.viewport.fit(both.as_ref());
             }
         }

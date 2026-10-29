@@ -20,6 +20,7 @@ mod orient_step;
 mod ribbon;
 mod theme;
 mod tools;
+mod tooth_view;
 mod viewport;
 mod widgets;
 mod workflow_panel;

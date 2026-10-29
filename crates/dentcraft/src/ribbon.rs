@@ -85,6 +85,8 @@ pub enum Command {
     Step(StepAction),
     View(ViewPreset),
     Fit,
+    /// Frame the tooth being designed.
+    FitTooth,
     /// Show or hide every scan with this role.
     ShowRole(ScanRole, bool),
     /// Start or leave the Measure tool.
@@ -330,10 +332,23 @@ impl RibbonView<'_> {
                 }
             }
             if command_button(ui, Icon::Fit, "Fit", true, false)
-                .on_hover_text("Fit the scene in view  (F, or double-click)")
+                .on_hover_text(
+                    "Fit the scene in view  (F outside the tooth steps, or double-click)",
+                )
                 .clicked()
             {
                 *command = Some(Command::Fit);
+            }
+            let on_tooth = self
+                .session
+                .current()
+                .is_some_and(|s| crate::tooth_view::is_tooth_step(s.id));
+            if command_button(ui, Icon::Fit, "Fit tooth", on_tooth, false)
+                .on_hover_text("Frame the tooth being designed  (F)")
+                .on_disabled_hover_text("Available in the per-tooth steps")
+                .clicked()
+            {
+                *command = Some(Command::FitTooth);
             }
         });
         divider(ui);
