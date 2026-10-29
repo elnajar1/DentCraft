@@ -201,7 +201,7 @@ fn landmarks_lie_on_the_surface_and_name_the_anatomy() {
     for code in [11u8, 13, 16, 26, 44, 45, 46, 47] {
         let t = template(code);
         let bvh = Bvh::build(&t.mesh);
-        let mut check = |v: u32, what: &str| {
+        let check = |v: u32, what: &str| {
             let p = t.mesh.positions[v as usize];
             let d = bvh.closest_point(&t.mesh, p).unwrap().distance;
             assert!(d < 0.01, "{code}: {what} is {d} mm off the surface");
@@ -382,5 +382,90 @@ fn all_32_teeth_are_covered_by_the_arch_iteration() {
     );
     for code in upper.iter().chain(&lower) {
         let _ = template(*code);
+    }
+}
+
+/// No triangle faces into the crown, and the surface never folds back on itself.
+///
+/// For every triangle, a point 0.01 mm off its centroid along its normal must lie outside the
+/// crown closed with a cervical fan (an even number of crossings along a ray), and no two
+/// triangles sharing an edge may turn their normals more than ~110 degrees apart (a fold-over
+/// crease rather than anatomy). Right-side teeth only: the left ones are exact mirrors.
+#[test]
+fn no_triangle_faces_into_the_crown() {
+    let codes = [
+        11u8, 12, 13, 14, 15, 16, 17, 18, 41, 42, 43, 44, 45, 46, 47, 48,
+    ];
+    for code in codes {
+        let t = template(code);
+        let closed = closed_with_cervical_fan(&t);
+        let bvh = Bvh::build(&closed);
+        let normal = |tri: &[u32; 3]| {
+            let [a, b, c] = tri.map(|v| t.mesh.positions[v as usize]);
+            ((a + b + c) / 3.0, (b - a).cross(c - a).normalize_or_zero())
+        };
+        let mut inward = Vec::new();
+        for (k, tri) in t.mesh.triangles.iter().enumerate() {
+            let (centre, n) = normal(tri);
+            if n == DVec3::ZERO {
+                continue;
+            }
+            // Parity along three slightly skewed rays (a ray that grazes an edge can miscount
+            // once; a point truly inside the crown is odd along every ray).
+            let odd = [
+                DVec3::new(0.0123, -0.0217, 0.0071),
+                DVec3::new(-0.0311, 0.0093, 0.0187),
+                DVec3::new(0.0057, 0.0349, -0.0241),
+            ]
+            .iter()
+            .filter(|skew| {
+                let dir = (n + **skew).normalize();
+                let mut p = centre + n * 0.01;
+                let mut crossings = 0;
+                while let Some(hit) = bvh.raycast(&closed, p, dir) {
+                    crossings += 1;
+                    p = hit.point + dir * 1e-7;
+                    if crossings > 64 {
+                        break;
+                    }
+                }
+                crossings % 2 == 1
+            })
+            .count();
+            if odd >= 2 {
+                inward.push(k);
+            }
+        }
+        assert!(
+            inward.is_empty(),
+            "{code}: {} triangles face into the crown, e.g. {:?} at {:?}",
+            inward.len(),
+            inward.first(),
+            inward.first().map(|&k| normal(&t.mesh.triangles[k]).0)
+        );
+
+        let mut edges = std::collections::HashMap::new();
+        let mut folds = 0;
+        let mut first = None;
+        for (k, tri) in t.mesh.triangles.iter().enumerate() {
+            for e in 0..3 {
+                let (a, b) = (tri[e], tri[(e + 1) % 3]);
+                let key = (a.min(b), a.max(b));
+                if let Some(&other) = edges.get(&key) {
+                    let (c, n0) = normal(&t.mesh.triangles[other]);
+                    let (_, n1) = normal(tri);
+                    if n0.dot(n1) < -0.35 {
+                        folds += 1;
+                        first.get_or_insert(c);
+                    }
+                } else {
+                    edges.insert(key, k);
+                }
+            }
+        }
+        assert_eq!(
+            folds, 0,
+            "{code}: {folds} fold-over edges, first near {first:?}"
+        );
     }
 }

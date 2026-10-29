@@ -304,8 +304,15 @@ pub(crate) enum Field {
     Anterior(AnteriorField),
 }
 
-const LSE_K: f64 = 5.0;
+const LSE_K: f64 = 4.5;
 const CONE_EXP: f64 = 1.6;
+/// Buccolingual spread of the whole posterior occlusal pattern about the pole: the specs place
+/// cusp tips at about 45 % of the half width, which leaves an occlusal table far narrower than
+/// the 55-65 % of the buccolingual diameter that young teeth show.
+const OCCLUSAL_SPREAD: f64 = 1.28;
+/// Millimetres a cusp cone drops at its base radius per unit of its spec `slope`: young cusp
+/// tips stand 1.5-2.5 mm above the central fossa.
+const CUSP_DROP: f64 = 3.6;
 
 /// Adjusted height of a structure that stands `z_frac` crown heights above the fossa floor.
 fn relief(fossa_z: f64, span: f64, z_frac: f64, ctx: &FieldCtx) -> f64 {
@@ -372,6 +379,7 @@ impl Field {
     pub fn height(&self, x: f64, y: f64, ctx: &FieldCtx) -> f64 {
         match self {
             Field::Posterior(f) => {
+                let y = ctx.pole.1 + (y - ctx.pole.1) / OCCLUSAL_SPREAD;
                 let fossa_z = f.fossa_frac * ctx.height;
                 let mut hs: Vec<f64> = Vec::with_capacity(f.cusps.len() + f.ridges.len());
                 for c in &f.cusps {
@@ -394,13 +402,15 @@ impl Field {
                     let d = ((u.abs() / c.a_long).powf(CONE_EXP)
                         + (v.abs() / c.b_short).powf(CONE_EXP))
                     .powf(1.0 / CONE_EXP);
-                    let tip_round = 0.22 * (1.0 + 3.0 * ctx.wear);
-                    let slope = c.slope * (1.0 - 0.4 * ctx.wear);
+                    let tip_round = 0.45 * (1.0 + 2.0 * ctx.wear);
+                    let slope = CUSP_DROP * c.slope * (1.0 - 0.4 * ctx.wear);
                     hs.push(ztip - slope * ((d * d + tip_round * tip_round).sqrt() - tip_round));
                 }
                 for r in &f.ridges {
                     hs.push(ridge_height(r, x, y, ctx, fossa_z));
                 }
+                // The fossa floor: steep cones must not dig below it where few cusps meet.
+                hs.push(fossa_z + 0.06 * ctx.height);
                 let mut z = softmax(&hs, LSE_K);
                 for g in &f.grooves {
                     z -= groove_depth(g, x, y, ctx);
@@ -420,11 +430,15 @@ impl Field {
                     * (1.0 - 0.45 * ctx.wear);
                 let crest = crest_top - slope * softabs(dx, eps);
                 let s = y - crest_y;
-                let drop = if s >= 0.0 {
-                    f.drop_a * (1.0 - (-(s / f.drop_lambda).max(-60.0)).exp()) + f.drop_b * s
-                } else {
-                    f.labial_slope * (-s)
-                };
+                // The incisal edge is rounded, not a knife: both sides of the crest are smoothed
+                // over about a quarter millimetre (softplus), the crest height kept.
+                let lingual =
+                    |s: f64| f.drop_a * (1.0 - (-(s / f.drop_lambda)).exp()) + f.drop_b * s;
+                const EDGE_K: f64 = 4.0;
+                let s0 = std::f64::consts::LN_2 / EDGE_K;
+                let drop = lingual(softplus(s, EDGE_K)) + f.labial_slope * softplus(-s, EDGE_K)
+                    - lingual(s0)
+                    - f.labial_slope * s0;
                 let mut z = crest - drop;
                 // Ridges join the soft structure of the crest, so use them additively here.
                 let mut ridge_z = f64::NEG_INFINITY;
@@ -451,7 +465,10 @@ impl Field {
             Field::Posterior(f) => f
                 .cusps
                 .iter()
-                .map(|c| (c.name, c.fx * ctx.half_md, c.fy * ctx.half_bl))
+                .map(|c| {
+                    let y = ctx.pole.1 + (c.fy * ctx.half_bl - ctx.pole.1) * OCCLUSAL_SPREAD;
+                    (c.name, c.fx * ctx.half_md, y)
+                })
                 .collect(),
             Field::Anterior(f) => {
                 if !f.has_cusp {
@@ -648,6 +665,7 @@ pub(crate) fn build_surface(req: &SurfaceRequest) -> BuiltSurface {
     let mut shoulder_polys: Vec<Vec<DVec3>> = Vec::with_capacity(n);
     let mut table_polys: Vec<Vec<DVec3>> = Vec::with_capacity(n);
     let mut pole_vertex_z = f64::INFINITY;
+    let z_floor = z_hoc.iter().copied().fold(f64::INFINITY, f64::min);
     for i in 0..n {
         let (ct, st) = (thetas[i].cos(), thetas[i].sin());
         let (rc, ro, rr) = (r_oc[i], r_o[i], r_r[i]);
@@ -686,10 +704,15 @@ pub(crate) fn build_surface(req: &SurfaceRequest) -> BuiltSurface {
             let u = u_end * k as f64 / (TABLE_SAMPLES - 1) as f64;
             let x = rx + u * (ctx.pole.0 - rx);
             let y = ry + u * (ctx.pole.1 - ry);
+            // The guard keeps the rim above this column's height of contour; towards the pole,
+            // where all columns meet, it relaxes to one common level so neighbouring columns agree.
+            let fade = (u / 0.45).clamp(0.0, 1.0);
+            let fade = fade * fade * (3.0 - 2.0 * fade);
+            let level = z_hoc[i] + (z_floor - z_hoc[i]) * fade;
             table.push(DVec3::new(
                 x,
                 y,
-                guarded(req.field.height(x, y, &ctx), z_hoc[i], 0.4),
+                guarded(req.field.height(x, y, &ctx), level, 0.4),
             ));
         }
         pole_vertex_z = pole_vertex_z.min(table[TABLE_SAMPLES - 1].z);
@@ -762,7 +785,7 @@ mod tests {
     #[test]
     fn softmax_is_close_to_the_maximum() {
         let m = softmax(&[1.0, 0.0, -1.0], LSE_K);
-        assert!(m >= 1.0 && m <= 1.0 + 0.7);
+        assert!((1.0..=1.7).contains(&m));
         assert!(softmax(&[], LSE_K).is_infinite());
     }
 
@@ -770,7 +793,7 @@ mod tests {
     fn softplus_stays_near_zero_below_and_identity_above() {
         assert!(softplus(-10.0, 8.0).abs() < 1e-4);
         assert!((softplus(10.0, 8.0) - 10.0).abs() < 1e-9);
-        assert!((softplus(0.0, 8.0) - 0.6931 / 8.0).abs() < 1e-4);
+        assert!((softplus(0.0, 8.0) - std::f64::consts::LN_2 / 8.0).abs() < 1e-4);
     }
 
     #[test]
