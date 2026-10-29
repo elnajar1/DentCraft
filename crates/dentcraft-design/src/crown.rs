@@ -14,6 +14,10 @@ use rayon::prelude::*;
 
 use crate::{DesignError, InnerSurface, geometry::unit_axis};
 
+// A child module shares the crown's private geometric certification routines.
+#[path = "contacts.rs"]
+pub mod contacts;
+
 /// Template +X maps to the projected, normalized `mesial` direction, +Y to
 /// `occlusal × mesial` (facial), and +Z to normalized `occlusal`. `origin` is
 /// the image of the template's cervical centroid. Scale must be positive.

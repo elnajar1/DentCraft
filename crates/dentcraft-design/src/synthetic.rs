@@ -684,6 +684,72 @@ fn orient_components_outward(mesh: &mut TriMesh) {
     }
 }
 
+/// Rounded box scan generated from six stitched cube-face grids. `radius` is
+/// the fillet radius; dimensions are half-extents in mm. No external tooth data.
+pub fn rounded_box(
+    half_extents: DVec3,
+    radius: f64,
+    subdivisions: usize,
+) -> Result<TriMesh, DesignError> {
+    if !half_extents.is_finite()
+        || !radius.is_finite()
+        || radius <= 0.0
+        || radius >= half_extents.min_element()
+        || !(2..=256).contains(&subdivisions)
+    {
+        return Err(DesignError::InvalidParameter(
+            "rounded box dimensions or sampling",
+        ));
+    }
+    let mut mesh = TriMesh::default();
+    let mut vertices = std::collections::BTreeMap::new();
+    let n = subdivisions as i32;
+    let core = half_extents - DVec3::splat(radius);
+    for axis in 0..3 {
+        let u = (axis + 1) % 3;
+        let v = (axis + 2) % 3;
+        for sign in [-1, 1] {
+            let mut grid = Vec::new();
+            for j in 0..=n {
+                for i in 0..=n {
+                    let mut key = [0; 3];
+                    key[axis] = sign * n;
+                    key[u] = 2 * i - n;
+                    key[v] = 2 * j - n;
+                    let index = *vertices.entry(key).or_insert_with(|| {
+                        let cube = DVec3::new(key[0] as f64, key[1] as f64, key[2] as f64)
+                            / n as f64
+                            * half_extents;
+                        let base = cube.clamp(-core, core);
+                        let p = base + (cube - base).normalize() * radius;
+                        let index = mesh.positions.len() as u32;
+                        mesh.positions.push(p);
+                        index
+                    });
+                    grid.push(index);
+                }
+            }
+            let width = subdivisions + 1;
+            for j in 0..subdivisions {
+                for i in 0..subdivisions {
+                    let a = grid[j * width + i];
+                    let b = grid[j * width + i + 1];
+                    let c = grid[(j + 1) * width + i + 1];
+                    let d = grid[(j + 1) * width + i];
+                    let mut faces = [[a, b, c], [a, c, d]];
+                    if sign < 0 {
+                        for t in &mut faces {
+                            t.swap(1, 2);
+                        }
+                    }
+                    mesh.triangles.extend(faces);
+                }
+            }
+        }
+    }
+    Ok(mesh)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
