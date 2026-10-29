@@ -252,7 +252,10 @@ pub fn auto_placement(
     result
 }
 
-fn validate_surface(mesh: &TriMesh, boundary: &[u32]) -> Result<Vec<[u32; 2]>, DesignError> {
+pub(crate) fn validate_surface(
+    mesh: &TriMesh,
+    boundary: &[u32],
+) -> Result<Vec<[u32; 2]>, DesignError> {
     let invalid = DesignError::InvalidCrownSurface;
     if mesh.is_empty() || boundary.len() < 3 || mesh.positions.len() > u32::MAX as usize {
         return Err(invalid);
@@ -634,9 +637,10 @@ pub fn build_crown(
     }
     let mut outer_angles = polar.ordered(&outer, cervical)?;
     refine_cervical(&mut outer, &mut outer_angles, &offset_angles, polar);
-    let reference: Vec<_> = (0..outer.triangles.len())
+    let mut reference: Vec<_> = (0..outer.triangles.len())
         .map(|i| outer.triangle_cross(i))
         .collect();
+    check_faces(&outer, &reference, polar)?;
     let mut displacements = vec![DVec3::ZERO; outer.positions.len()];
     let mut locked = vec![false; outer.positions.len()];
     for &(angle, v) in &outer_angles {
@@ -685,6 +689,21 @@ pub fn build_crown(
     // Taubin's λ/µ pair removes band wobble without the shrinkage a plain
     // Laplacian pass would add on the deformed cervical band.
     outer.taubin_smooth(3, 0.15, -0.17, Some(&band_locks), false);
+    // Fitting a steep margin can legitimately rotate a face normal more than
+    // 90 degrees relative to the template. Certify the fitted cap by its
+    // radial Jacobian; thickness iterations then use this fitted reference.
+    if check_faces(&outer, &reference, polar).is_err() {
+        reference = (0..outer.triangles.len())
+            .map(|i| outer.triangle_cross(i))
+            .collect();
+        if check_faces(&outer, &reference, polar).is_err() {
+            unfold_band(&mut outer, &reference, &band_locks, polar)?;
+        }
+        check_faces(&outer, &reference, polar)?;
+        reference = (0..outer.triangles.len())
+            .map(|i| outer.triangle_cross(i))
+            .collect();
+    }
     check_faces(&outer, &reference, polar)?;
     let before = outer.clone();
     let report = thicken(
@@ -752,6 +771,71 @@ pub fn build_crown(
         margin_vertices: inner.boundary.clone(),
         report,
     })
+}
+
+/// Project a cervical band's free vertices into the face half-spaces. With
+/// the other two corners fixed, both orientation and radial Jacobian are
+/// linear in the third corner. The complete original certificate is retained;
+/// the exact cervical loop and anatomy beyond the band stay locked.
+fn unfold_band(
+    mesh: &mut TriMesh,
+    reference: &[DVec3],
+    locked: &[bool],
+    polar: Polar,
+) -> Result<(), DesignError> {
+    let initial = mesh.positions.clone();
+    let pole = polar.origin - polar.z * 0.01;
+    for _ in 0..4096 {
+        for (f, &normal) in reference.iter().enumerate() {
+            for radial in [false, true] {
+                let tri = mesh.triangles[f];
+                let p = tri.map(|v| mesh.positions[v as usize]);
+                let cross = (p[1] - p[0]).cross(p[2] - p[0]);
+                let value = if radial {
+                    cross.dot(p[0] - pole)
+                } else {
+                    cross.dot(normal)
+                };
+                let target = if radial {
+                    cross.length() * (p[0] - pole).length() * 0.001
+                } else {
+                    normal.length_squared() * 0.001
+                };
+                if value >= target {
+                    continue;
+                }
+                let mut gradients = [DVec3::ZERO; 3];
+                for k in 0..3 {
+                    if locked[tri[k] as usize] {
+                        continue;
+                    }
+                    let a = p[(k + 1) % 3];
+                    let b = p[(k + 2) % 3];
+                    let gradient = if radial {
+                        (a - pole).cross(b - pole)
+                    } else {
+                        (a - b).cross(normal)
+                    };
+                    gradients[k] = gradient;
+                }
+                let norm: f64 = gradients.iter().map(|g| g.length_squared()).sum();
+                if norm < 1e-24 {
+                    return Err(DesignError::CrownIntersection);
+                }
+                for k in 0..3 {
+                    let v = tri[k] as usize;
+                    mesh.positions[v] += gradients[k] * (0.8 * (target - value) / norm);
+                    if mesh.positions[v].distance(initial[v]) > 0.5 {
+                        return Err(DesignError::CrownIntersection);
+                    }
+                }
+            }
+        }
+        if check_faces(mesh, reference, polar).is_ok() {
+            return Ok(());
+        }
+    }
+    Err(DesignError::CrownIntersection)
 }
 
 fn check_faces(mesh: &TriMesh, reference: &[DVec3], polar: Polar) -> Result<(), DesignError> {

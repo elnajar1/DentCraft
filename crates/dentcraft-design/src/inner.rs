@@ -47,7 +47,8 @@ impl Default for InnerSurfaceParams {
     }
 }
 
-/// An open crown inner surface with normals directed toward the die (negative axial component).
+/// A single oriented disk whose complete boundary is the supplied margin, with
+/// normals directed toward the die (strictly negative axial component).
 #[derive(Clone, Debug)]
 pub struct InnerSurface {
     /// Intaglio triangles, wound toward the die. This is not a closed crown solid.
@@ -145,6 +146,13 @@ pub fn inner_surface(
         result.target_gaps[i] = target;
     }
     correct_faces(&mut result, frame, &prep)?;
+    // Certify the final assembly contract. Holes, disconnected islands, unused
+    // vertices or a split/pinched margin must never escape as a successful
+    // intaglio for crown assembly, including after clearance correction.
+    crate::crown::validate_surface(&result.mesh, &result.boundary)?;
+    if (0..result.mesh.triangles.len()).any(|i| result.mesh.triangle_cross(i).dot(axis) >= 0.0) {
+        return Err(DesignError::InvalidCrownSurface);
+    }
     Ok(result)
 }
 
@@ -358,6 +366,7 @@ fn margin_distance(point: DVec3, margin: &[DVec3]) -> f64 {
 fn refine(
     mesh: &mut TriMesh,
     distances: &mut Vec<f64>,
+    boundary: usize,
     frame: Frame,
     step: f64,
     prep: &Region,
@@ -399,8 +408,10 @@ fn refine(
             .collect();
         let mut cache = HashMap::new();
         let mut edge_samples = Vec::new();
+        let mut boundary_patches = Vec::new();
         let mut triangles = Vec::with_capacity(mesh.triangles.len() * 2);
         for &tri in &mesh.triangles {
+            let first_face = triangles.len();
             let h = tri.map(|v| heights[v as usize]);
             let lo = h.into_iter().fold(f64::INFINITY, f64::min);
             let hi = h.into_iter().fold(f64::NEG_INFINITY, f64::max);
@@ -470,12 +481,53 @@ fn refine(
             for j in 1..remaining.len().saturating_sub(1) {
                 triangles.push([remaining[0], remaining[j], remaining[j + 1]]);
             }
+            let is_boundary = |a: u32, b: u32| {
+                (a as usize) < boundary
+                    && (b as usize) < boundary
+                    && ((a as usize + 1) % boundary == b as usize
+                        || (b as usize + 1) % boundary == a as usize)
+            };
+            if (0..3).any(|k| {
+                let (a, b) = (tri[k], tri[(k + 1) % 3]);
+                let lo = heights[a as usize].min(heights[b as usize]);
+                let hi = heights[a as usize].max(heights[b as usize]);
+                is_boundary(a, b) && (lo / step).floor() + 1.0 < (hi / step).ceil()
+            }) {
+                // A sloping margin is immutable, including its edges. Axial
+                // strips would split those edges and then move their new
+                // vertices onto the scan envelope, losing the supplied margin.
+                // Fan this triangle from an interior point to the shared
+                // samples on its interior edges. Using the known edge order
+                // avoids thin slivers between nearly collinear cut points.
+                let mut ids = Vec::new();
+                for k in 0..3 {
+                    let (a, b) = (tri[k], tri[(k + 1) % 3]);
+                    ids.push(a);
+                    if is_boundary(a, b) {
+                        continue;
+                    }
+                    let lo = heights[a as usize].min(heights[b as usize]);
+                    let hi = heights[a as usize].max(heights[b as usize]);
+                    let start = ids.len();
+                    for level in ((lo / step).floor() as i64 + 1)..=((hi / step).ceil() as i64 - 1)
+                    {
+                        if let Some(&v) = cache.get(&(a.min(b), a.max(b), level)) {
+                            ids.push(v);
+                        }
+                    }
+                    if heights[a as usize] > heights[b as usize] {
+                        ids[start..].reverse();
+                    }
+                }
+                triangles.truncate(first_face);
+                boundary_patches.push((tri, ids));
+            }
         }
         if mesh.positions.len() > 2_000_000 {
             return Err(DesignError::RefinementLimit);
         }
         mesh.triangles = triangles;
-        if mesh.positions.len() == original_len {
+        if mesh.positions.len() == original_len && boundary_patches.is_empty() {
             return Ok(());
         }
         // Level points on one edge are solved in order of their linear parameter and
@@ -554,6 +606,51 @@ fn refine(
         for (index, point, distance) in solved {
             mesh.positions[index] = point;
             distances[index] = distance;
+        }
+        for (tri, perimeter) in boundary_patches {
+            let center = tri
+                .map(|v| mesh.positions[v as usize])
+                .into_iter()
+                .sum::<DVec3>()
+                / 3.0;
+            let point = prep
+                .bvh
+                .raycast(
+                    &prep.mesh,
+                    frame.lift(frame.project(center), ceiling),
+                    -frame.w,
+                )
+                .map_or(center, |hit| hit.point);
+            let index = mesh.positions.len() as u32;
+            mesh.positions.push(point);
+            distances.push(tri.iter().map(|&v| distances[v as usize]).sum::<f64>() / 3.0);
+            for i in 0..perimeter.len() {
+                mesh.triangles
+                    .push([index, perimeter[i], perimeter[(i + 1) % perimeter.len()]]);
+            }
+        }
+        // Discard the now-unused margin-edge cut points. Preserve vertex order
+        // so the original, bit-exact margin remains the first `boundary` points.
+        let mut used = vec![false; mesh.positions.len()];
+        for tri in &mesh.triangles {
+            for &v in tri {
+                used[v as usize] = true;
+            }
+        }
+        let mut remap = vec![0; used.len()];
+        let mut next = 0;
+        for (i, &keep) in used.iter().enumerate() {
+            if keep {
+                remap[i] = next as u32;
+                mesh.positions[next] = mesh.positions[i];
+                distances[next] = distances[i];
+                next += 1;
+            }
+        }
+        mesh.positions.truncate(next);
+        distances.truncate(next);
+        for tri in &mut mesh.triangles {
+            *tri = tri.map(|v| remap[v as usize]);
         }
     }
     Ok(())
@@ -937,7 +1034,7 @@ fn triangulate(
         return Err(DesignError::Triangulation);
     }
     let mut distances = surface_distances(&mesh, n, polygon);
-    refine(&mut mesh, &mut distances, frame, grid.step, prep)?;
+    refine(&mut mesh, &mut distances, n, frame, grid.step, prep)?;
     Ok((
         InnerSurface {
             target_gaps: vec![0.0; mesh.positions.len()],
@@ -1001,6 +1098,41 @@ mod tests {
             let n = surface.mesh.triangle_cross(i);
             assert!(n.length() > 0.0);
             assert!(n.dot(axis) <= 1e-9);
+        }
+    }
+
+    #[test]
+    fn nonplanar_margin_remains_the_complete_boundary() {
+        let mut die = prepared_stump(&StumpParams::default()).unwrap();
+        let rotation = glam::DQuat::from_rotation_y(0.37) * glam::DQuat::from_rotation_z(0.29);
+        let warp = |p: DVec3| rotation * (p + DVec3::Z * (0.23 * p.x + 0.06 * p.y * p.y));
+        for p in &mut die.mesh.positions {
+            *p = warp(*p);
+        }
+        for p in &mut die.margin {
+            *p = warp(*p);
+        }
+        let axis = rotation * DVec3::Z;
+        let params = InnerSurfaceParams {
+            grid_step: 0.1,
+            ..Default::default()
+        };
+        let surface = inner_surface(&die.mesh, &die.region, &die.margin, axis, &params).unwrap();
+        assert_disk(&surface, axis);
+        for (&v, p) in surface.boundary.iter().zip(&die.margin) {
+            assert_eq!(surface.mesh.positions[v as usize], *p);
+        }
+        let prep = Region::new(&die.mesh, &die.region).unwrap();
+        for tri in &surface.mesh.triangles {
+            for weights in ALL_WEIGHTS {
+                let p = (0..3)
+                    .map(|i| surface.mesh.positions[tri[i] as usize] * weights[i])
+                    .sum();
+                let target: f64 = (0..3)
+                    .map(|i| surface.target_gaps[tri[i] as usize] * weights[i])
+                    .sum();
+                assert!(signed_clearance(p, &prep).0 >= target - 0.001);
+            }
         }
     }
 

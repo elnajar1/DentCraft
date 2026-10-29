@@ -16,6 +16,8 @@
 //! verification samples true 3D distances at vertices, edge midpoints and triangle centroids
 //! and reports the worst samples with their height above the margin, sector, target and whether
 //! anything lies above them or below them along the axis (a scan hole).
+//! The app chain also diagnoses both crown input disks and builds anatomy 33,
+//! checking the closed solid and material thickness at triangle interiors.
 //! Scans are never part of the repository; pass a local path.
 
 use std::path::PathBuf;
@@ -224,19 +226,177 @@ fn diagnose(
         best.margin_overhang
     );
     let start = std::time::Instant::now();
-    match inner_surface(
+    let inner = inner_surface(
         mesh,
         &app_region,
         stored,
         best.axis,
         &InnerSurfaceParams::default(),
-    ) {
-        Ok(inner) => {
-            verify(&inner, mesh, &app_region, stored, best.axis)?;
-        }
-        Err(e) => println!("inner ERROR {e}"),
-    }
+    )?;
+    verify(&inner, mesh, &app_region, stored, best.axis)?;
+    diagnose_crown(&inner)?;
     println!("inner elapsed {:.2}s", start.elapsed().as_secs_f64());
+    Ok(())
+}
+
+fn diagnose_crown(inner: &InnerSurface) -> Result<(), Box<dyn std::error::Error>> {
+    let template = dentcraft_anatomy::crown(dentcraft_case::Fdi::new(33)?, &Default::default());
+    for (name, mesh, boundary, axis) in [
+        ("inner", &inner.mesh, &inner.boundary, inner.axis),
+        ("template 33", &template.mesh, &template.cervical, DVec3::Z),
+    ] {
+        let loops = mesh.boundary_loops();
+        let mut actual: Vec<_> = loops.iter().flatten().copied().collect();
+        actual.sort_unstable();
+        let mut supplied = boundary.clone();
+        supplied.sort_unstable();
+        println!(
+            "{name}: components {}, boundary loops {:?}, supplied boundary {}, boundary matches {}, oriented {}, nonmanifold edges {}, Euler characteristic {} (disk requires 1)",
+            mesh.connected_components().len(),
+            loops.iter().map(Vec::len).collect::<Vec<_>>(),
+            boundary.len(),
+            actual == supplied,
+            mesh.is_consistently_oriented(),
+            mesh.non_manifold_edge_count(),
+            mesh.positions.len() as i64 - mesh.edge_map().len() as i64
+                + mesh.triangles.len() as i64,
+        );
+        let center = boundary
+            .iter()
+            .map(|&v| mesh.positions[v as usize])
+            .sum::<DVec3>()
+            / boundary.len() as f64;
+        let x = axis.any_orthonormal_vector();
+        let y = axis.cross(x);
+        let mut angles: Vec<_> = boundary
+            .iter()
+            .enumerate()
+            .map(|(i, &v)| {
+                let p = mesh.positions[v as usize] - center;
+                (
+                    p.dot(y).atan2(p.dot(x)).rem_euclid(std::f64::consts::TAU),
+                    i,
+                )
+            })
+            .collect();
+        angles.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let star = (0..angles.len()).all(|i| {
+            let (a, va) = angles[i];
+            let (b, vb) = angles[(i + 1) % angles.len()];
+            (1e-9..std::f64::consts::PI).contains(&(b - a).rem_euclid(std::f64::consts::TAU))
+                && ((va + 1) % angles.len() == vb || (vb + 1) % angles.len() == va)
+        });
+        println!("{name}: outline star-shaped about cervical centroid {star}");
+    }
+    println!(
+        "inner: nonnegative axial faces {} (requires 0)",
+        (0..inner.mesh.triangles.len())
+            .filter(|&i| inner.mesh.triangle_cross(i).dot(inner.axis) >= 0.0)
+            .count()
+    );
+    let placement = dentcraft_design::auto_placement(
+        inner,
+        &template.mesh,
+        &template.cervical,
+        inner.axis,
+        None,
+    );
+    println!("33 placement {placement:?}");
+    let material = dentcraft_case::Material::default();
+    let params = dentcraft_design::CrownParams::new(
+        material.min_occlusal_thickness,
+        material.min_wall_thickness,
+    );
+    let crown = dentcraft_design::build_crown(
+        inner,
+        &template.mesh,
+        &template.cervical,
+        placement,
+        &params,
+    )?;
+    println!(
+        "33 crown: closed {}, oriented {}, components {}, volume {:.6} mm^3, minimum thickness {:.6} mm (includes cervical ledge), report {:?}",
+        crown.mesh.is_closed(),
+        crown.mesh.is_consistently_oriented(),
+        crown.mesh.connected_components().len(),
+        crown.mesh.signed_volume(),
+        crown.report.min_thickness,
+        crown.report
+    );
+    if !crown.mesh.is_closed()
+        || !crown.mesh.is_consistently_oriented()
+        || crown.mesh.connected_components().len() != 1
+        || crown.mesh.signed_volume() <= 0.0
+    {
+        return Err("crown solid verification failed".into());
+    }
+    let offset = inner.mesh.positions.len() as u32;
+    let outer = TriMesh::new(
+        crown.mesh.positions[offset as usize..].to_vec(),
+        crown
+            .mesh
+            .triangles
+            .iter()
+            .filter(|t| t.iter().all(|&v| v >= offset))
+            .map(|t| t.map(|v| v - offset))
+            .collect(),
+    );
+    let normals = outer.vertex_normals();
+    let bvh = Bvh::build(&inner.mesh);
+    let margin: Vec<_> = inner
+        .boundary
+        .iter()
+        .map(|&v| inner.mesh.positions[v as usize])
+        .collect();
+    let mut worst = f64::INFINITY;
+    let mut full_minimum = f64::INFINITY;
+    for tri in &outer.triangles {
+        let points = tri.map(|v| outer.positions[v as usize]);
+        let ns = tri.map(|v| normals[v as usize]);
+        let edge = (0..3)
+            .map(|i| points[i].distance(points[(i + 1) % 3]))
+            .fold(0.0, f64::max);
+        let n = (edge / 0.1).ceil().max(3.0) as usize;
+        let weights = [
+            [0.5, 0.5, 0.0],
+            [0.0, 0.5, 0.5],
+            [0.5, 0.0, 0.5],
+            [1.0 / 3.0; 3],
+        ]
+        .into_iter()
+        .chain((0..=n).flat_map(|i| {
+            (0..=n - i).map(move |j| {
+                [
+                    i as f64 / n as f64,
+                    j as f64 / n as f64,
+                    (n - i - j) as f64 / n as f64,
+                ]
+            })
+        }));
+        for w in weights {
+            let p: DVec3 = (0..3).map(|i| points[i] * w[i]).sum();
+            let normal = (0..3).map(|i| ns[i] * w[i]).sum::<DVec3>().normalize();
+            let hit = bvh.closest_point(&inner.mesh, p).unwrap();
+            let required = params.required_thickness(hit.point, normal, inner.axis, &margin);
+            worst = worst.min(hit.distance - required);
+            if required >= params.min_wall {
+                full_minimum = full_minimum.min(hit.distance);
+            }
+            if bvh
+                .raycast(&inner.mesh, p + inner.axis * 1e-8, inner.axis)
+                .is_some()
+            {
+                return Err("outer sample lies inside intaglio".into());
+            }
+        }
+    }
+    println!(
+        "33 thickness verification: material wall {:.3}, occlusal {:.3} mm; full-thickness samples minimum {full_minimum:.6} mm; minimum clearance minus required {worst:.6} mm (vertices, edge midpoints, centroids and <=0.1 mm barycentric grid)",
+        params.min_wall, params.min_occlusal
+    );
+    if worst < -0.001 {
+        return Err("crown thickness verification failed".into());
+    }
     Ok(())
 }
 
