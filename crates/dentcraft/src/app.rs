@@ -80,6 +80,8 @@ pub struct StartOptions {
     pub recovery_lock: Option<recovery::InstanceLock>,
     /// A recovery file left by another instance, offered for restore at start-up.
     pub restore: Option<PathBuf>,
+    /// Why unsaved work is not kept in this run, when the recovery lock could not be taken.
+    pub recovery_off: Option<String>,
     /// `--exit-after`: close the app cleanly after this long, without asking.
     pub exit_after: Option<Duration>,
     /// Exit code of a screenshot run, read by `main` once the window has closed.
@@ -200,6 +202,8 @@ pub struct DentCraftApp {
     restore_file: Option<PathBuf>,
     /// The question of the start-up prompt to restore unsaved work left by a crash.
     recovery_prompt: Option<String>,
+    /// Why the prompt's last choice was refused, shown in its place until acknowledged.
+    recovery_refused: Option<String>,
     window_title: String,
     ribbon_tab: RibbonTab,
     workspace_menu: WorkspaceMenu,
@@ -307,6 +311,7 @@ impl DentCraftApp {
                 .map(|path| Autosave::new(path, start.recovery_lock, crash::worker_panics())),
             restore_file,
             recovery_prompt,
+            recovery_refused: None,
             window_title: String::new(),
             ribbon_tab: start.tab.unwrap_or_default(),
             workspace_menu: WorkspaceMenu::new(start.workspace_menu_open),
@@ -361,6 +366,11 @@ impl DentCraftApp {
         app.import(start.files);
         for role in start.hide {
             objects::set_role_visible(&mut app.objects, role, false);
+        }
+        if let Some(reason) = start.recovery_off.filter(|_| app.screenshot.is_none()) {
+            app.toasts.push(Toast {
+                message: format!("Autosave is off: {reason}"),
+            });
         }
         app
     }
@@ -1057,17 +1067,14 @@ impl DentCraftApp {
 
     /// Opens the recovery file left by another instance as an unsaved case; it becomes this
     /// instance's own recovery file.
-    fn restore_recovery(&mut self) {
+    fn restore_recovery(&mut self) -> Result<(), String> {
         let (Some(path), Some(autosave)) = (self.restore_file.clone(), &mut self.autosave) else {
-            return;
+            return Ok(());
         };
-        match autosave.restore(&path) {
-            Ok(case) => {
-                self.show_case(case);
-                self.doc = Document::recovered(&self.case);
-            }
-            Err(err) => self.fail(err),
-        }
+        let case = autosave.restore(&path)?;
+        self.show_case(case);
+        self.doc = Document::recovered(&self.case);
+        Ok(())
     }
 
     /// The start-up prompt to restore the unsaved case a crash left behind.
@@ -1076,7 +1083,9 @@ impl DentCraftApp {
             return;
         };
         let p = self.palette();
+        let refused = self.recovery_refused.as_deref();
         let mut restore = None;
+        let mut acknowledged = false;
         egui::Modal::new(egui::Id::unique("restore_unsaved_case"))
             .frame(
                 egui::Frame::new()
@@ -1092,9 +1101,13 @@ impl DentCraftApp {
                         .heading()
                         .color(p.text),
                 );
-                ui.label(RichText::new(question.as_str()).color(p.text_dim));
+                ui.label(RichText::new(refused.unwrap_or(question)).color(p.text_dim));
                 ui.add_space(12.0);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if refused.is_some() {
+                        acknowledged = small_button(ui, "OK", true, true).clicked();
+                        return;
+                    }
                     if small_button(ui, "Restore", true, true).clicked() {
                         restore = Some(true);
                     }
@@ -1103,19 +1116,23 @@ impl DentCraftApp {
                     }
                 });
             });
+        if acknowledged {
+            self.recovery_refused = None;
+            self.recovery_prompt = None;
+            return;
+        }
         // Escape or a click outside keeps the question: the file is only touched by a choice.
-        match restore {
-            Some(true) => {
-                self.recovery_prompt = None;
-                self.restore_recovery();
-            }
-            Some(false) => {
-                self.recovery_prompt = None;
-                if let Some(path) = &self.restore_file {
-                    recovery::discard(path);
-                }
-            }
-            None => {}
+        let done = match restore {
+            Some(true) => self.restore_recovery(),
+            Some(false) => self
+                .restore_file
+                .as_deref()
+                .map_or(Ok(()), recovery::discard),
+            None => return,
+        };
+        match done {
+            Ok(()) => self.recovery_prompt = None,
+            Err(err) => self.recovery_refused = Some(err),
         }
     }
 

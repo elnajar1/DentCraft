@@ -44,12 +44,14 @@ fn main() -> ExitCode {
     // files.
     let data = crash::data_dir();
     // Nor does an instance that cannot take its lock: other instances would take its file for a
-    // crash's.
+    // crash's. The user is told at start.
+    let mut recovery_off = None;
     let instance = data.as_deref().filter(|_| !screenshot).and_then(|data| {
         match recovery::start(&recovery::recovery_dir(data), std::process::id()) {
             Ok(lock) => Some((data, lock)),
             Err(err) => {
                 eprintln!("dentcraft: recovery is off: {err}");
+                recovery_off = Some(err);
                 None
             }
         }
@@ -109,6 +111,7 @@ fn main() -> ExitCode {
         recovery,
         recovery_lock: instance.map(|(_, lock)| lock),
         restore,
+        recovery_off,
         exit_after: args.exit_after,
         exit_code: exit_code.clone(),
     };

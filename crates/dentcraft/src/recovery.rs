@@ -52,12 +52,19 @@ impl InstanceLock {
         let path = lock_path(dir, pid);
         let fail = |e: &dyn std::fmt::Display| format!("cannot lock {}: {e}", path.display());
         std::fs::create_dir_all(dir).map_err(|e| fail(&e))?;
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(&path)
-            .map_err(|e| fail(&e))?;
+        let mut options = std::fs::OpenOptions::new();
+        options.create(true).truncate(false).write(true);
+        // Others may open it to probe the lock, but nobody can delete it while it is held.
+        #[cfg(windows)]
+        {
+            const FILE_SHARE_READ: u32 = 0x1;
+            const FILE_SHARE_WRITE: u32 = 0x2;
+            std::os::windows::fs::OpenOptionsExt::share_mode(
+                &mut options,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+            );
+        }
+        let file = options.open(&path).map_err(|e| fail(&e))?;
         file.try_lock().map_err(|e| fail(&e))?;
         Ok(Self { file, path })
     }
@@ -74,7 +81,11 @@ impl InstanceLock {
 /// process id (Windows reuses them); renamed to `autosave-<pid>-<unix secs>.dentcraft` it has no
 /// owner, so it is offered as a leftover instead of being overwritten.
 pub fn start(dir: &Path, pid: u32) -> Result<InstanceLock, String> {
-    let lock = InstanceLock::take(dir, pid)?;
+    // Another instance probing a dead owner's lock file holds its lock for an instant.
+    let lock = InstanceLock::take(dir, pid).or_else(|_| {
+        std::thread::sleep(Duration::from_millis(100));
+        InstanceLock::take(dir, pid)
+    })?;
     let own = dir.join(format!("autosave-{pid}.dentcraft"));
     if let Ok(meta) = std::fs::metadata(&own) {
         let secs = meta
@@ -106,20 +117,55 @@ fn owner(name: &str) -> Option<Option<u32>> {
     (pid.parse::<u32>().is_ok() && secs.parse::<u64>().is_ok()).then_some(None)
 }
 
-/// Whether the instance with this process id is still running: its lock file is there and
-/// held locked.
+/// Whether the instance with this process id may still be running. It is gone only when its
+/// lock file is not there or its lock can be taken; a lock file that cannot be opened or probed
+/// (another program holding it, a refused access) counts as live, so its files are left alone.
 fn is_live(dir: &Path, pid: u32) -> bool {
-    std::fs::File::open(lock_path(dir, pid))
-        .is_ok_and(|file| matches!(file.try_lock(), Err(std::fs::TryLockError::WouldBlock)))
+    match std::fs::File::open(lock_path(dir, pid)) {
+        Ok(file) => file.try_lock().is_err(),
+        Err(e) => e.kind() != std::io::ErrorKind::NotFound,
+    }
+}
+
+/// The process id of the lock file called `name`, `autosave-<pid>.lock`.
+fn lock_owner(name: &str) -> Option<u32> {
+    name.strip_prefix("autosave-")?
+        .strip_suffix(".lock")?
+        .parse()
+        .ok()
+}
+
+/// What [`Autosave::restore`] and [`discard`] say when the leftover's owner runs again.
+const IN_USE: &str =
+    "Another DentCraft window is using this unsaved case now, so it was left as it is.";
+
+/// Refuses the leftover at `path` once an instance with its owner's process id runs: that one
+/// writes to the file now (Windows reuses process ids while a prompt can stay open).
+fn unowned(path: &Path) -> Result<(), String> {
+    let owner = path.file_name().and_then(|n| n.to_str()).and_then(owner);
+    match (owner, path.parent()) {
+        (Some(Some(pid)), Some(dir)) if is_live(dir, pid) => Err(IN_USE.to_owned()),
+        _ => Ok(()),
+    }
 }
 
 /// The recovery file to offer at start-up: the newest one in the recovery folder `dir`, other
 /// than this process's own, whose owner is not running (a live second window's file is never
 /// offered). Set-aside files and the pre-instance `autosave.dentcraft` have no owner, so they
-/// are offered whatever their age.
+/// are offered whatever their age. Lock files of dead instances that left no recovery file are
+/// swept on the way.
 pub fn leftover(dir: &Path, own_pid: u32) -> Option<PathBuf> {
     let mut best: Option<(SystemTime, PathBuf)> = None;
     for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        if let Some(pid) = entry.file_name().to_str().and_then(lock_owner) {
+            if pid != own_pid
+                && !dir.join(format!("autosave-{pid}.dentcraft")).exists()
+                && !is_live(dir, pid)
+            {
+                remove(&entry.path());
+            }
+            continue;
+        }
         let Some(owner) = entry.file_name().to_str().and_then(owner) else {
             continue;
         };
@@ -143,8 +189,9 @@ pub fn leftover(dir: &Path, own_pid: u32) -> Option<PathBuf> {
 }
 
 /// Removes a leftover recovery file the user restored or discarded, with its dead owner's lock
-/// file.
-pub fn discard(path: &Path) {
+/// file. Leaves both alone when the owner runs again.
+pub fn discard(path: &Path) -> Result<(), String> {
+    unowned(path)?;
     remove(path);
     let owner = path.file_name().and_then(|n| n.to_str()).and_then(owner);
     if let (Some(Some(pid)), Some(dir)) = (owner, path.parent())
@@ -152,6 +199,7 @@ pub fn discard(path: &Path) {
     {
         remove(&lock_path(dir, pid));
     }
+    Ok(())
 }
 
 /// The unsaved case as of the last frame, for the panic hook (it cannot reach the app).
@@ -298,14 +346,18 @@ impl Autosave {
 
     /// Takes over the leftover recovery file at `leftover`: reads its case and keeps it in this
     /// instance's own file before the leftover goes, so a crash right after restoring loses
-    /// nothing. When the own file cannot be written the leftover stays for the next start.
+    /// nothing. When the own file cannot be written the leftover stays for the next start. Refused
+    /// when the leftover's owner runs again.
     pub fn restore(&mut self, leftover: &Path) -> Result<Case, String> {
+        unowned(leftover)?;
         let case = read(leftover)?;
         match write(&self.path, &case) {
             Ok(()) => {
                 self.written = Some(case.clone());
                 self.due = None;
-                discard(leftover);
+                if let Err(err) = discard(leftover) {
+                    eprintln!("dentcraft: autosave: {err}");
+                }
             }
             Err(err) => eprintln!("dentcraft: autosave: {err}"),
         }
@@ -489,24 +541,24 @@ mod tests {
 
         // Nothing there: nothing offered.
         assert_eq!(leftover(&rec, 1), None);
-        // Our own file never is; a crash's (no lock file at all) is, however fresh.
+        // Our own file never is; a set-aside or old-style one is, and the newer one wins.
         leftover_file(&rec, "autosave-1.dentcraft", Duration::from_secs(3600));
         assert_eq!(leftover(&rec, 1), None);
-        let crashed = leftover_file(&rec, "autosave-3.dentcraft", Duration::from_secs(120));
-        assert_eq!(leftover(&rec, 1), Some(crashed));
-        // A newer one wins, whether written just now by a crash, set aside or old-style.
         let aside = leftover_file(
             &rec,
             "autosave-1-1700000000.dentcraft",
-            Duration::from_secs(60),
+            Duration::from_secs(120),
         );
         assert_eq!(leftover(&rec, 1), Some(aside));
-        let legacy = leftover_file(&rec, "autosave.dentcraft", Duration::ZERO);
-        assert_eq!(leftover(&rec, 1), Some(legacy.clone()));
+        let legacy = leftover_file(&rec, "autosave.dentcraft", Duration::from_secs(60));
+        assert_eq!(leftover(&rec, 1), Some(legacy));
+        // A crash's (no lock file at all) is offered however fresh: written this very moment.
+        let crashed = leftover_file(&rec, "autosave-3.dentcraft", Duration::ZERO);
+        assert_eq!(leftover(&rec, 1), Some(crashed.clone()));
         // Other files in the folder are none of our business.
         std::fs::write(rec.join("notes.txt"), "").unwrap();
         std::fs::write(rec.join("autosave-x.dentcraft"), "").unwrap();
-        assert_eq!(leftover(&rec, 1), Some(legacy));
+        assert_eq!(leftover(&rec, 1), Some(crashed));
     }
 
     #[test]
@@ -570,12 +622,93 @@ mod tests {
         let live = leftover_file(&rec, "autosave-4.dentcraft", Duration::from_secs(60));
         let _lock = InstanceLock::take(&rec, 4).unwrap();
 
-        discard(&chosen);
+        discard(&chosen).unwrap();
         assert!(!chosen.exists());
         assert!(!lock_path(&rec, 2).exists());
         assert!(other.exists());
         assert!(live.exists());
         assert!(lock_path(&rec, 4).exists());
         assert_eq!(leftover(&rec, 1), Some(other));
+    }
+
+    /// Holds the lock file of `pid` open the way another program might: nobody else can open
+    /// it, so its lock cannot be probed.
+    #[cfg(windows)]
+    fn unprobeable_lock(dir: &Path, pid: u32) -> std::fs::File {
+        use std::os::windows::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .share_mode(0)
+            .open(lock_path(dir, pid))
+            .unwrap()
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_lock_file_that_cannot_be_probed_counts_as_live() {
+        let dir = TempDir::new("unprobeable");
+        let rec = rec_dir(&dir);
+        let file = leftover_file(&rec, "autosave-2.dentcraft", Duration::from_secs(3600));
+        let held = unprobeable_lock(&rec, 2);
+        assert!(std::fs::File::open(lock_path(&rec, 2)).is_err());
+        assert!(is_live(&rec, 2));
+        assert_eq!(leftover(&rec, 1), None);
+        assert!(file.exists());
+        drop(held);
+        assert!(!is_live(&rec, 2));
+        assert_eq!(leftover(&rec, 1), Some(file));
+    }
+
+    #[test]
+    fn restore_and_discard_leave_a_live_owners_file_alone() {
+        let dir = TempDir::new("owner-back");
+        let rec = rec_dir(&dir);
+        let file = leftover_file(&rec, "autosave-2.dentcraft", Duration::ZERO);
+        // Offered while pid 2 was dead; a new instance with that pid starts before the choice.
+        assert_eq!(leftover(&rec, 1), Some(file.clone()));
+        let lock = InstanceLock::take(&rec, 2).unwrap();
+        let own = rec.join("autosave-1.dentcraft");
+        let mut auto = Autosave::new(own.clone(), None, 0);
+
+        assert_eq!(auto.restore(&file), Err(IN_USE.to_owned()));
+        assert!(!own.exists());
+        assert_eq!(discard(&file), Err(IN_USE.to_owned()));
+        assert!(file.exists());
+        assert!(lock_path(&rec, 2).exists());
+        drop(lock);
+    }
+
+    #[test]
+    fn dead_lock_files_without_a_recovery_file_are_swept() {
+        let dir = TempDir::new("sweep");
+        let rec = rec_dir(&dir);
+        drop(InstanceLock::take(&rec, 2).unwrap()); // Dead, nothing left: swept.
+        drop(InstanceLock::take(&rec, 3).unwrap()); // Dead, its file left: kept.
+        let file = leftover_file(&rec, "autosave-3.dentcraft", Duration::ZERO);
+        let _live = InstanceLock::take(&rec, 4).unwrap(); // Live, no file yet: kept.
+        let _own = InstanceLock::take(&rec, 1).unwrap();
+        std::fs::write(rec.join("autosave-x.lock"), "").unwrap(); // Not ours: kept.
+
+        assert_eq!(leftover(&rec, 1), Some(file));
+        assert!(!lock_path(&rec, 2).exists());
+        assert!(lock_path(&rec, 3).exists());
+        assert!(lock_path(&rec, 4).exists());
+        assert!(lock_path(&rec, 1).exists());
+        assert!(rec.join("autosave-x.lock").exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_held_lock_file_cannot_be_deleted() {
+        let dir = TempDir::new("held");
+        let rec = rec_dir(&dir);
+        let lock = InstanceLock::take(&rec, 2).unwrap();
+        assert!(std::fs::remove_file(lock_path(&rec, 2)).is_err());
+        // Other instances can still probe it, and the clean exit removes it.
+        assert!(is_live(&rec, 2));
+        lock.release();
+        assert!(!lock_path(&rec, 2).exists());
     }
 }
