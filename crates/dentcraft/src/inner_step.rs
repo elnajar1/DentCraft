@@ -222,11 +222,12 @@ impl Key {
 }
 
 /// The preparation found inside a margin.
-struct Prep {
+pub(crate) struct Prep {
     tooth: Fdi,
     margin: Vec<DVec3>,
-    region: Vec<u32>,
-    centroid: DVec3,
+    /// Triangles of the jaw scan inside the margin.
+    pub(crate) region: Vec<u32>,
+    pub(crate) centroid: DVec3,
 }
 
 /// State shared by the tool and the step.
@@ -420,6 +421,13 @@ impl InnerStep {
             return None;
         }
         self.shared.borrow().surface.clone()
+    }
+
+    /// The preparation the up-to-date inner surface of `tooth` was computed on.
+    #[allow(dead_code)] // For the Occlusion step, whose app wiring follows.
+    pub(crate) fn prep(&self, tooth: Fdi) -> Option<Arc<Prep>> {
+        self.surface(tooth)?;
+        self.prep.clone().filter(|p| p.tooth == tooth)
     }
 
     /// The wanted surface failed and waits for a change.

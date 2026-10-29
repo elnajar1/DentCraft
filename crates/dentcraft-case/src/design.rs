@@ -47,6 +47,35 @@ pub struct ToothDesign {
     /// Shape and placement of the crown's anatomy relative to the automatic fit.
     #[serde(default, skip_serializing_if = "AnatomyDesign::is_default")]
     pub anatomy: AnatomyDesign,
+    /// Contact targets against the neighbours and the antagonist.
+    #[serde(default, skip_serializing_if = "ContactDesign::is_default")]
+    pub contacts: ContactDesign,
+}
+
+/// The tooth's contact targets, in millimetres of signed distance (negative = into the other
+/// surface): `proximal_contact` against the mesial and distal neighbours, `occlusal_clearance`
+/// against the antagonist. The default is a light 0.02 mm proximal contact and occlusal contact
+/// without penetration.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ContactDesign {
+    pub proximal_contact: f64,
+    pub occlusal_clearance: f64,
+}
+
+impl Default for ContactDesign {
+    fn default() -> Self {
+        Self {
+            proximal_contact: -0.02,
+            occlusal_clearance: 0.0,
+        }
+    }
+}
+
+impl ContactDesign {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// The user's adjustments of a tooth's crown anatomy. Shape factors scale the library tooth
@@ -123,6 +152,37 @@ mod tests {
         let old: ToothDesign = serde_json::from_str(r#"{"insertion_axis":[0.0,0.0,1.0]}"#).unwrap();
         assert_eq!(old, tooth);
         assert!(old.anatomy.is_default());
+    }
+
+    #[test]
+    fn contacts_are_left_out_at_their_defaults_and_round_trip() {
+        let tooth = ToothDesign {
+            insertion_axis: Some(DVec3::Z),
+            ..ToothDesign::default()
+        };
+        let text = serde_json::to_string(&tooth).unwrap();
+        assert!(!text.contains("contacts"), "{text}");
+        let old: ToothDesign = serde_json::from_str(r#"{"insertion_axis":[0.0,0.0,1.0]}"#).unwrap();
+        assert!(old.contacts.is_default());
+        let tooth = ToothDesign {
+            contacts: ContactDesign {
+                proximal_contact: -0.05,
+                occlusal_clearance: 0.1,
+            },
+            ..tooth
+        };
+        let text = serde_json::to_string(&tooth).unwrap();
+        assert!(text.contains("contacts"), "{text}");
+        assert_eq!(serde_json::from_str::<ToothDesign>(&text).unwrap(), tooth);
+        let partial: ToothDesign =
+            serde_json::from_str(r#"{"contacts":{"occlusal_clearance":0.2}}"#).unwrap();
+        assert_eq!(
+            partial.contacts,
+            ContactDesign {
+                occlusal_clearance: 0.2,
+                ..ContactDesign::default()
+            }
+        );
     }
 
     #[test]

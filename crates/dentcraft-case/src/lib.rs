@@ -6,6 +6,8 @@ mod material;
 mod tooth;
 
 pub use case::{Case, CaseFileError, CaseIssue, Connector, RestorationKind, Scan, ScanRole, Unit};
-pub use design::{AnatomyDesign, Design, InnerSurfaceOverrides, JawFrame, ToothDesign};
+pub use design::{
+    AnatomyDesign, ContactDesign, Design, InnerSurfaceOverrides, JawFrame, ToothDesign,
+};
 pub use material::Material;
 pub use tooth::{Arch, Fdi, InvalidFdi, ToothType};

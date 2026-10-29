@@ -297,8 +297,18 @@ struct Stamp {
 
 impl Stamp {
     fn of(case: &Case, tooth: Fdi) -> Self {
+        // The contact targets do not shape this crown: the Occlusion step adapts a copy of it.
+        let tooth = case
+            .design
+            .teeth
+            .get(&tooth)
+            .map(|t| ToothDesign {
+                contacts: Default::default(),
+                ..t.clone()
+            })
+            .filter(|t| *t != ToothDesign::default());
         Self {
-            tooth: case.design.teeth.get(&tooth).cloned(),
+            tooth,
             material: case.material.clone(),
             jaw: case.design.jaw_frame,
         }
@@ -310,6 +320,8 @@ struct Outcome {
     stamp: Stamp,
     mesh: Arc<MeshData>,
     crown: Arc<Crown>,
+    /// The tooth's mesial direction as placed, perpendicular to the crown's occlusal axis.
+    mesial: DVec3,
 }
 
 fn run(key: Key, stamp: Stamp) -> Result<Outcome, String> {
@@ -320,6 +332,9 @@ fn run(key: Key, stamp: Stamp) -> Result<Outcome, String> {
         .and_then(|f| template_x_hint(key.tooth, inner.axis, f));
     let placement = auto_placement(inner, &template.mesh, &template.cervical, inner.axis, hint);
     let placement = adjust(placement, key.tooth, &key.anatomy);
+    let z = placement.occlusal.normalize_or_zero();
+    let mesial = ((placement.mesial - z * placement.mesial.dot(z)) * template_sign(key.tooth))
+        .normalize_or_zero();
     let built = build_crown(
         inner,
         &template.mesh,
@@ -331,6 +346,7 @@ fn run(key: Key, stamp: Stamp) -> Result<Outcome, String> {
     Ok(Outcome {
         mesh: Arc::new(MeshData::from_mesh(&built.mesh)),
         crown: Arc::new(built),
+        mesial,
         stamp,
         key,
     })
@@ -394,7 +410,7 @@ pub struct AnatomyStep {
     error: Option<String>,
     repaint: Option<egui::Context>,
     /// The latest crown built for each tooth and what it was built from, for the export.
-    built: BTreeMap<Fdi, (Stamp, Arc<Crown>)>,
+    built: BTreeMap<Fdi, (Stamp, Arc<Crown>, DVec3)>,
     /// Teeth whose first crown was built, so the view has framed it once.
     framed: BTreeSet<Fdi>,
     /// A tooth's first crown was built since the app last asked: the view should take it in.
@@ -429,9 +445,16 @@ impl AnatomyStep {
     }
 
     /// The latest crown built for `tooth`, while the case still matches what it was built from.
+    /// This is the library crown before the Occlusion step's adaptation; the app's export takes
+    /// the adapted crown when that one is current.
     pub fn crown(&self, case: &Case, tooth: Fdi) -> Option<Arc<Crown>> {
-        let (stamp, crown) = self.built.get(&tooth)?;
-        (*stamp == Stamp::of(case, tooth)).then(|| crown.clone())
+        self.placed(case, tooth).map(|(c, _)| c)
+    }
+
+    /// [`Self::crown`] with the tooth's mesial direction as placed.
+    pub fn placed(&self, case: &Case, tooth: Fdi) -> Option<(Arc<Crown>, DVec3)> {
+        let (stamp, crown, mesial) = self.built.get(&tooth)?;
+        (*stamp == Stamp::of(case, tooth)).then(|| (crown.clone(), *mesial))
     }
 
     /// Forgets the open case's crown, jobs and error.
@@ -537,7 +560,8 @@ impl AnatomyStep {
             match message {
                 Ok(o) => {
                     // Kept even when no longer wanted: the stamp tells the export if it is current.
-                    self.built.insert(o.key.tooth, (o.stamp, o.crown.clone()));
+                    self.built
+                        .insert(o.key.tooth, (o.stamp, o.crown.clone(), o.mesial));
                     if Some(&o.key) == self.wanted.as_ref() {
                         self.new_crown |= self.framed.insert(o.key.tooth);
                         self.error = None;
@@ -626,7 +650,7 @@ mod tests {
         });
         let mut step = AnatomyStep::new(None);
         step.built
-            .insert(tooth, (Stamp::of(&case, tooth), crown.clone()));
+            .insert(tooth, (Stamp::of(&case, tooth), crown.clone(), DVec3::Y));
         assert!(step.crown(&case, tooth).is_some());
         assert!(step.crown(&case, t(46)).is_none());
         case.design
@@ -636,7 +660,15 @@ mod tests {
             .anatomy
             .mesiodistal = 1.05;
         assert!(step.crown(&case, tooth).is_none(), "anatomy changed");
-        step.built.insert(tooth, (Stamp::of(&case, tooth), crown));
+        step.built
+            .insert(tooth, (Stamp::of(&case, tooth), crown, DVec3::Y));
+        assert!(step.crown(&case, tooth).is_some());
+        case.design
+            .teeth
+            .entry(tooth)
+            .or_default()
+            .contacts
+            .proximal_contact = -0.05;
         assert!(step.crown(&case, tooth).is_some());
         case.material.min_wall_thickness += 0.1;
         assert!(step.crown(&case, tooth).is_none(), "material changed");
