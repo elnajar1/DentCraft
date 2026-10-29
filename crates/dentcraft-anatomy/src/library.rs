@@ -507,7 +507,8 @@ pub(crate) fn tooth_spec(fdi: Fdi) -> ToothSpec {
         },
         // ----- lower premolars -------------------------------------------------
         (false, 4) => ToothSpec {
-            // First premolar: large buccal cusp, small lingual cusp shifted mesially.
+            // First premolar: dominant buccal cusp; the small lingual cusp (tip near
+            // two thirds of the buccal height) is shifted mesially.
             outline: outline(2.35, 2.15, 0.12, 0.03, 0.45),
             z_hoc: [0.66, 0.62, 0.24, 0.44],
             kappa: [0.62, 0.58, 0.74, 0.74],
@@ -518,14 +519,14 @@ pub(crate) fn tooth_spec(fdi: Fdi) -> ToothSpec {
             field: posterior(
                 0.50,
                 vec![
-                    cusp("buccal", 0.06, 0.40, 1.00, 2.2, 1.5, 0.55),
-                    cusp("lingual", 0.18, -0.42, 0.72, 1.8, 1.3, 0.50),
+                    cusp("buccal", 0.06, 0.42, 1.00, 1.8, 1.30, 0.70),
+                    cusp("lingual", 0.18, -0.40, 0.66, 1.5, 1.10, 0.55),
                 ],
                 vec![
-                    ridge([0.46, 0.18, 0.84], [0.28, -0.14, 0.68], 0.22, 0.50),
-                    ridge([-0.46, 0.16, 0.78], [-0.40, -0.12, 0.66], 0.18, 0.50),
+                    ridge([0.46, 0.18, 0.84], [0.28, -0.14, 0.66], 0.20, 0.50),
+                    ridge([-0.46, 0.16, 0.78], [-0.40, -0.12, 0.62], 0.16, 0.50),
                 ],
-                vec![groove(0.50, 0.02, -0.40, 0.0, 0.30, 0.40)],
+                vec![groove(0.50, 0.02, -0.40, 0.0, 0.45, 0.40)],
                 vec![
                     blob([0.40, 0.0], -0.12, 0.55, 0.5),
                     blob([-0.44, 0.01], -0.12, 0.55, 0.5),
@@ -554,15 +555,19 @@ pub(crate) fn tooth_spec(fdi: Fdi) -> ToothSpec {
                     ridge([-0.44, 0.14, 0.80], [-0.36, -0.15, 0.70], 0.18, 0.50),
                 ],
                 vec![
-                    groove(0.45, 0.04, -0.35, 0.02, 0.30, 0.40),
-                    groove(0.06, -0.08, 0.0, -0.62, 0.25, 0.38),
+                    groove(0.45, 0.04, -0.35, 0.02, 0.45, 0.40),
+                    // The lingual arm of the Y starts on the central groove, between the
+                    // two lingual cusps.
+                    groove(0.03, 0.03, 0.0, -0.62, 0.40, 0.38),
                 ],
                 vec![blob([0.0, 0.02], -0.15, 0.6, 0.5)],
             ),
         },
         // ----- lower molars ----------------------------------------------------
         (false, 6) => ToothSpec {
-            outline: outline(2.35, 2.1, 0.18, 0.07, 0.30),
+            // The crown converges lingually: taper_x must exceed the lingual shear, or
+            // the mesial outline slants out towards the lingual (pear-shaped table).
+            outline: outline(2.35, 2.1, 0.34, 0.07, 0.22),
             z_hoc: [0.62, 0.58, 0.22, 0.50],
             kappa: [0.62, 0.56, 0.74, 0.74],
             cej_lingual: -0.25,
@@ -579,14 +584,14 @@ pub(crate) fn tooth_spec(fdi: Fdi) -> ToothSpec {
                     cusp("distolingual", -0.36, -0.55, 0.93, 2.4, 1.7, 0.55),
                 ],
                 vec![
-                    ridge([0.56, 0.44, 0.86], [0.49, -0.55, 0.93], 0.32, 0.55),
+                    ridge([0.56, 0.44, 0.82], [0.49, -0.55, 0.89], 0.28, 0.55),
                     ridge([-0.65, 0.29, 0.74], [-0.36, -0.55, 0.87], 0.26, 0.50),
                 ],
                 vec![
-                    groove(0.50, 0.03, 0.0, 0.0, 0.32, 0.42),
-                    groove(0.0, 0.0, -0.48, 0.04, 0.32, 0.42),
-                    groove(0.0, 0.05, -0.10, 0.66, 0.28, 0.40),
-                    groove(0.0, -0.05, 0.05, -0.68, 0.22, 0.38),
+                    groove(0.50, 0.03, 0.0, 0.0, 0.45, 0.42),
+                    groove(0.0, 0.0, -0.48, 0.04, 0.45, 0.42),
+                    groove(0.0, 0.05, -0.10, 0.66, 0.40, 0.40),
+                    groove(0.0, -0.05, 0.05, -0.68, 0.38, 0.38),
                 ],
                 vec![
                     blob([0.42, 0.02], -0.20, 0.6, 0.5),
@@ -596,7 +601,7 @@ pub(crate) fn tooth_spec(fdi: Fdi) -> ToothSpec {
             ),
         },
         (false, 7) => ToothSpec {
-            outline: outline(2.35, 2.1, 0.19, 0.06, 0.25),
+            outline: outline(2.35, 2.1, 0.33, 0.06, 0.20),
             z_hoc: [0.62, 0.58, 0.22, 0.50],
             kappa: [0.60, 0.56, 0.74, 0.74],
             cej_lingual: -0.25,
@@ -616,16 +621,16 @@ pub(crate) fn tooth_spec(fdi: Fdi) -> ToothSpec {
                     ridge([-0.42, 0.45, 0.80], [-0.44, -0.50, 0.86], 0.26, 0.50),
                 ],
                 vec![
-                    groove(0.50, 0.0, -0.50, 0.0, 0.30, 0.45),
-                    groove(0.0, 0.04, 0.0, 0.65, 0.28, 0.40),
-                    groove(0.0, -0.04, 0.0, -0.65, 0.25, 0.40),
+                    groove(0.50, 0.0, -0.50, 0.0, 0.45, 0.45),
+                    groove(0.0, 0.04, 0.0, 0.65, 0.42, 0.40),
+                    groove(0.0, -0.04, 0.0, -0.65, 0.40, 0.40),
                 ],
                 vec![blob([0.0, 0.0], -0.22, 0.7, 0.55)],
             ),
         },
         (false, 8) => ToothSpec {
             // Third molar: rounder and less regular than the second (documented simplification).
-            outline: outline(2.15, 2.0, 0.22, 0.07, 0.35),
+            outline: outline(2.15, 2.0, 0.33, 0.07, 0.18),
             z_hoc: [0.60, 0.56, 0.22, 0.48],
             kappa: [0.58, 0.54, 0.74, 0.74],
             cej_lingual: -0.25,
@@ -642,8 +647,8 @@ pub(crate) fn tooth_spec(fdi: Fdi) -> ToothSpec {
                 ],
                 vec![ridge([0.40, 0.42, 0.86], [0.42, -0.48, 0.92], 0.26, 0.55)],
                 vec![
-                    groove(0.40, 0.0, -0.40, 0.0, 0.25, 0.45),
-                    groove(0.0, 0.03, 0.0, 0.60, 0.22, 0.40),
+                    groove(0.40, 0.0, -0.40, 0.0, 0.40, 0.45),
+                    groove(0.0, 0.03, 0.0, 0.60, 0.38, 0.40),
                 ],
                 vec![blob([0.0, 0.0], -0.18, 0.6, 0.55)],
             ),
