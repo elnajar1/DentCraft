@@ -142,6 +142,9 @@ pub struct DentCraftApp {
     /// `--step export`: the start went through the Anatomy step and moves on to Finish & export
     /// once the crown is built (or has failed).
     pending_finish: bool,
+    /// The Anatomy or Finish step was entered, or a first crown was built: frame the crown
+    /// once it is there.
+    frame_crown: bool,
     /// `--export DIR`, waiting for the startup chain to finish.
     pending_export: Option<PathBuf>,
     /// `--orient`, waiting for the scans to load.
@@ -219,6 +222,7 @@ impl DentCraftApp {
             pending_inner: None,
             export: ExportStep::new(Some(cc.egui_ctx.clone())),
             pending_finish: false,
+            frame_crown: false,
             pending_export: start.export,
             pending_orient: start.orient,
             tooth: None,
@@ -573,6 +577,7 @@ impl DentCraftApp {
                 .filter(|t| s.teeth.contains(t))
                 .or_else(|| s.teeth.first().copied())
         });
+        self.frame_crown = step.is_some_and(|s| matches!(s.id, StepId::Anatomy | StepId::Finish));
         if step.is_some_and(|s| s.id == StepId::Margin) && self.tooth.is_some() {
             if self.tools.active_name() != Some(MARGIN) {
                 self.tools.activate(self.margin.tool());
@@ -1545,6 +1550,31 @@ impl DentCraftApp {
                 b.max = b.max.max(h);
             }
             self.viewport.fit(Some(&b));
+        }
+        // A first crown of a tooth, or entering the Anatomy / Finish step: widen the view to
+        // take in the whole crown as well as the scans.
+        if self.anatomy.take_new_crown() {
+            self.frame_crown = true;
+        }
+        if self.frame_crown {
+            let on_anatomy = self
+                .session
+                .current()
+                .is_some_and(|s| s.id == StepId::Anatomy);
+            let crowns: Vec<Aabb> = self
+                .case
+                .units
+                .iter()
+                .filter(|u| !on_anatomy || Some(u.tooth) == self.tooth)
+                .filter_map(|u| self.anatomy.crown(&self.case, u.tooth)?.mesh.bounds())
+                .collect();
+            if let Some(crowns) = objects::union_bounds(crowns)
+                && let Some(scene) = self.bounds()
+            {
+                self.frame_crown = false;
+                let both = objects::union_bounds([scene, crowns]);
+                self.viewport.fit(both.as_ref());
+            }
         }
         let p = self.palette();
         if self.objects.is_empty() {

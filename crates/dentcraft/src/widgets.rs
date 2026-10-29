@@ -176,3 +176,35 @@ pub fn small_text(painter: &egui::Painter, pos: Pos2, text: &str, color: Color32
         color,
     );
 }
+
+/// `value` with `decimals` decimals, never "-0.0": a value that rounds to zero loses its sign.
+pub fn fmt_mm(value: f64, decimals: usize) -> String {
+    format!("{:.decimals$}", rounded(value, decimals))
+}
+
+/// Like [`fmt_mm`] with an explicit sign ("+0.0", "-1.5").
+pub fn fmt_signed(value: f64, decimals: usize) -> String {
+    format!("{:+.decimals$}", rounded(value, decimals))
+}
+
+/// `value` rounded to `decimals` decimals, with negative zero turned into zero.
+fn rounded(value: f64, decimals: usize) -> f64 {
+    let scale = 10f64.powi(decimals as i32);
+    (value * scale).round() / scale + 0.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn negative_zero_never_prints() {
+        assert_eq!(fmt_mm(-0.0, 1), "0.0");
+        assert_eq!(fmt_mm(-0.00049, 3), "0.000");
+        assert_eq!(fmt_mm(-0.04, 1), "0.0");
+        assert_eq!(fmt_mm(1.2345, 2), "1.23");
+        assert_eq!(fmt_mm(-1.26, 1), "-1.3");
+        assert_eq!(fmt_signed(-0.0, 1), "+0.0");
+        assert_eq!(fmt_signed(-1.5, 1), "-1.5");
+    }
+}

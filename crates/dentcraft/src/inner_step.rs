@@ -297,7 +297,10 @@ struct Outcome {
 pub fn describe(e: DesignError) -> String {
     match e {
         DesignError::MarginUndercut { depth } => {
-            format!("The margin is undercut by {depth:.3} mm along this axis")
+            format!(
+                "The margin is undercut by {} mm along this axis",
+                crate::widgets::fmt_mm(depth, 3)
+            )
         }
         e => {
             let text = e.to_string();

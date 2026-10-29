@@ -5,7 +5,7 @@
 //! drawn as its own opaque mesh; the inner surface is hidden in this step.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::RangeInclusive;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -131,7 +131,9 @@ pub fn edit_label(param: AnatomyParam, value: f64) -> String {
         AnatomyParam::Height => "crown height",
         AnatomyParam::CuspHeight => "cusp height",
         AnatomyParam::Wear => "wear",
-        AnatomyParam::Rotation => return format!("Rotate crown {value:.0}°"),
+        AnatomyParam::Rotation => {
+            return format!("Rotate crown {}°", crate::widgets::fmt_mm(value, 0));
+        }
     };
     format!("Set {what} {value:.0} %")
 }
@@ -393,6 +395,10 @@ pub struct AnatomyStep {
     repaint: Option<egui::Context>,
     /// The latest crown built for each tooth and what it was built from, for the export.
     built: BTreeMap<Fdi, (Stamp, Arc<Crown>)>,
+    /// Teeth whose first crown was built, so the view has framed it once.
+    framed: BTreeSet<Fdi>,
+    /// A tooth's first crown was built since the app last asked: the view should take it in.
+    new_crown: bool,
 }
 
 impl AnatomyStep {
@@ -412,7 +418,14 @@ impl AnatomyStep {
             error: None,
             repaint,
             built: BTreeMap::new(),
+            framed: BTreeSet::new(),
+            new_crown: false,
         }
+    }
+
+    /// Whether a tooth's first crown was built since the last call, so the view can take it in.
+    pub fn take_new_crown(&mut self) -> bool {
+        std::mem::take(&mut self.new_crown)
     }
 
     /// The latest crown built for `tooth`, while the case still matches what it was built from.
@@ -526,6 +539,7 @@ impl AnatomyStep {
                     // Kept even when no longer wanted: the stamp tells the export if it is current.
                     self.built.insert(o.key.tooth, (o.stamp, o.crown.clone()));
                     if Some(&o.key) == self.wanted.as_ref() {
+                        self.new_crown |= self.framed.insert(o.key.tooth);
                         self.error = None;
                         *self.mesh.borrow_mut() = Some(o.mesh);
                         self.report = Some(o.crown.report);

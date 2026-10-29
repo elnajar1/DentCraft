@@ -670,7 +670,7 @@ fn margin_section(ui: &mut Ui, card: &MarginCard, case: &Case, p: &Palette) -> O
                         ui.add(egui::Spinner::new().size(12.0).color(p.accent));
                     } else if let Some(length) = card.length_mm {
                         ui.label(
-                            RichText::new(format!("{length:.2} mm"))
+                            RichText::new(format!("{} mm", widgets::fmt_mm(length, 2)))
                                 .color(p.text)
                                 .strong(),
                         );
@@ -759,12 +759,13 @@ fn axis_section(
                     });
                 });
             };
-            let degrees = |d: f64| format!("{d:.1}\u{b0}");
+            let degrees = |d: f64| format!("{}\u{b0}", widgets::fmt_mm(d, 1));
             value(ui, "Tilt from occlusal", card.tilt_deg.map(degrees));
             value(
                 ui,
                 "Undercut area",
-                card.undercut_mm2.map(|a| format!("{a:.2} mm\u{b2}")),
+                card.undercut_mm2
+                    .map(|a| format!("{} mm\u{b2}", widgets::fmt_mm(a, 2))),
             );
             value(ui, "Min draft", card.min_draft_deg.map(degrees));
             undercut_legend(ui, p);
@@ -994,7 +995,7 @@ fn anatomy_section(
                             action = Some(StepAction::NudgeAnatomy(axis, NUDGE_MM));
                         }
                         ui.label(
-                            RichText::new(format!("{value:+.1} mm"))
+                            RichText::new(format!("{} mm", widgets::fmt_signed(value, 1)))
                                 .size(SIZE_SMALL)
                                 .color(p.text),
                         );
@@ -1008,13 +1009,24 @@ fn anatomy_section(
                 });
             }
             if let Some((thickness, area)) = card.report {
-                ui.label(
-                    RichText::new(format!(
-                        "Min thickness {thickness:.2} mm \u{b7} thickened {area:.1} mm\u{b2}"
-                    ))
-                    .size(SIZE_SMALL)
-                    .color(p.text),
-                );
+                let rows = [
+                    (
+                        "Min thickness",
+                        format!("{} mm", widgets::fmt_mm(thickness, 3)),
+                    ),
+                    (
+                        "Thickened",
+                        format!("{} mm\u{b2}", widgets::fmt_mm(area, 1)),
+                    ),
+                ];
+                for (name, text) in rows {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(name).size(SIZE_SMALL).color(p.text_dim));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            ui.label(RichText::new(text).color(p.text).strong());
+                        });
+                    });
+                }
             }
             if let Some(error) = &card.error {
                 ui.label(RichText::new(error).size(SIZE_SMALL).color(p.danger));
@@ -1075,8 +1087,9 @@ fn export_section(ui: &mut Ui, card: &ExportCard, p: &Palette) -> Option<StepAct
                 match row.crown {
                     Some((triangles, thickness)) => {
                         let mut text = format!(
-                            "{} triangles \u{b7} min {thickness:.2} mm",
-                            group_thousands(triangles)
+                            "{} triangles \u{b7} min {} mm",
+                            group_thousands(triangles),
+                            widgets::fmt_mm(thickness, 2)
                         );
                         if let Some(Ok((written, bytes))) = &row.result {
                             text = format!(
