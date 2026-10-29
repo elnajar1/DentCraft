@@ -530,6 +530,15 @@ pub fn build_crown(
     if height <= 0.0 {
         return Err(DesignError::InvalidCrownSurface);
     }
+    // Falloff span per cervical vertex: at least 2·|axial displacement| so the
+    // blended map z + D_z·w(z) stays monotone (|smoothstep'| ≤ 1.5 leaves
+    // 1 − 1.5·D_z/L ≥ 0.25), and at least 0.4·height for gentle caps. Span and
+    // displacement are interpolated with the same parameter between the
+    // bracketting cervical vertices, so L ≥ 2·|D_z| holds in between too.
+    let spans: Vec<f64> = outer_angles
+        .iter()
+        .map(|&(_, v)| (0.4 * height).max(2.0 * displacements[v as usize].dot(pz).abs()))
+        .collect();
     let mut band_locks = locked.clone();
     for (i, p) in outer.positions.iter().enumerate() {
         if locked[i] {
@@ -540,14 +549,17 @@ pub fn build_crown(
         let (va, vb) = (outer_angles[a].1 as usize, outer_angles[b].1 as usize);
         let t = angular_fraction(polar, outer.positions[va], outer.positions[vb], angle);
         let base = outer.positions[va].lerp(outer.positions[vb], t);
-        let w = 1.0 - smoothstep(((*p - base).dot(pz) / (0.4 * height)).clamp(0.0, 1.0));
+        let span = spans[a] + (spans[b] - spans[a]) * t;
+        let w = 1.0 - smoothstep(((*p - base).dot(pz) / span).clamp(0.0, 1.0));
         displacements[i] = displacements[va].lerp(displacements[vb], t) * w;
         band_locks[i] = w == 0.0;
     }
     for (p, d) in outer.positions.iter_mut().zip(&displacements) {
         *p += d;
     }
-    outer.laplacian_smooth(3, 0.15, Some(&band_locks), false);
+    // Taubin's λ/µ pair removes band wobble without the shrinkage a plain
+    // Laplacian pass would add on the deformed cervical band.
+    outer.taubin_smooth(3, 0.15, -0.17, Some(&band_locks), false);
     check_faces(&outer, &reference, polar)?;
     let before = outer.clone();
     let report = thicken(&mut outer, &locked, inner, &bvh, &margin, polar, params)?;
@@ -984,6 +996,50 @@ mod tests {
             let crown = build_crown(&inner, &template, &cervical, placement, &params)
                 .unwrap_or_else(|e| panic!("tilt {degrees}°: {e:?}"));
             verify(&crown, &inner, &die, &params);
+        }
+    }
+
+    /// Finding 2: anterior-style scalloped margins. A vertical shear
+    /// `z += S·cos²θ·min(r/R,1)²·max(0, 1 − (z − z_margin)/wall_height)`,
+    /// applied identically to the die and its intaglio (monotone in z, so both
+    /// stay embedded height fields with the margin bit-exact), lifts the margin
+    /// ring by the full S at θ = 0 and leaves it at θ = π/2, the
+    /// interproxial-to-facial margin height difference of an anterior scallop.
+    /// Amplitudes of 3 and 4 mm must build and verify.
+    #[test]
+    fn scalloped_margins_build() {
+        for s in [3.0_f64, 4.0] {
+            let stump = StumpParams {
+                segments: 192,
+                ..Default::default()
+            };
+            let mut die = prepared_stump(&stump).unwrap();
+            let mut inner = intaglio(&die, 0.05);
+            let warp = |p: &mut DVec3| {
+                let (_, cos) = p.y.atan2(p.x).sin_cos();
+                let r = (p.truncate().length() / stump.base_radius).min(1.0);
+                let fade = ((p.z - stump.margin_height) / stump.height).clamp(0.0, 1.0);
+                p.z += s * cos * cos * r * r * (1.0 - fade);
+            };
+            for p in &mut die.mesh.positions {
+                warp(p);
+            }
+            for p in &mut die.margin {
+                warp(p);
+            }
+            for p in &mut inner.mesh.positions {
+                warp(p);
+            }
+            let params = CrownParams::default();
+            for (template, cervical) in [
+                crown_template(4.0, 5.5, 64, 18).unwrap(),
+                crown_template(4.0, 5.5, 128, 48).unwrap(),
+            ] {
+                let placement = auto_placement(&inner, &template, &cervical, die.axis, None);
+                let crown = build_crown(&inner, &template, &cervical, placement, &params)
+                    .unwrap_or_else(|e| panic!("scallop {s} mm: {e:?}"));
+                verify(&crown, &inner, &die, &params);
+            }
         }
     }
 
