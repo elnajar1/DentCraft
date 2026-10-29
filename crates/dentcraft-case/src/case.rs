@@ -416,6 +416,7 @@ mod tests {
             origin: [1.0, 2.0, 3.0],
             occlusal: [0.0, 0.0, 1.0],
             forward: [0.0, 1.0, 0.0],
+            upper: Some(true),
         });
         let tooth = case.design.teeth.entry(t(14)).or_default();
         tooth.margin = Some(vec![
@@ -446,6 +447,28 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("\"version\": 2"), "{text}");
         assert_eq!(Case::load(&path).unwrap(), case);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn the_frames_jaw_is_optional_in_the_file() {
+        let path = temp_file("jaw");
+        let mut case = designed_bridge();
+        case.design.jaw_frame.as_mut().unwrap().upper = Some(false);
+        case.save(&path).unwrap();
+        assert_eq!(Case::load(&path).unwrap(), case);
+        case.design.jaw_frame.as_mut().unwrap().upper = None;
+        case.save(&path).unwrap();
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("upper"));
+        assert_eq!(Case::load(&path).unwrap(), case);
+        std::fs::write(
+            &path,
+            r#"{"format":"dentcraft-case","version":2,"case":{"name":"old","design":
+                {"jaw_frame":{"origin":[0,0,0],"occlusal":[0,0,1],"forward":[0,1,0]}}}}"#,
+        )
+        .unwrap();
+        let frame = Case::load(&path).unwrap().design.jaw_frame.unwrap();
+        assert_eq!(frame.upper, None);
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 

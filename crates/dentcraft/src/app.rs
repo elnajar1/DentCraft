@@ -612,7 +612,7 @@ impl DentCraftApp {
             }
             StepAction::DetectAgain => {
                 if let Some(tooth) = self.tooth {
-                    let axis = self.margin_axis();
+                    let axis = self.margin_axis(Some(tooth));
                     self.margin.detect_again(tooth, axis);
                 }
                 return;
@@ -626,7 +626,7 @@ impl DentCraftApp {
                 return;
             }
             StepAction::BestAxis => {
-                let occlusal = self.occlusal();
+                let occlusal = self.occlusal(self.tooth);
                 self.axis.best(occlusal);
                 return;
             }
@@ -810,18 +810,19 @@ impl DentCraftApp {
         }
     }
 
-    /// The jaw's occlusal direction, once the jaw is oriented.
-    fn occlusal(&self) -> Option<DVec3> {
-        self.case
-            .design
-            .jaw_frame
-            .map(|f| DVec3::from_array(f.occlusal))
+    /// The occlusal direction at `tooth` (the frame's own without one), once the jaw is
+    /// oriented: the frame is of one jaw, so teeth of the other arch get its opposite.
+    fn occlusal(&self, tooth: Option<Fdi>) -> Option<DVec3> {
+        let frame = self.case.design.jaw_frame.as_ref()?;
+        let teeth: Vec<Fdi> = self.case.units.iter().map(|u| u.tooth).collect();
+        Some(orient_step::occlusal_for(frame, &teeth, tooth))
     }
 
-    /// Direction out of a preparation when the jaw is oriented; without a jaw frame the margin
-    /// step falls back to the scan's own occlusal direction (see `margin_step::proposal_axis`).
-    fn margin_axis(&self) -> Option<DVec3> {
-        self.occlusal()
+    /// Direction out of the preparation of `tooth` when the jaw is oriented; without a jaw
+    /// frame the margin step falls back to the scan's own occlusal direction (see
+    /// `margin_step::proposal_axis`).
+    fn margin_axis(&self, tooth: Option<Fdi>) -> Option<DVec3> {
+        self.occlusal(tooth)
     }
 
     /// `--step inner` or `--step anatomy`: once the Insertion axis step has set the tooth's axis,
@@ -964,10 +965,12 @@ impl DentCraftApp {
         if std::mem::take(&mut self.pending_orient) {
             self.start_orient();
         }
-        let axis = self.margin_axis();
         for (tooth, seed) in std::mem::take(&mut self.pending_margin) {
             match margin_step::nearest_scan(&self.objects, seed) {
-                Some((scan, point)) => self.margin.propose(tooth, scan, point, axis),
+                Some((scan, point)) => {
+                    let axis = self.margin_axis(Some(tooth));
+                    self.margin.propose(tooth, scan, point, axis);
+                }
                 None => self.fail("--margin: no scan to put the seed on".to_owned()),
             }
         }
@@ -1788,7 +1791,7 @@ impl DentCraftApp {
 
     fn workflow_panel(&mut self, ui: &mut egui::Ui) {
         let has_jaw_scan = self.has_jaw_scan();
-        let occlusal = self.occlusal();
+        let occlusal = self.occlusal(self.tooth);
         let steps = self.session.steps();
         let anatomy = steps.iter().position(|s| s.id == StepId::Anatomy);
         let export = self
@@ -1958,7 +1961,6 @@ impl DentCraftApp {
         if out.interacted {
             self.auto_fit = false;
         }
-        let axis = self.margin_axis();
         let tooth = self
             .session
             .current()
@@ -1968,11 +1970,11 @@ impl DentCraftApp {
             design: &mut self.case.design,
             history: &mut self.history,
             objects: &self.objects,
+        let axis = self.margin_axis(tooth);
             tooth,
             axis,
         });
         self.orient.update(&mut self.case.design, &mut self.history);
-        let occlusal = self.occlusal();
         let tooth = self
             .session
             .current()
@@ -1982,6 +1984,7 @@ impl DentCraftApp {
             design: &mut self.case.design,
             history: &mut self.history,
             objects: &self.objects,
+        let occlusal = self.occlusal(tooth);
             margin: &mut self.margin,
             tooth,
             occlusal,

@@ -52,6 +52,22 @@ pub fn is_upper_jaw(teeth: &[Fdi]) -> bool {
     teeth.first().is_some_and(|t| t.arch() == Arch::Upper)
 }
 
+/// The frame's occlusal direction for `tooth`: the stored direction on the arch the frame was
+/// computed on, its opposite on the other arch. Without a tooth, the frame's own direction.
+/// Frames from older files (no recorded jaw) belong to the arch of the first of `teeth`.
+pub fn occlusal_for(frame: &JawFrame, teeth: &[Fdi], tooth: Option<Fdi>) -> DVec3 {
+    let occlusal = DVec3::from_array(frame.occlusal);
+    let Some(tooth) = tooth else {
+        return occlusal;
+    };
+    let frame_upper = frame.upper.unwrap_or_else(|| is_upper_jaw(teeth));
+    if (tooth.arch() == Arch::Upper) == frame_upper {
+        occlusal
+    } else {
+        -occlusal
+    }
+}
+
 /// An arrow from `origin` along `dir` as one polyline: shaft to the tip, then two head strokes
 /// (each back from the tip and out to one side of `side`). Five points.
 pub fn arrow_points(origin: Vec3, dir: Vec3, side: Vec3, length: f32) -> Vec<Vec3> {
@@ -221,8 +237,9 @@ pub fn anterior_centre(design: &Design, teeth: &[Fdi]) -> Option<DVec3> {
     (!points.is_empty()).then(|| points.iter().sum::<DVec3>() / points.len() as f64)
 }
 
-fn to_case(f: &Found) -> JawFrame {
+fn to_case(f: &Found, upper: bool) -> JawFrame {
     JawFrame {
+        upper: Some(upper),
         origin: f.origin.to_array(),
         occlusal: f.occlusal.to_array(),
         forward: f.forward.to_array(),
@@ -239,6 +256,8 @@ pub fn set_frame(design: &mut Design, history: &mut History, frame: Option<JawFr
 /// The app side of the Orientation step: the worker job and the undoable edits.
 pub struct OrientStep {
     shown: Rc<RefCell<Option<JawFrame>>>,
+    /// Whether the running job orients the upper jaw.
+    upper: bool,
     running: bool,
     tx: Sender<Result<(Found, bool), String>>,
     rx: Receiver<Result<(Found, bool), String>>,
@@ -252,6 +271,7 @@ impl OrientStep {
         let (tx, rx) = channel();
         Self {
             shown: Rc::default(),
+            upper: false,
             running: false,
             tx,
             rx,
@@ -300,6 +320,7 @@ impl OrientStep {
         };
         self.error = None;
         self.note = None;
+        self.upper = is_upper_jaw(teeth);
         self.running = true;
         let tx = self.tx.clone();
         let repaint = self.repaint.clone();
@@ -330,7 +351,12 @@ impl OrientStep {
                 Ok((found, estimated)) => {
                     self.error = None;
                     self.note = estimated.then(|| ESTIMATED_NOTE.to_owned());
-                    set_frame(design, history, Some(to_case(&found)), ORIENT_LABEL);
+                    set_frame(
+                        design,
+                        history,
+                        Some(to_case(&found, self.upper)),
+                        ORIENT_LABEL,
+                    );
                 }
                 Err(e) => {
                     self.note = None;
@@ -362,7 +388,27 @@ mod tests {
             origin,
             occlusal,
             forward,
+            upper: None,
         }
+    }
+
+    #[test]
+    fn occlusal_follows_the_arch_of_the_tooth() {
+        let (u, l) = (Fdi::new(16).unwrap(), Fdi::new(44).unwrap());
+        let mut f = frame([0.0; 3], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]);
+        f.upper = Some(true);
+        let up = DVec3::Z;
+        assert_eq!(occlusal_for(&f, &[l], Some(u)), up);
+        assert_eq!(occlusal_for(&f, &[l], Some(l)), -up);
+        assert_eq!(occlusal_for(&f, &[l], None), up);
+        f.upper = Some(false);
+        assert_eq!(occlusal_for(&f, &[u], Some(l)), up);
+        assert_eq!(occlusal_for(&f, &[u], Some(u)), -up);
+        // Legacy frame: the arch of the first unit.
+        f.upper = None;
+        assert_eq!(occlusal_for(&f, &[l, u], Some(l)), up);
+        assert_eq!(occlusal_for(&f, &[l, u], Some(u)), -up);
+        assert_eq!(occlusal_for(&f, &[u], Some(u)), up);
     }
 
     #[test]

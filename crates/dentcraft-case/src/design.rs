@@ -30,6 +30,10 @@ pub struct JawFrame {
     pub origin: [f64; 3],
     pub occlusal: [f64; 3],
     pub forward: [f64; 3],
+    /// Whether the frame was computed on the upper jaw. Absent in older files: then the arch of
+    /// the case's first unit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upper: Option<bool>,
 }
 
 /// Decisions for one tooth.

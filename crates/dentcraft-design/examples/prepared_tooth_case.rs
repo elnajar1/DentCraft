@@ -114,6 +114,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         origin: [0.0; 3],
         occlusal: [0.0, 0.0, 1.0],
         forward: [0.0, 1.0, 0.0],
+        upper: None,
     });
     case.save(&case_path)?;
     println!(
