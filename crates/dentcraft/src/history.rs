@@ -11,8 +11,6 @@ pub const DEFAULT_CAP: usize = 200;
 
 /// Identifies one continuous edit, such as a handle drag. Successive records with the same
 /// group merge into one undo step until [`History::end_group`].
-// Recorded by the design steps, which build on this foundation; no step records edits yet.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EditGroup(pub u64);
 
@@ -29,7 +27,6 @@ struct Entry {
 pub struct History {
     undo: Vec<Entry>,
     redo: Vec<Entry>,
-    #[cfg_attr(not(test), allow(dead_code))]
     cap: usize,
 }
 
@@ -52,7 +49,6 @@ impl History {
     /// tooltip ("Move margin point"). An edit in the same open `group` as the last one extends
     /// it instead of adding a step. Any edit clears the redo stack; an edit that changed
     /// nothing is ignored.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn record(
         &mut self,
         label: &str,
@@ -86,7 +82,6 @@ impl History {
     }
 
     /// Closes the open group, so the next edit is a step of its own (call on drag release).
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn end_group(&mut self) {
         if let Some(last) = self.undo.last_mut() {
             last.group = None;

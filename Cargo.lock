@@ -508,6 +508,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "dentcraft-case",
+ "dentcraft-design",
  "dentcraft-io",
  "dentcraft-mesh",
  "dentcraft-render",
@@ -546,6 +547,8 @@ dependencies = [
 name = "dentcraft-design"
 version = "0.1.0"
 dependencies = [
+ "dentcraft-case",
+ "dentcraft-io",
  "dentcraft-mesh",
  "glam",
  "rayon",

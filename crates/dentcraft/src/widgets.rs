@@ -94,8 +94,8 @@ pub enum Icon {
     ChevronDown,
     /// Ruler with tick marks, for measuring.
     Ruler,
-    /// Molar outline, for design tools.
-    Tooth,
+    /// Preparation with its margin ring and handles, for the margin tool.
+    Margin,
     /// Arrow curving back to the left.
     Undo,
     /// Arrow curving on to the right.
@@ -309,25 +309,27 @@ pub fn paint_icon(painter: &egui::Painter, icon: Icon, rect: Rect, ink: Color32,
                 open(&[(x, y), (x + len * 0.7, y + len * 0.7)]);
             }
         }
-        Icon::Tooth => closed(&[
-            (-0.75, -0.45),
-            (-0.6, -0.82),
-            (-0.25, -0.88),
-            (0.0, -0.72),
-            (0.25, -0.88),
-            (0.6, -0.82),
-            (0.75, -0.45),
-            (0.65, 0.0),
-            (0.5, 0.45),
-            (0.4, 0.88),
-            (0.2, 0.88),
-            (0.08, 0.3),
-            (-0.08, 0.3),
-            (-0.2, 0.88),
-            (-0.4, 0.88),
-            (-0.5, 0.45),
-            (-0.65, 0.0),
-        ]),
+        Icon::Margin => {
+            // A tapered preparation, the margin ring round its base and two handles on it.
+            open(&[
+                (-0.55, 0.45),
+                (-0.4, -0.55),
+                (-0.2, -0.8),
+                (0.2, -0.8),
+                (0.4, -0.55),
+                (0.55, 0.45),
+            ]);
+            let ring: Vec<(f32, f32)> = (0..20)
+                .map(|i| {
+                    let a = i as f32 * std::f32::consts::TAU / 20.0;
+                    (0.9 * a.cos(), 0.5 + 0.32 * a.sin())
+                })
+                .collect();
+            closed(&ring);
+            for (x, y) in [(-0.9, 0.5), (0.64, 0.73)] {
+                painter.circle_filled(c + vec2(x, y) * r, r * 0.17, ink);
+            }
+        }
         Icon::Undo | Icon::Redo => {
             // A hook: down the right side of an arc, then back along the top to the arrow tip.
             let s = if icon == Icon::Undo { 1.0 } else { -1.0 };

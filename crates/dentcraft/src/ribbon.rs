@@ -2,7 +2,7 @@
 
 use dentcraft_case::ScanRole;
 use dentcraft_render::ViewPreset;
-use dentcraft_workflow::Session;
+use dentcraft_workflow::{Session, StepId};
 use std::sync::Arc;
 
 use eframe::egui::{
@@ -11,6 +11,7 @@ use eframe::egui::{
     text::LayoutJob, vec2,
 };
 
+use crate::margin_step::MARGIN;
 use crate::theme::{RADIUS_LG, RADIUS_MD, RADIUS_SM, SIZE_BODY, SIZE_HEADING, SIZE_SMALL};
 use crate::tools::MEASURE;
 use crate::widgets::{self, Icon, paint_icon};
@@ -83,6 +84,8 @@ pub enum Command {
     ShowRole(ScanRole, bool),
     /// Start or leave the Measure tool.
     Measure,
+    /// Open the Margin step, or leave its tool.
+    Margin,
 }
 
 /// Label of the command that completes the active step.
@@ -228,8 +231,15 @@ impl RibbonView<'_> {
         });
         divider(ui);
         group(ui, "Tools", |ui| {
-            command_button(ui, Icon::Tooth, "Tools arrive in 0.2", false, false)
-                .on_disabled_hover_text(workflow_panel::NOT_YET_NOTE);
+            let planned = session.steps().iter().any(|s| s.id == StepId::Margin);
+            let on = self.active_tool == Some(MARGIN);
+            if command_button(ui, Icon::Margin, "Margin", planned, on)
+                .on_hover_text("Trace the margin line on the current tooth  (Esc leaves)")
+                .on_disabled_hover_text("No crown, coping, inlay, onlay or veneer in the case")
+                .clicked()
+            {
+                *command = Some(Command::Margin);
+            }
         });
     }
 

@@ -8,6 +8,7 @@ mod document;
 mod history;
 mod loader;
 mod margin_edit;
+mod margin_step;
 mod objects;
 mod ribbon;
 mod theme;

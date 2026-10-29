@@ -1,6 +1,4 @@
 //! Pure helpers of the margin line editor: control points along a closed curve.
-// Wired by the margin step.
-#![cfg_attr(not(test), allow(dead_code))]
 
 use glam::DVec3;
 

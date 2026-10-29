@@ -24,7 +24,28 @@ pub enum StepAction {
     Back,
     Skip,
     GoTo(usize),
+    /// Work on this tooth of step `usize` (a chip click).
+    Tooth(usize, Fdi),
+    /// Propose the margin again from the last click.
+    DetectAgain,
+    /// Remove the current tooth's margin.
+    ClearMargin,
 }
+
+/// What the Margin step's card shows.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MarginCard {
+    pub tooth: Fdi,
+    /// Length of the margin, once there is one.
+    pub length_mm: Option<f64>,
+    /// What the step is busy with.
+    pub busy: Option<&'static str>,
+    pub error: Option<String>,
+    pub can_detect_again: bool,
+}
+
+/// Hint shown until the tooth has a margin.
+pub const MARGIN_HINT: &str = "Click the top of the preparation";
 
 /// Whether the active step may be completed: the Scans step needs a jaw scan.
 pub fn can_complete(step: StepId, has_jaw_scan: bool) -> bool {
@@ -39,6 +60,10 @@ pub struct WorkflowView<'a> {
     /// Height of the step section last frame, so the step list leaves room for it.
     pub card_height: &'a mut f32,
     pub sections: &'a mut Sections,
+    /// Tooth the per-tooth step works on.
+    pub tooth: Option<Fdi>,
+    /// The Margin step's card, when that step is active.
+    pub margin: Option<MarginCard>,
 }
 
 impl WorkflowView<'_> {
@@ -82,16 +107,17 @@ impl WorkflowView<'_> {
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 2.0;
                         for (index, step) in session.steps().iter().enumerate() {
-                            if step_row(
+                            if let Some(a) = step_row(
                                 ui,
                                 index,
                                 step.id,
                                 &step.teeth,
                                 session.status(index),
                                 self.case,
+                                self.tooth,
                                 &p,
                             ) {
-                                action = Some(StepAction::GoTo(index));
+                                action = Some(a);
                             }
                         }
                     });
@@ -138,7 +164,44 @@ fn progress_bar(ui: &mut Ui, fraction: f32, p: &Palette) {
     }
 }
 
-/// One step of the plan. Returns true when the user clicked a finished step to re-open it.
+/// How a tooth chip is drawn.
+#[derive(Clone, Copy, Debug, Default)]
+struct ChipMark {
+    /// The tooth the active step works on.
+    current: bool,
+    /// The step's work on this tooth is done.
+    done: bool,
+    /// A click picks the tooth.
+    clickable: bool,
+}
+
+/// Whether the step has per-tooth tools, so its chips pick the tooth to work on.
+fn has_tooth_tools(id: StepId) -> bool {
+    id == StepId::Margin
+}
+
+fn chip_mark(
+    id: StepId,
+    status: StepStatus,
+    tooth: Fdi,
+    case: &Case,
+    current: Option<Fdi>,
+) -> ChipMark {
+    let tools = has_tooth_tools(id);
+    ChipMark {
+        current: tools && status == StepStatus::Active && current == Some(tooth),
+        done: id == StepId::Margin
+            && case
+                .design
+                .teeth
+                .get(&tooth)
+                .is_some_and(|d| d.margin.is_some()),
+        clickable: tools && status != StepStatus::Pending,
+    }
+}
+
+/// One step of the plan. Returns the user's click: a finished step to re-open it, or a tooth.
+#[allow(clippy::too_many_arguments)]
 fn step_row(
     ui: &mut Ui,
     index: usize,
@@ -146,9 +209,17 @@ fn step_row(
     teeth: &[Fdi],
     status: StepStatus,
     case: &Case,
+    current: Option<Fdi>,
     p: &Palette,
-) -> bool {
+) -> Option<StepAction> {
     let reopenable = matches!(status, StepStatus::Done | StepStatus::Skipped);
+    let mut picked = None;
+    let mut chip = |ui: &mut Ui, tooth: Fdi| {
+        let mark = chip_mark(id, status, tooth, case, current);
+        if tooth_chip(ui, tooth, case, mark, p) {
+            picked = Some(StepAction::Tooth(index, tooth));
+        }
+    };
     let background = ui.painter().add(Shape::Noop);
     let inner = egui::Frame::new()
         .inner_margin(Margin::symmetric(6, 4))
@@ -170,7 +241,10 @@ fn step_row(
                 )
                 .size()
                 .x;
-            let chips_width: f32 = teeth.iter().map(|t| chip_width(ui, *t) + 4.0).sum();
+            let chips_width: f32 = teeth
+                .iter()
+                .map(|t| chip_width(ui, *t, chip_mark(id, status, *t, case, current)) + 4.0)
+                .sum();
             let inline = 20.0 + 8.0 + title_width + 12.0 + chips_width <= ui.available_width();
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
@@ -188,7 +262,7 @@ fn step_row(
                     if inline {
                         ui.spacing_mut().item_spacing.x = 4.0;
                         for &tooth in teeth.iter().rev() {
-                            tooth_chip(ui, tooth, case, p);
+                            chip(ui, tooth);
                         }
                     }
                 });
@@ -198,11 +272,14 @@ fn step_row(
                     ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
                     ui.add_space(26.0);
                     for &tooth in teeth {
-                        tooth_chip(ui, tooth, case, p);
+                        chip(ui, tooth);
                     }
                 });
             }
         });
+    if picked.is_some() {
+        return picked;
+    }
     let rect = inner.response.rect;
     let sense = if reopenable {
         Sense::click()
@@ -221,14 +298,12 @@ fn step_row(
         background,
         Shape::rect_filled(rect, CornerRadius::same(8), fill),
     );
-    if reopenable {
-        response
+    let reopen = reopenable
+        && response
             .on_hover_cursor(CursorIcon::PointingHand)
             .on_hover_text("Re-open this step")
-            .clicked()
-    } else {
-        false
-    }
+            .clicked();
+    reopen.then_some(StepAction::GoTo(index))
 }
 
 fn status_icon(ui: &mut Ui, index: usize, status: StepStatus, p: &Palette) {
@@ -268,15 +343,19 @@ fn chip_font() -> FontId {
     FontId::proportional(SIZE_SMALL - 1.0)
 }
 
-fn chip_width(ui: &Ui, tooth: Fdi) -> f32 {
+/// Room for the tick of a done chip.
+const CHIP_TICK: f32 = 10.0;
+
+fn chip_width(ui: &Ui, tooth: Fdi, mark: ChipMark) -> f32 {
     let galley = ui
         .painter()
         .layout_no_wrap(tooth.to_string(), chip_font(), Color32::WHITE);
-    galley.size().x + 12.0
+    galley.size().x + 12.0 + if mark.done { CHIP_TICK } else { 0.0 }
 }
 
-/// A small chip with a tooth number, tinted with its restoration colour.
-fn tooth_chip(ui: &mut Ui, tooth: Fdi, case: &Case, p: &Palette) {
+/// A small chip with a tooth number, tinted with its restoration colour, ringed when it is the
+/// current tooth and ticked when its work is done. Returns true when a clickable chip was clicked.
+fn tooth_chip(ui: &mut Ui, tooth: Fdi, case: &Case, mark: ChipMark, p: &Palette) -> bool {
     // Solid restoration fills with dark numbers read at 4.5:1 or better in both themes.
     let (tint, ink) = case
         .unit(tooth)
@@ -284,15 +363,38 @@ fn tooth_chip(ui: &mut Ui, tooth: Fdi, case: &Case, p: &Palette) {
     let galley = ui
         .painter()
         .layout_no_wrap(tooth.to_string(), chip_font(), ink);
-    let size = vec2(galley.size().x + 10.0, 16.0);
-    let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
-    ui.painter()
-        .rect_filled(rect, CornerRadius::same(RADIUS_SM), tint);
-    ui.painter()
-        .galley(rect.center() - galley.size() * 0.5, galley, ink);
-    if let Some(unit) = case.unit(tooth) {
-        response.on_hover_text(format!("{tooth} · {}", unit.kind.label()));
+    let tick = if mark.done { CHIP_TICK } else { 0.0 };
+    let size = vec2(galley.size().x + 10.0 + tick, 16.0);
+    let sense = if mark.clickable {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, mut response) = ui.allocate_exact_size(size, sense);
+    let radius = CornerRadius::same(RADIUS_SM);
+    ui.painter().rect_filled(rect, radius, tint);
+    if mark.current {
+        ui.painter().rect_stroke(
+            rect.expand(1.5),
+            radius,
+            Stroke::new(1.5, p.accent),
+            egui::StrokeKind::Outside,
+        );
     }
+    let text_at = rect.center() - galley.size() * 0.5 - vec2(tick * 0.5, 0.0);
+    ui.painter().galley(text_at, galley, ink);
+    if mark.done {
+        let at = Rect::from_center_size(
+            egui::pos2(rect.right() - 3.0 - CHIP_TICK * 0.5, rect.center().y),
+            Vec2::splat(9.0),
+        );
+        paint_icon(ui.painter(), Icon::Check, at, ink, *p);
+    }
+    if let Some(unit) = case.unit(tooth) {
+        let done = if mark.done { " · margin done" } else { "" };
+        response = response.on_hover_text(format!("{tooth} · {}{done}", unit.kind.label()));
+    }
+    mark.clickable && response.on_hover_cursor(CursorIcon::PointingHand).clicked()
 }
 
 fn active_card(
@@ -322,22 +424,31 @@ fn active_card(
             ui.label(RichText::new("Teeth").size(SIZE_SMALL).color(p.text_dim));
             ui.add_space(2.0);
             for &tooth in teeth {
-                tooth_chip(ui, tooth, view.case, p);
+                let mark = chip_mark(id, StepStatus::Active, tooth, view.case, view.tooth);
+                if tooth_chip(ui, tooth, view.case, mark, p) {
+                    action = Some(StepAction::Tooth(index, tooth));
+                }
             }
         });
     }
     ui.add_space(4.0);
     let ready = can_complete(id, view.has_jaw_scan);
-    let note = if id == StepId::Scans {
-        if ready {
-            "Jaw scan loaded. Check each scan's role in the case panel."
-        } else {
-            NEEDS_JAW_SCAN
+    if let Some(card) = view.margin.as_ref().filter(|_| id == StepId::Margin) {
+        if let Some(a) = margin_section(ui, card, view.case, p) {
+            action = Some(a);
         }
     } else {
-        NOT_YET_NOTE
-    };
-    note_box(ui, note, p);
+        let note = if id == StepId::Scans {
+            if ready {
+                "Jaw scan loaded. Check each scan's role in the case panel."
+            } else {
+                NEEDS_JAW_SCAN
+            }
+        } else {
+            NOT_YET_NOTE
+        };
+        note_box(ui, note, p);
+    }
     if let Some(error) = view.error {
         ui.label(
             RichText::new(error)
@@ -371,6 +482,70 @@ fn active_card(
             }
         });
     });
+    action
+}
+
+/// The Margin step's tooth, hint, length, busy state, error and commands.
+fn margin_section(ui: &mut Ui, card: &MarginCard, case: &Case, p: &Palette) -> Option<StepAction> {
+    let mut action = None;
+    let has_margin = case
+        .design
+        .teeth
+        .get(&card.tooth)
+        .is_some_and(|d| d.margin.is_some());
+    egui::Frame::new()
+        .fill(p.panel)
+        .corner_radius(CornerRadius::same(8))
+        .inner_margin(Margin::symmetric(10, 7))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 4.0;
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(format!("Tooth {}", card.tooth))
+                        .strong()
+                        .color(p.text),
+                );
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if let Some(busy) = card.busy {
+                        ui.label(RichText::new(busy).size(SIZE_SMALL).color(p.text_dim));
+                        ui.add(egui::Spinner::new().size(12.0).color(p.accent));
+                    } else if let Some(length) = card.length_mm {
+                        ui.label(
+                            RichText::new(format!("{length:.2} mm"))
+                                .color(p.text)
+                                .strong(),
+                        );
+                        ui.label(RichText::new("Length").size(SIZE_SMALL).color(p.text_dim));
+                    }
+                });
+            });
+            let hint = if has_margin {
+                "Drag a point along the surface. Click the line to add a point; Delete removes one."
+            } else {
+                MARGIN_HINT
+            };
+            ui.label(RichText::new(hint).size(SIZE_SMALL).color(p.text_dim));
+            if let Some(error) = &card.error {
+                ui.label(RichText::new(error).size(SIZE_SMALL).color(p.danger));
+            }
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                if small_button(ui, "Detect again", card.can_detect_again, false)
+                    .on_hover_text("Propose the margin again from the last click")
+                    .on_disabled_hover_text(MARGIN_HINT)
+                    .clicked()
+                {
+                    action = Some(StepAction::DetectAgain);
+                }
+                if small_button(ui, "Clear", has_margin, false)
+                    .on_hover_text("Remove this tooth's margin")
+                    .clicked()
+                {
+                    action = Some(StepAction::ClearMargin);
+                }
+            });
+        });
     action
 }
 

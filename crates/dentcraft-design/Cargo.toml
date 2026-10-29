@@ -14,5 +14,9 @@ rayon.workspace = true
 spade.workspace = true
 thiserror = "2.0.21"
 
+[dev-dependencies]
+dentcraft-case.workspace = true
+dentcraft-io.workspace = true
+
 [lints]
 workspace = true

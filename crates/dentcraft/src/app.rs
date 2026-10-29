@@ -20,6 +20,7 @@ use crate::chart::{self, ChartEdit};
 use crate::document::{self, Document};
 use crate::history::History;
 use crate::loader::Loader;
+use crate::margin_step::{self, MARGIN, MarginStep, StepFrame};
 use crate::objects::{self, ObjectState, SceneObject};
 use crate::ribbon::{self, Command, RibbonTab, RibbonView, WorkspaceMenu};
 use crate::theme::{self, Palette, RADIUS_LG, SIZE_SMALL, ThemeKind};
@@ -50,18 +51,14 @@ pub struct StartOptions {
     pub screenshot: Option<PathBuf>,
     /// Two points to measure between, snapped to the scans once they have loaded.
     pub measure: Option<[DVec3; 2]>,
-    // The next four are wired by the margin step (not read yet, in tests too).
-    /// Run the jaw orientation at startup.
+    /// Run the jaw orientation at startup (wired by the orientation step).
     #[allow(dead_code)]
     pub orient: bool,
     /// Margin clicks (tooth, point) to replay at startup.
-    #[allow(dead_code)]
     pub margin: Vec<(Fdi, DVec3)>,
     /// Design step to open.
-    #[allow(dead_code)]
     pub step: Option<StepId>,
     /// Tooth the design steps work on.
-    #[allow(dead_code)]
     pub tooth: Option<Fdi>,
     /// Exit code of a screenshot run, read by `main` once the window has closed.
     pub exit_code: Arc<Mutex<Option<u8>>>,
@@ -119,6 +116,14 @@ pub struct DentCraftApp {
     tools: Tools,
     /// Points from `--measure`, waiting for the scans to load.
     pending_measure: Option<[DVec3; 2]>,
+    /// The Margin step's tracers, jobs and edits.
+    margin: MarginStep,
+    /// Tooth the per-tooth step works on.
+    tooth: Option<Fdi>,
+    /// `--step`, `--tooth` and `--margin`, waiting for the scans to load.
+    pending_step: Option<StepId>,
+    pending_tooth: Option<Fdi>,
+    pending_margin: Vec<(Fdi, DVec3)>,
 }
 
 /// The logo shipped with the app, decoded to RGBA.
@@ -174,6 +179,11 @@ impl DentCraftApp {
             sections,
             tools: Tools::default(),
             pending_measure: start.measure,
+            margin: MarginStep::new(Some(cc.egui_ctx.clone())),
+            tooth: None,
+            pending_step: start.step,
+            pending_tooth: start.tooth,
+            pending_margin: start.margin,
             case,
             objects: Vec::new(),
             next_id: 1,
@@ -294,6 +304,7 @@ impl DentCraftApp {
                     _ => self.fail("--measure: no visible scan to snap the points to".to_owned()),
                 }
             }
+            self.start_design();
         }
         // Scans still loading belong to the case too, so opening a case does not mark it changed.
         self.case.scans = self
@@ -343,19 +354,113 @@ impl DentCraftApp {
     }
 
     fn apply_step_action(&mut self, action: StepAction) {
-        let result = match action {
-            StepAction::Next => match self.session.current() {
-                Some(step) if !workflow_panel::can_complete(step.id, self.has_jaw_scan()) => {
-                    self.workflow_error = Some(workflow_panel::NEEDS_JAW_SCAN.to_owned());
-                    return;
+        let walks_teeth = self
+            .session
+            .current()
+            .filter(|s| s.id == StepId::Margin)
+            .map(|s| s.teeth.clone());
+        let (result, tooth) = match action {
+            StepAction::Next | StepAction::Back => {
+                let forward = action == StepAction::Next;
+                if let Some(t) = walks_teeth
+                    .as_deref()
+                    .and_then(|teeth| margin_step::neighbour_tooth(teeth, self.tooth, forward))
+                {
+                    (Ok(()), Some(t))
+                } else if forward {
+                    match self.session.current() {
+                        Some(step)
+                            if !workflow_panel::can_complete(step.id, self.has_jaw_scan()) =>
+                        {
+                            self.workflow_error = Some(workflow_panel::NEEDS_JAW_SCAN.to_owned());
+                            return;
+                        }
+                        _ => (self.session.complete(), None),
+                    }
+                } else {
+                    let result = self.session.back();
+                    let last = self.session.current().and_then(|s| s.teeth.last().copied());
+                    (result, last)
                 }
-                _ => self.session.complete(),
-            },
-            StepAction::Back => self.session.back(),
-            StepAction::Skip => self.session.skip(),
-            StepAction::GoTo(index) => self.session.go_to(index),
+            }
+            StepAction::Skip => (self.session.skip(), None),
+            StepAction::GoTo(index) => (self.session.go_to(index), None),
+            StepAction::Tooth(index, tooth) => {
+                let result = if index == self.session.current_index() {
+                    Ok(())
+                } else {
+                    self.session.go_to(index)
+                };
+                (result, Some(tooth))
+            }
+            StepAction::DetectAgain => {
+                if let Some(tooth) = self.tooth {
+                    let axis = self.margin_axis();
+                    self.margin.detect_again(tooth, axis);
+                }
+                return;
+            }
+            StepAction::ClearMargin => {
+                if let Some(tooth) = self.tooth {
+                    self.margin
+                        .clear(&mut self.case.design, &mut self.history, tooth);
+                }
+                return;
+            }
         };
         self.workflow_error = result.err().map(|e| capitalize(&e.to_string()));
+        self.enter_step(tooth);
+    }
+
+    /// Picks the tooth for the active step (`tooth` when it is one of the step's, else the
+    /// first) and starts or leaves the margin tool to match.
+    fn enter_step(&mut self, tooth: Option<Fdi>) {
+        let step = self.session.current();
+        self.tooth = step.and_then(|s| {
+            tooth
+                .filter(|t| s.teeth.contains(t))
+                .or_else(|| s.teeth.first().copied())
+        });
+        if step.is_some_and(|s| s.id == StepId::Margin) && self.tooth.is_some() {
+            if self.tools.active_name() != Some(MARGIN) {
+                self.tools.activate(self.margin.tool());
+            }
+        } else if self.tools.active_name() == Some(MARGIN) {
+            self.tools.deactivate();
+        }
+    }
+
+    /// Direction out of a preparation: the jaw's occlusal direction once it is set, else
+    /// towards the camera.
+    fn margin_axis(&self) -> DVec3 {
+        match &self.case.design.jaw_frame {
+            Some(frame) => DVec3::from_array(frame.occlusal),
+            None => -self.viewport.camera.forward().as_dvec3(),
+        }
+    }
+
+    /// Opens `--step` for `--tooth` and proposes the `--margin` seeds, once the scans are in.
+    fn start_design(&mut self) {
+        if let Some(target) = self.pending_step.take() {
+            if self.session.steps().iter().any(|s| s.id == target) {
+                while self.session.current().is_some_and(|s| s.id != target) {
+                    if self.session.complete().is_err() {
+                        break;
+                    }
+                }
+                let tooth = self.pending_tooth.take();
+                self.enter_step(tooth);
+            } else {
+                self.fail(format!("--step: the case has no {} step", target.title()));
+            }
+        }
+        let axis = self.margin_axis();
+        for (tooth, seed) in std::mem::take(&mut self.pending_margin) {
+            match margin_step::nearest_scan(&self.objects, seed) {
+                Some((scan, point)) => self.margin.propose(tooth, scan, point, axis),
+                None => self.fail("--margin: no scan to put the seed on".to_owned()),
+            }
+        }
     }
 
     /// Clears the scene and makes `case` the open case.
@@ -368,6 +473,8 @@ impl DentCraftApp {
         self.session = Session::for_case(&case);
         self.workflow_error = None;
         self.history.clear();
+        self.margin.reset();
+        self.tooth = None;
         self.case = case;
     }
 
@@ -688,6 +795,24 @@ impl DentCraftApp {
             Command::ShowRole(role, visible) => {
                 objects::set_role_visible(&mut self.objects, role, visible);
             }
+            Command::Margin => {
+                if self.tools.active_name() == Some(MARGIN) {
+                    self.tools.deactivate();
+                } else {
+                    match self
+                        .session
+                        .steps()
+                        .iter()
+                        .position(|s| s.id == StepId::Margin)
+                    {
+                        Some(index) => self.apply_step_action(StepAction::Tooth(
+                            index,
+                            self.tooth.unwrap_or(self.session.steps()[index].teeth[0]),
+                        )),
+                        None => self.workflow_error = None,
+                    }
+                }
+            }
             Command::Measure => {
                 if self.tools.active_name() == Some(MEASURE) {
                     self.tools.deactivate();
@@ -830,6 +955,8 @@ impl DentCraftApp {
             error: self.workflow_error.as_deref(),
             card_height: &mut self.workflow_card_height,
             sections: &mut self.sections,
+            tooth: self.tooth,
+            margin: self.tooth.map(|t| self.margin.card(t)),
         }
         .show(ui);
         if let Some(action) = action {
@@ -937,6 +1064,19 @@ impl DentCraftApp {
         if out.interacted {
             self.auto_fit = false;
         }
+        let axis = self.margin_axis();
+        let tooth = self
+            .session
+            .current()
+            .filter(|s| s.id == StepId::Margin)
+            .and(self.tooth);
+        self.margin.update(StepFrame {
+            design: &mut self.case.design,
+            history: &mut self.history,
+            objects: &self.objects,
+            tooth,
+            axis,
+        });
         let p = self.palette();
         if self.objects.is_empty() {
             let mut clicked = false;
@@ -1037,6 +1177,9 @@ impl DentCraftApp {
     fn drive_screenshot(&mut self, ctx: &egui::Context) {
         let busy = self.objects.iter().any(|o| o.loaded().is_none())
             || self.pending_measure.is_some()
+            || self.pending_step.is_some()
+            || !self.pending_margin.is_empty()
+            || self.margin.busy()
             || self.viewport.camera.is_animating();
         let Some(job) = &mut self.screenshot else {
             return;
