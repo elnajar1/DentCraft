@@ -47,8 +47,8 @@ fn take_test_panic(name: &str) -> bool {
         && !TEST_PANIC_USED.swap(true, Ordering::SeqCst)
 }
 
-/// `true` once, for the first frame after the case's scans have loaded, when the test switch
-/// asks for a panic on the UI thread.
+/// `true` once, when the test switch asks for a panic on the UI thread; the app asks at the
+/// first frame with unsaved changes.
 pub fn take_test_panic_main() -> bool {
     std::env::var(TEST_PANIC_VAR).is_ok_and(|v| v == "main")
         && !TEST_PANIC_MAIN_USED.swap(true, Ordering::SeqCst)

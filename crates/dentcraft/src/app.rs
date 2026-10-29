@@ -407,11 +407,6 @@ impl DentCraftApp {
         }
         if self.objects.iter().all(|o| o.loaded().is_some()) && !self.objects.is_empty() {
             self.auto_fit = false;
-            // DENTCRAFT_TEST_PANIC=main: a panic on the UI thread at the first frame after the
-            // case's scans have loaded, to check the crash log and the recovery write.
-            if crash::take_test_panic_main() {
-                panic!("DENTCRAFT_TEST_PANIC: test panic on the UI thread");
-            }
             if let Some([a, b]) = self.pending_measure.take() {
                 let snap = |p| tools::snap_to_surface(&self.objects, p);
                 match (snap(a), snap(b)) {
@@ -1095,6 +1090,11 @@ impl DentCraftApp {
         if let Some(wait) = autosave.tick(&self.case, dirty, Instant::now(), crash::worker_panics())
         {
             ctx.request_repaint_after(wait);
+        }
+        // DENTCRAFT_TEST_PANIC=main: a panic on the UI thread at the first frame with unsaved
+        // changes, once the tick has kept them, to check the crash log and the recovery write.
+        if dirty && crash::take_test_panic_main() {
+            panic!("DENTCRAFT_TEST_PANIC: test panic on the UI thread");
         }
     }
 
