@@ -162,6 +162,23 @@ fn jaw_scan(objects: &[SceneObject], teeth: &[Fdi]) -> Option<usize> {
         })
 }
 
+/// The jaw of the scan [`jaw_scan`] picks, by its role: `None` for a scan of no jaw role.
+fn oriented_jaw(objects: &[SceneObject], teeth: &[Fdi]) -> Option<bool> {
+    match objects[jaw_scan(objects, teeth)?].role {
+        ScanRole::Upper => Some(true),
+        ScanRole::Lower => Some(false),
+        _ => None,
+    }
+}
+
+/// Whether the camera's side presets treat the view as the upper jaw: the jaw the frame was
+/// computed on, else (older files) the arch of the first of `teeth`.
+pub fn camera_upper(frame: Option<&JawFrame>, teeth: &[Fdi]) -> bool {
+    frame
+        .and_then(|f| f.upper)
+        .unwrap_or_else(|| is_upper_jaw(teeth))
+}
+
 /// Shown when the front of the arch is a guess.
 pub const ESTIMATED_NOTE: &str =
     "Front of the arch estimated — check the view and use Reset if it is wrong";
@@ -237,9 +254,9 @@ pub fn anterior_centre(design: &Design, teeth: &[Fdi]) -> Option<DVec3> {
     (!points.is_empty()).then(|| points.iter().sum::<DVec3>() / points.len() as f64)
 }
 
-fn to_case(f: &Found, upper: bool) -> JawFrame {
+fn to_case(f: &Found, upper: Option<bool>) -> JawFrame {
     JawFrame {
-        upper: Some(upper),
+        upper,
         origin: f.origin.to_array(),
         occlusal: f.occlusal.to_array(),
         forward: f.forward.to_array(),
@@ -256,8 +273,8 @@ pub fn set_frame(design: &mut Design, history: &mut History, frame: Option<JawFr
 /// The app side of the Orientation step: the worker job and the undoable edits.
 pub struct OrientStep {
     shown: Rc<RefCell<Option<JawFrame>>>,
-    /// Whether the running job orients the upper jaw.
-    upper: bool,
+    /// Whether the running job orients the upper jaw; `None` for a scan of no jaw role.
+    upper: Option<bool>,
     running: bool,
     tx: Sender<Result<(Found, bool), String>>,
     rx: Receiver<Result<(Found, bool), String>>,
@@ -271,7 +288,7 @@ impl OrientStep {
         let (tx, rx) = channel();
         Self {
             shown: Rc::default(),
-            upper: false,
+            upper: None,
             running: false,
             tx,
             rx,
@@ -320,7 +337,7 @@ impl OrientStep {
         };
         self.error = None;
         self.note = None;
-        self.upper = is_upper_jaw(teeth);
+        self.upper = oriented_jaw(objects, teeth);
         self.running = true;
         let tx = self.tx.clone();
         let repaint = self.repaint.clone();
@@ -524,6 +541,35 @@ mod tests {
         // A unit still picks the scan of its arch.
         let upper_tooth = [Fdi::new(11).unwrap()];
         assert_eq!(jaw_scan(&objects, &upper_tooth), Some(1));
+    }
+
+    #[test]
+    fn the_recorded_jaw_is_that_of_the_scan_oriented() {
+        let mesh = TriMesh::uv_sphere(1.0, 8, 4);
+        for (role, want) in [
+            (ScanRole::Upper, Some(true)),
+            (ScanRole::Lower, Some(false)),
+            (ScanRole::Other, None),
+        ] {
+            // No units: the picked scan, not the (absent) first unit, decides the jaw.
+            let objects = vec![object(1, role, mesh.clone())];
+            assert_eq!(oriented_jaw(&objects, &[]), want);
+        }
+    }
+
+    #[test]
+    fn the_camera_takes_the_jaw_of_the_frame() {
+        let (u, l) = (Fdi::new(16).unwrap(), Fdi::new(44).unwrap());
+        let mut f = frame([0.0; 3], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]);
+        f.upper = Some(true);
+        // The frame's jaw wins over the first unit's arch.
+        assert!(camera_upper(Some(&f), &[l]));
+        f.upper = Some(false);
+        assert!(!camera_upper(Some(&f), &[u]));
+        // Older frames and no frame fall back to the first unit.
+        f.upper = None;
+        assert!(camera_upper(Some(&f), &[u]));
+        assert!(!camera_upper(None, &[l]));
     }
 
     #[test]

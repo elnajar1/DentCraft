@@ -1950,7 +1950,7 @@ impl DentCraftApp {
         // turns the current preset view to it.
         let frame = orient_step::camera_frame(self.case.design.jaw_frame.as_ref());
         let teeth: Vec<Fdi> = self.case.units.iter().map(|u| u.tooth).collect();
-        let upper = orient_step::is_upper_jaw(&teeth);
+        let upper = orient_step::camera_upper(self.case.design.jaw_frame.as_ref(), &teeth);
         if self.viewport.camera.frame != frame || self.viewport.camera.upper != upper {
             self.viewport.camera.frame = frame;
             self.viewport.camera.upper = upper;
@@ -2251,6 +2251,10 @@ impl DentCraftApp {
         };
         if !job.requested && job.exit_code.lock().is_ok_and(|c| c.is_some()) {
             // A load failed: give up now rather than capture an incomplete scene.
+            // Step errors found before the failure are still the run's story.
+            for error in std::mem::take(&mut self.step_failures) {
+                eprintln!("dentcraft: {error}");
+            }
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
         }
@@ -2322,6 +2326,7 @@ impl DentCraftApp {
                 "Insertion axis",
                 self.axis.card(&self.case.design, tooth, occlusal).error,
             ),
+            ("Margin", self.margin.card(tooth).error),
             ("Inner surface", inner_error),
             ("Anatomy", anatomy.error),
             ("Contacts", contacts.error),
@@ -2346,7 +2351,7 @@ impl DentCraftApp {
 /// message once: the Anatomy card repeats the Inner surface error it is waiting on.
 fn new_step_errors(
     tooth: Fdi,
-    cards: [(&str, Option<String>); 4],
+    cards: [(&str, Option<String>); 5],
     seen: &mut HashSet<String>,
 ) -> Vec<String> {
     cards
@@ -2595,6 +2600,7 @@ mod tests {
         let mut seen = HashSet::new();
         let none = [
             ("Insertion axis", None),
+            ("Margin", None),
             ("Inner surface", None),
             ("Anatomy", None),
             ("Contacts", None),
@@ -2602,6 +2608,7 @@ mod tests {
         assert!(new_step_errors(tooth, none, &mut seen).is_empty());
         let cards = [
             ("Insertion axis", None),
+            ("Margin", e("No seed")),
             ("Inner surface", e("Facing away")),
             ("Anatomy", e("Facing away")),
             ("Contacts", e("Missing crown")),
@@ -2609,6 +2616,7 @@ mod tests {
         assert_eq!(
             new_step_errors(tooth, cards.clone(), &mut seen),
             [
+                "Margin on 33: No seed",
                 "Inner surface on 33: Facing away",
                 "Contacts on 33: Missing crown"
             ]
