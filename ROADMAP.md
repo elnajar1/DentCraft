@@ -34,6 +34,19 @@
 - [ ] Sculpt brushes: add, remove, smooth, flatten, morph
 - [ ] Distance maps: contacts, occlusion and thickness
 - [x] Watertight STL export per unit
+- [ ] Real scans: margin detection, inner surface and crowns on lab (stone model) and intraoral scans
+- [ ] Quality checks before export: watertight, manifold, self-intersection, minimum thickness,
+      margin fit and seating. Structural checks block export; the others need a confirmation
+      that is saved in the case
+- [ ] Design report next to the exported STL (HTML and JSON): every check, parameter, material
+      and program version
+- [ ] Case archive: one file with the case, its scans and a checksum manifest, for sending to
+      another lab
+- [ ] Scan import: unit check (millimetres or inches) and a repair dialog (loose pieces, small
+      holes) that asks before changing anything
+- [ ] Material profiles: zirconia and lithium disilicate, with their thickness and connector
+      minimums
+- [ ] Command palette and keyboard shortcuts
 
 ## 0.4 — Bridges and every restoration type
 
