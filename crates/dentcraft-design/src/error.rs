@@ -39,6 +39,9 @@ pub enum DesignError {
     /// The margin has too few distinct projected points, overlaps or crosses itself.
     #[error("the projected margin must be a simple polygon with at least three points")]
     InvalidMargin,
+    /// Automatic margin detection failed; `stage` names the step that gave up.
+    #[error("margin detection failed: {stage}")]
+    MarginDetect { stage: &'static str },
     /// One-based waypoint leg that could not form a valid surface margin.
     #[error("margin leg {leg}: {reason}")]
     MarginLeg { leg: usize, reason: &'static str },
@@ -60,6 +63,13 @@ pub enum DesignError {
         "margin undercut: worst horizontal overhang {depth:.6} mm at azimuth {sector_deg:.1} degrees"
     )]
     MarginUndercut { depth: f64, sector_deg: f64 },
+    /// The insertion axis points into the die: seen along it, `share` of the prep's
+    /// projected area is the inside of the scan surface (the die faces away).
+    #[error(
+        "the preparation faces away from the insertion axis ({:.0}% of it is seen from inside); reverse the axis",
+        share * 100.0
+    )]
+    PrepFacesAway { share: f64 },
     /// Adaptive sampling or clearance correction exceeded its bounded work budget.
     #[error("inner surface refinement or clearance correction did not converge")]
     RefinementLimit,

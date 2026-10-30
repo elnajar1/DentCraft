@@ -5,6 +5,26 @@ use glam::DVec3;
 use std::f64::consts::TAU;
 use std::sync::Arc;
 
+#[path = "margin_smooth.rs"]
+mod smooth;
+
+/// How far a followed curve may stray from a scan vertex before coming back to
+/// it and still count as noise around that vertex rather than touching itself.
+const FOLLOW_EXCURSION_MM: f64 = 0.5;
+
+/// Angular sectors of a proposal's ridge search (10 degrees each).
+const SECTORS: usize = 36;
+/// Sectors a proposal may find no ridge in, in total, and the most sector
+/// steps between two sectors with ridges that the ring bridges (a run of k
+/// empty sectors is k + 1 steps). Next to a neighbouring preparation the scan
+/// is often ragged or shows the neighbour's wall instead of this stump's.
+const MAX_EMPTY_SECTORS: usize = 12;
+const MAX_SECTOR_GAP: usize = 7;
+/// Waypoints a proposal may drop from its ridge ring when a leg cannot be
+/// routed, and the fewest it keeps.
+const MAX_DROPPED_WAYPOINTS: usize = 6;
+const MIN_RING_WAYPOINTS: usize = 12;
+
 /// Closed curve: neither list repeats the first entry at the end.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Margin {
@@ -379,6 +399,35 @@ impl MarginTracer {
         Ok(Margin { points, vertices })
     }
 
+    /// Join a detected ring of ridge waypoints. A leg that finds no surface path
+    /// in its corridor, or crosses another leg, starts or ends at a waypoint the
+    /// ring took from a fold or a frayed scan edge: drop the leg's end waypoint,
+    /// or its start when the same start fails again, and retry a few times.
+    /// Unlike clicked waypoints, ring waypoints are only evidence.
+    fn connect_ring(&self, ring: &[u32], cost: &[f64]) -> Result<Margin, DesignError> {
+        let mut ring = ring.to_vec();
+        let mut failed_start = None;
+        let mut dropped = 0;
+        loop {
+            match self.connect(&ring, cost) {
+                Err(DesignError::MarginLeg { leg, .. })
+                    if dropped < MAX_DROPPED_WAYPOINTS && ring.len() > MIN_RING_WAYPOINTS =>
+                {
+                    let start = ring[leg - 1];
+                    let index = if failed_start == Some(start) {
+                        leg - 1
+                    } else {
+                        leg % ring.len()
+                    };
+                    failed_start = Some(start);
+                    ring.remove(index);
+                    dropped += 1;
+                }
+                result => return result,
+            }
+        }
+    }
+
     /// Dijkstra restricted to a 3D corridor and the angular wedge of this leg.
     /// The wedge keeps neighbouring legs on their own side of the stump; the
     /// finite length term also gives a geodesic fallback where ridge evidence fades.
@@ -463,8 +512,10 @@ impl MarginTracer {
     /// Follow the stump wall to bound the search, then jointly select a closed
     /// ring of ridge candidates with at most 1 mm radial or axial sector jumps.
     /// The axial window scales with the local preparation, capped at 12 mm.
+    /// Sectors without ridge evidence (a ragged scan or a neighbouring
+    /// preparation) are bridged if few and narrow enough.
     /// The final projected loop must be simple, enclose the seed and measure
-    /// 8–45 mm. Missing or ambiguous surface corridors return `InvalidMargin`.
+    /// 8–45 mm. Failures return `MarginDetect` naming the stage that gave up.
     pub fn propose(&self, seed: DVec3, axis: DVec3) -> Result<Margin, DesignError> {
         if !axis.is_finite() || axis.length_squared() < 1e-24 {
             return Err(DesignError::InvalidAxis);
@@ -491,9 +542,11 @@ impl MarginTracer {
                 })
                 .map(|(i, _)| i as u32),
         );
-        let first_margin = self
-            .connect(&first, &first_cost)
-            .map_err(|_| DesignError::InvalidMargin)?;
+        let first_margin =
+            self.connect_ring(&first, &first_cost)
+                .map_err(|_| DesignError::MarginDetect {
+                    stage: "no surface route joins the first ring of ridges",
+                })?;
         let points = first_margin.points;
         let centroid = points.iter().sum::<DVec3>() / points.len() as f64;
         let mut cov = [[0.0; 3]; 3];
@@ -507,14 +560,18 @@ impl MarginTracer {
         }
         let (values, vectors) = crate::orient::eigen3(cov);
         if values[1] <= 1.5 * values[0].max(0.0) {
-            return Err(DesignError::InvalidMargin);
+            return Err(DesignError::MarginDetect {
+                stage: "the first ring is not flat enough to refine the axis",
+            });
         }
         let mut refined = vectors[0];
         if refined.dot(axis) < 0.0 {
             refined = -refined;
         }
         if refined.dot(axis) < 0.5 {
-            return Err(DesignError::InvalidMargin);
+            return Err(DesignError::MarginDetect {
+                stage: "the first ring tilts more than 60 degrees from the axis",
+            });
         }
         let second = self.sector_ridges(centroid, refined, &component, Some(1.5), Some(&points))?;
         let local = self
@@ -531,10 +588,25 @@ impl MarginTracer {
             .map(|(i, _)| i as u32);
         let cost = self.local_cost(local);
         let margin = self
-            .connect(&second, &cost)
-            .map_err(|_| DesignError::InvalidMargin)?;
-        validate_proposal(&margin, center, axis)?;
-        Ok(margin)
+            .connect_ring(&second, &cost)
+            .map_err(|_| DesignError::MarginDetect {
+                stage: "no surface route joins the refined ring of ridges",
+            })?;
+        validate_proposal(&margin, center, axis).map_err(|_| DesignError::MarginDetect {
+            stage: "the margin is not a simple 8-45 mm loop around the seed",
+        })?;
+        Ok(self.smoothed(&margin, center, axis).unwrap_or(margin))
+    }
+
+    /// The detected loop as a smooth surface curve: low-pass filtered in arc
+    /// length and projected back onto the scan, with its edge loop re-routed
+    /// along the new curve by `follow`. `None` (keep the detected loop) when the
+    /// smoothed curve cannot be followed or is no longer a valid proposal.
+    fn smoothed(&self, margin: &Margin, seed: DVec3, axis: DVec3) -> Option<Margin> {
+        let points = smooth::low_pass_on_surface(&self.mesh, &self.bvh, &margin.points, axis)?;
+        let smoothed = self.follow(&points).ok()?;
+        validate_proposal(&smoothed, seed, axis).ok()?;
+        Some(smoothed)
     }
 
     fn sector_ridges(
@@ -558,7 +630,7 @@ impl MarginTracer {
             .map(|(_, p)| (center - *p).dot(axis))
             .fold(0.0, f64::max);
         let depth_limit = (0.75 * extent).clamp(6.0, 12.0);
-        let mut sectors: [Vec<(u32, f64, f64)>; 36] = std::array::from_fn(|_| Vec::new());
+        let mut sectors: [Vec<(u32, f64, f64)>; SECTORS] = std::array::from_fn(|_| Vec::new());
         for (i, &point) in self.mesh.positions.iter().enumerate() {
             if !component[i] || self.adjacency.is_boundary(i as u32) {
                 continue;
@@ -578,20 +650,22 @@ impl MarginTracer {
                 continue;
             }
             let angle = d.dot(v).atan2(d.dot(u)).rem_euclid(TAU);
-            let sector = ((angle / TAU * 36.0) as usize).min(35);
+            let sector = ((angle / TAU * SECTORS as f64) as usize).min(SECTORS - 1);
             sectors[sector].push((i as u32, radius, depth));
         }
         let mut choices = Vec::new();
         for (index, sector) in sectors.iter_mut().enumerate() {
             if band.is_none() {
-                let angle = TAU * (index as f64 + 0.5) / 36.0;
+                let angle = TAU * (index as f64 + 0.5) / SECTORS as f64;
                 let radial = u * angle.cos() + v * angle.sin();
                 if let Some((wall_radius, top, bottom)) =
                     self.wall_outline(center, axis, radial, depth_limit)
                 {
                     sector.retain(|&(_, r, d)| r <= wall_radius + 1.1 && d >= top && d <= bottom);
                 } else {
-                    return Err(DesignError::InvalidMargin);
+                    // No stump wall seen in this direction: a ragged gap or a
+                    // neighbouring preparation. The ring bridges it below.
+                    sector.clear();
                 }
             }
             sector.retain(|&(i, r, d)| {
@@ -623,69 +697,11 @@ impl MarginTracer {
                     break;
                 }
             }
-            if peaks.is_empty() {
-                return Err(DesignError::InvalidMargin);
-            }
-            choices.push(peaks);
-        }
-        // Closed dynamic programming: enumerate the start candidate and include
-        // the closing transition. A hard 1 mm bound applies across the seam too.
-        let transition = |a: (u32, f64, f64), b: (u32, f64, f64)| {
-            let dr = (a.1 - b.1).abs();
-            let dz = (a.2 - b.2).abs();
-            if dr > 1.0 || dz > 1.0 {
-                f64::INFINITY
-            } else {
-                3.0 * (dr * dr + dz * dz)
-            }
-        };
-        let unary = |sector: usize, p: (u32, f64, f64)| {
-            let peak = self.ridge_strength[choices[sector][0].0 as usize];
-            -(self.ridge_strength[p.0 as usize] / peak).min(1.0) - 0.6 * p.2
-        };
-        let mut best = f64::INFINITY;
-        let mut ring = Vec::new();
-        for start in 0..choices[0].len() {
-            let mut scores = vec![f64::INFINITY; choices[0].len()];
-            scores[start] = unary(0, choices[0][start]);
-            let mut previous = vec![Vec::new(); choices.len()];
-            for sector in 1..choices.len() {
-                let mut next = vec![f64::INFINITY; choices[sector].len()];
-                previous[sector] = vec![0; next.len()];
-                for (j, &p) in choices[sector].iter().enumerate() {
-                    for (k, &q) in choices[sector - 1].iter().enumerate() {
-                        let score = scores[k] + transition(q, p) + unary(sector, p);
-                        if score < next[j] {
-                            next[j] = score;
-                            previous[sector][j] = k;
-                        }
-                    }
-                }
-                scores = next;
-            }
-            let last = choices.len() - 1;
-            for (end, &score) in scores.iter().enumerate() {
-                let score = score + transition(choices[last][end], choices[0][start]);
-                if score < best {
-                    best = score;
-                    let mut at = end;
-                    let mut path = Vec::new();
-                    for sector in (0..=last).rev() {
-                        path.push(choices[sector][at].0);
-                        if sector > 0 {
-                            at = previous[sector][at];
-                        }
-                    }
-                    path.reverse();
-                    ring = path;
-                }
+            if !peaks.is_empty() {
+                choices.push((index, peaks));
             }
         }
-        if ring.is_empty() {
-            Err(DesignError::InvalidMargin)
-        } else {
-            Ok(ring)
-        }
+        join_ring(&choices, |i| self.ridge_strength[i as usize])
     }
 
     /// Follow the first surface seen from the stump axis down through the wall.
@@ -750,28 +766,77 @@ impl MarginTracer {
         }
         let component = self.component(self.snap(curve[0])?);
         let mut waypoints = Vec::with_capacity(curve.len());
-        for &point in curve {
+        for (i, &point) in curve.iter().enumerate() {
             let v = self.snap(point)?;
             if !component[v as usize] {
                 return Err(DesignError::InvalidMargin);
             }
-            if waypoints.last() != Some(&v) {
+            // A noisy curve sampled finer than the scan's triangles can wander off a
+            // vertex and back (A, B, A): drop such a short excursion. A curve that
+            // returns to a vertex from further away touches itself and is rejected.
+            // Back at the first vertex for good, with the rest of the curve staying
+            // on it or close to it, the loop closes; a return to it mid-curve is
+            // like any other.
+            if let Some(k) = waypoints.iter().position(|&w| w == v) {
+                let at = self.mesh.positions[v as usize];
+                if k == 0
+                    && curve[i + 1..].iter().all(|&p| {
+                        p.distance(at) <= FOLLOW_EXCURSION_MM || self.snap(p).is_ok_and(|w| w == v)
+                    })
+                {
+                    continue;
+                }
+                if waypoints[k..]
+                    .iter()
+                    .any(|&w| self.mesh.positions[w as usize].distance(at) > FOLLOW_EXCURSION_MM)
+                {
+                    return Err(DesignError::InvalidMargin);
+                }
+                waypoints.truncate(k + 1);
+            } else {
                 waypoints.push(v);
             }
         }
-        if waypoints.len() > 1 && waypoints[0] == waypoints[waypoints.len() - 1] {
-            waypoints.pop();
-        }
-        let unique: std::collections::HashSet<u32> = waypoints.iter().copied().collect();
-        if waypoints.len() < 3 || unique.len() != waypoints.len() {
+        if waypoints.len() < 3 {
             return Err(DesignError::InvalidMargin);
         }
+        // Consecutive snapped vertices are often only one edge apart, and every
+        // other waypoint blocks the path; where the scan's triangles do not run
+        // along the curve, a leg's narrow corridor can then be closed. Retry with
+        // waypoints thinned to a minimum spacing, which leaves each leg room
+        // while the geodesic between them stays within a chord's sagitta of the
+        // curve.
         let geodesic = vec![1.0; self.mesh.positions.len()];
-        let (vertices, _, _) = self.route(&waypoints, &geodesic)?;
+        let mut result = self.route(&waypoints, &geodesic);
+        for spacing in [0.3, 0.6, 1.0] {
+            if result.is_ok() {
+                break;
+            }
+            let thinned = self.thin(&waypoints, spacing);
+            if thinned.len() >= 3 {
+                result = self.route(&thinned, &geodesic);
+            }
+        }
+        let (vertices, _, _) = result?;
         Ok(Margin {
             points: curve.to_vec(),
             vertices,
         })
+    }
+
+    /// Keeps the first waypoint and then every waypoint at least `spacing` mm
+    /// from the last one kept (and from the first, closing the loop).
+    fn thin(&self, waypoints: &[u32], spacing: f64) -> Vec<u32> {
+        let at = |v: u32| self.mesh.positions[v as usize];
+        let mut kept = vec![waypoints[0]];
+        for &v in &waypoints[1..] {
+            if at(v).distance(at(*kept.last().unwrap())) >= spacing
+                && at(v).distance(at(waypoints[0])) >= spacing
+            {
+                kept.push(v);
+            }
+        }
+        kept
     }
 
     /// Triangles on the seed side of the closed edge barrier. Invalid loops or seeds
@@ -853,6 +918,151 @@ impl MarginTracer {
             .filter(|(_, yes)| **yes)
             .map(|(i, _)| i as u32)
             .collect()
+    }
+}
+
+/// A sector's ridge candidate: scan vertex, radius from the stump axis and
+/// depth below the seed, both in mm.
+type RingCandidate = (u32, f64, f64);
+
+/// The largest radius change the ring accepts between two members one sector
+/// step apart, and the extra it allows per further step across a gap. A gap of
+/// g steps allows 1 + 0.3 (g - 1) mm, not g mm: a stump's outline bends slowly,
+/// and a step onto a neighbouring stump's wall is a jump of several mm however
+/// many sectors it is spread over.
+const RING_STEP_RADIUS_MM: f64 = 1.0;
+const RING_GAP_RADIUS_MM: f64 = 0.3;
+/// Cost of leaving a non-empty sector out of the ring. It outweighs the best
+/// unary reward of a member, so a ring keeps a sector unless its transitions
+/// cost several mm² more than bridging it.
+const RING_SKIP_COST: f64 = 4.0;
+
+/// Join per-sector ridge candidates into the cheapest closed ring by dynamic
+/// programming. `choices` lists the non-empty sectors in increasing order with
+/// their candidates; `strength` gives a candidate's ridge strength. Returns the
+/// ring's vertices in sector order.
+///
+/// A few sectors may lack evidence as long as no gap spans more than
+/// MAX_SECTOR_GAP sector steps (a run of k empty sectors is k + 1 steps): the
+/// ring bridges the gap and the surface route follows the scan across it. A
+/// sector holding only a neighbouring stump's ridges breaks the radius bound,
+/// so the ring may also skip non-empty sectors, at RING_SKIP_COST each, as long
+/// as no gap exceeds MAX_SECTOR_GAP steps and the ring keeps evidence from all
+/// but MAX_EMPTY_SECTORS sectors. Rings rank by total cost, skips included.
+fn join_ring(
+    choices: &[(usize, Vec<RingCandidate>)],
+    strength: impl Fn(u32) -> f64,
+) -> Result<Vec<u32>, DesignError> {
+    if choices.len() + MAX_EMPTY_SECTORS < SECTORS {
+        return Err(DesignError::MarginDetect {
+            stage: "too few directions around the seed show a margin ridge",
+        });
+    }
+    let gap =
+        |from: usize, to: usize| (choices[to].0 + SECTORS - choices[from].0 - 1) % SECTORS + 1;
+    if (0..choices.len()).any(|k| gap(k, (k + 1) % choices.len()) > MAX_SECTOR_GAP) {
+        return Err(DesignError::MarginDetect {
+            stage: "a wide arc around the seed shows no margin ridge",
+        });
+    }
+    // The radius and depth bounds apply across the seam too. The cost keeps the
+    // per-step slope penalty.
+    let transition = |steps: usize, a: RingCandidate, b: RingCandidate| {
+        let dr = (a.1 - b.1).abs();
+        let dz = (a.2 - b.2).abs();
+        let steps = steps as f64;
+        if dr > RING_STEP_RADIUS_MM + RING_GAP_RADIUS_MM * (steps - 1.0) || dz > steps {
+            f64::INFINITY
+        } else {
+            3.0 * (dr * dr + dz * dz) / steps
+        }
+    };
+    let peaks: Vec<f64> = choices
+        .iter()
+        .map(|c| c.1.iter().map(|p| strength(p.0)).fold(0.0, f64::max))
+        .collect();
+    let unary = |sector: usize, p: RingCandidate| {
+        let peak = peaks[sector].max(f64::MIN_POSITIVE);
+        -(strength(p.0) / peak).min(1.0) - 0.6 * p.2
+    };
+    let n = choices.len();
+    let max_skips = n - (SECTORS - MAX_EMPTY_SECTORS);
+    let skip_cost = |skipped: usize| RING_SKIP_COST * skipped as f64;
+    let mut best = f64::INFINITY;
+    let mut ring = Vec::new();
+    // Every valid ring includes a sector below MAX_SECTOR_GAP: otherwise the
+    // step from its last sector across the seam would be too long. Starting at
+    // choice s skips the s choices before it.
+    for s in (0..n).take_while(|&s| choices[s].0 < MAX_SECTOR_GAP) {
+        for start in 0..choices[s].1.len() {
+            // scores[k][j]: (skips, cost) of the cheapest chain from the start
+            // ending at candidate j of choice k; previous[k][j] its predecessor.
+            let mut scores: Vec<Vec<(usize, f64)>> = choices
+                .iter()
+                .map(|c| vec![(usize::MAX, f64::INFINITY); c.1.len()])
+                .collect();
+            let mut previous = vec![Vec::new(); n];
+            scores[s][start] = (s, skip_cost(s) + unary(s, choices[s].1[start]));
+            for k in s + 1..n {
+                previous[k] = vec![(0, 0); choices[k].1.len()];
+                for from in (s..k).rev() {
+                    let steps = gap(from, k);
+                    if steps > MAX_SECTOR_GAP {
+                        break;
+                    }
+                    let skipped = k - from - 1;
+                    for (j, &p) in choices[k].1.iter().enumerate() {
+                        for (i, &q) in choices[from].1.iter().enumerate() {
+                            let before = scores[from][i];
+                            if before.0 == usize::MAX {
+                                continue;
+                            }
+                            let cost = before.1
+                                + skip_cost(skipped)
+                                + transition(steps, q, p)
+                                + unary(k, p);
+                            if cost < scores[k][j].1 {
+                                scores[k][j] = (before.0 + skipped, cost);
+                                previous[k][j] = (from, i);
+                            }
+                        }
+                    }
+                }
+            }
+            for last in s + 1..n {
+                let steps = gap(last, s);
+                if steps > MAX_SECTOR_GAP {
+                    continue;
+                }
+                for (end, &(skips, cost)) in scores[last].iter().enumerate() {
+                    if skips == usize::MAX {
+                        continue;
+                    }
+                    let skips = skips + (n - 1 - last);
+                    let cost = cost
+                        + skip_cost(n - 1 - last)
+                        + transition(steps, choices[last].1[end], choices[s].1[start]);
+                    if skips <= max_skips && cost < best {
+                        best = cost;
+                        let (mut k, mut at) = (last, end);
+                        let mut path = vec![choices[k].1[at].0];
+                        while k != s {
+                            (k, at) = previous[k][at];
+                            path.push(choices[k].1[at].0);
+                        }
+                        path.reverse();
+                        ring = path;
+                    }
+                }
+            }
+        }
+    }
+    if ring.is_empty() {
+        Err(DesignError::MarginDetect {
+            stage: "the ridges around the seed do not join into a ring",
+        })
+    } else {
+        Ok(ring)
     }
 }
 
@@ -1166,8 +1376,8 @@ mod tests {
             rotation * (die.axis * ((12.0 + p.extra_wall) * p.height_scale) + DVec3::X * offset);
         let axis = rotation * (glam::DQuat::from_rotation_y(tilt.to_radians()) * die.axis);
         let result = tracer.propose(seed, axis);
-        if allow_error && result == Err(DesignError::InvalidMargin) {
-            eprintln!("tilt {tilt}: clear InvalidMargin rejection");
+        if allow_error && matches!(result, Err(DesignError::MarginDetect { .. })) {
+            eprintln!("tilt {tilt}: clear MarginDetect rejection");
             return;
         }
         assert!(
@@ -1765,6 +1975,69 @@ mod tests {
     }
 
     #[test]
+    fn follow_drops_short_excursions_of_a_noisy_stored_curve() {
+        // A tilted, noisy prep with its gum and a neighbour. The stored curve is
+        // the proposed loop, but every seventh vertex it wanders onto an adjacent
+        // scan vertex and back, as a smoothed 0.1 mm curve does across triangles
+        // larger than its spacing; it also passes the start vertex once more.
+        // The curve used to be rejected as touching itself, which left the
+        // Insertion axis step without a region on real full-arch scans.
+        let die = prepared_tooth(&ToothParams {
+            tilt_deg: 17.0,
+            noise_mm: 0.02,
+            gingiva: true,
+            ..Default::default()
+        })
+        .unwrap();
+        let mesh = Arc::new(die.mesh.clone());
+        let tracer = MarginTracer::new(mesh.clone()).unwrap();
+        let seed = die.axis * 12.0;
+        let margin = tracer.propose(seed, die.axis).unwrap();
+        let reference = tracer.region(&tracer.follow(&margin.points).unwrap(), seed);
+        assert!(!reference.is_empty());
+        let on_loop: HashSet<u32> = margin.vertices.iter().copied().collect();
+        let mut curve = Vec::new();
+        let mut excursions = 0;
+        for (i, &v) in margin.vertices.iter().enumerate() {
+            let at = mesh.positions[v as usize];
+            curve.push(at);
+            let aside = mesh
+                .triangles
+                .iter()
+                .filter(|t| t.contains(&v))
+                .flatten()
+                .copied()
+                .find(|&w| !on_loop.contains(&w) && mesh.positions[w as usize].distance(at) < 0.4);
+            if let (0, Some(w)) = (i % 7, aside) {
+                curve.push(mesh.positions[w as usize]);
+                curve.push(at);
+                excursions += 1;
+            }
+        }
+        curve.push(curve[0]);
+        assert!(excursions >= 5, "{excursions} excursions");
+        let followed = tracer.follow(&curve).unwrap();
+        assert_eq!(followed.points, curve);
+        let region = tracer.region(&followed, seed);
+        let difference = region.len().abs_diff(reference.len());
+        assert!(
+            difference * 50 <= reference.len(),
+            "{} vs {} triangles",
+            region.len(),
+            reference.len()
+        );
+        // A curve that comes back to a vertex from far away touches itself.
+        let mut touching = margin.points.clone();
+        touching.insert(touching.len() / 2, margin.points[touching.len() / 4]);
+        assert!(tracer.follow(&touching).is_err());
+        // So does one that comes back to its first vertex halfway round, without
+        // crossing itself, and goes on.
+        let mut touching = margin.points.clone();
+        touching.insert(touching.len() / 2, margin.points[0]);
+        assert!(tracer.follow(&touching).is_err());
+    }
+
+    #[test]
     #[ignore]
     fn perf_margin_propose() {
         let die = prepared_tooth(&ToothParams {
@@ -1784,5 +2057,174 @@ mod tests {
         );
         assert!(!margin.points.is_empty());
         assert!(elapsed.as_secs_f64() < 1.0, "took {elapsed:?}");
+    }
+
+    /// Full-arch intraoral scans prepare every tooth, and the scan is ragged
+    /// between neighbours: directions facing a neighbour show no stump wall or
+    /// no ridge. Detection must bridge them and still follow each margin,
+    /// measured in 3D at curve samples and between them, both ways.
+    #[test]
+    fn propose_on_a_row_of_adjacent_preps_with_ragged_gaps() {
+        let rotation = glam::DQuat::from_axis_angle(DVec3::new(1.0, 2.0, 3.0).normalize(), 0.71);
+        let axis = rotation * DVec3::Z;
+        let (mesh, tops, margins) =
+            crate::synthetic::prepared_row(3, 8.2, 0.4, -0.2, 0.02, rotation);
+        let tracer = MarginTracer::new(Arc::new(mesh)).unwrap();
+        let edge: Vec<DVec3> = (0..tracer.mesh.positions.len() as u32)
+            .filter(|&i| tracer.adjacency.is_boundary(i))
+            .map(|i| tracer.mesh.positions[i as usize])
+            .collect();
+        for (k, (top, truth)) in tops.iter().zip(&margins).enumerate() {
+            let margin = tracer
+                .propose(*top, axis)
+                .unwrap_or_else(|e| panic!("stump {k}: {e}"));
+            let points = &margin.points;
+            let n = points.len();
+            let mut samples = points.clone();
+            samples.extend((0..n).map(|i| points[i].lerp(points[(i + 1) % n], 0.5)));
+            // Where the ragged interproximal hole reaches the margin, the margin
+            // was not scanned: compare only true-margin samples at least 0.3 mm
+            // from the scan's open edge, and the detected samples nearest to them.
+            let m = truth.len();
+            let on_scan: Vec<bool> = truth
+                .iter()
+                .map(|p| edge.iter().all(|e| e.distance_squared(*p) > 0.3 * 0.3))
+                .collect();
+            let scanned: Vec<DVec3> = (0..m).filter(|&i| on_scan[i]).map(|i| truth[i]).collect();
+            assert!(
+                scanned.len() * 5 >= m * 3,
+                "stump {k}: holes removed 40% of the margin"
+            );
+            let near_scanned: Vec<DVec3> = samples
+                .iter()
+                .copied()
+                .filter(|s| {
+                    let i = (0..m)
+                        .min_by(|&a, &b| {
+                            segment_distance(*s, truth[a], truth[(a + 1) % m])
+                                .total_cmp(&segment_distance(*s, truth[b], truth[(b + 1) % m]))
+                        })
+                        .unwrap();
+                    on_scan[i] && on_scan[(i + 1) % m]
+                })
+                .collect();
+            let off = distance_to_curve(&near_scanned, truth);
+            let missed = distance_to_curve(&scanned, points);
+            eprintln!(
+                "stump {k}: off the margin {off:.3} mm, margin missed by {missed:.3} mm, {} of {m} true samples scanned",
+                scanned.len()
+            );
+            // The ridge detector sits up to about 0.2 mm inside this heightfield's
+            // rounded edge on every stump alike, isolated or not.
+            assert!(off <= 0.3, "stump {k}: detected curve strays {off} mm");
+            assert!(
+                missed <= 0.3,
+                "stump {k}: true margin missed by {missed} mm"
+            );
+        }
+    }
+
+    /// Ring-selection input over all sectors: `candidates(sector)` lists the
+    /// (radius, depth) of that sector's ridges; candidate k of sector s has id
+    /// 10 s + k. Sectors with no candidate are left out, as `sector_ridges` does.
+    fn ring_input(
+        candidates: impl Fn(usize) -> Vec<(f64, f64)>,
+    ) -> Vec<(usize, Vec<RingCandidate>)> {
+        (0..SECTORS)
+            .filter_map(|s| {
+                let list: Vec<RingCandidate> = candidates(s)
+                    .into_iter()
+                    .enumerate()
+                    .map(|(k, (r, d))| ((10 * s + k) as u32, r, d))
+                    .collect();
+                (!list.is_empty()).then_some((s, list))
+            })
+            .collect()
+    }
+
+    fn ring_sectors(ring: &[u32]) -> Vec<usize> {
+        ring.iter().map(|&id| id as usize / 10).collect()
+    }
+
+    #[test]
+    fn ring_skips_a_lone_sector_on_a_neighbour() {
+        let choices = ring_input(|s| vec![if s == 15 { (6.5, 1.0) } else { (4.0, 1.0) }]);
+        let ring = join_ring(&choices, |_| 1.0).unwrap();
+        let expected: Vec<usize> = (0..SECTORS).filter(|&s| s != 15).collect();
+        assert_eq!(ring_sectors(&ring), expected);
+    }
+
+    #[test]
+    fn ring_does_not_bulge_onto_a_neighbour_across_a_gap() {
+        // Sectors 10-12 show nothing and 13-15 only a neighbouring stump's
+        // ridge 2.5 mm further out. Bridging 9 -> 16 skips three sectors; the
+        // ring through the neighbour (9 -> 13 -> 14 -> 15 -> 18) skips only
+        // two, but it is not this stump's margin, at the same depth or deeper.
+        for neighbour_depth in [1.0, 2.0] {
+            let choices = ring_input(|s| match s {
+                10..=12 => vec![],
+                13..=15 => vec![(6.5, neighbour_depth)],
+                _ => vec![(4.0, 1.0)],
+            });
+            let ring = join_ring(&choices, |_| 1.0).unwrap();
+            let expected: Vec<usize> = (0..SECTORS).filter(|s| !(10..=15).contains(s)).collect();
+            assert_eq!(ring_sectors(&ring), expected, "depth {neighbour_depth}");
+        }
+    }
+
+    #[test]
+    fn ring_keeps_every_sector_of_a_noisy_oval_stump() {
+        let mut rng = Lcg::new(7);
+        let noise: Vec<(f64, f64)> = (0..SECTORS)
+            .map(|_| (0.6 * rng.unit() - 0.3, 0.6 * rng.unit() - 0.3))
+            .collect();
+        let choices = ring_input(|s| {
+            let angle = TAU * (s as f64 + 0.5) / SECTORS as f64;
+            vec![(
+                4.5 + 0.8 * (2.0 * angle).cos() + noise[s].0,
+                1.0 + 0.5 * angle.sin() + noise[s].1,
+            )]
+        });
+        let ring = join_ring(&choices, |_| 1.0).unwrap();
+        assert_eq!(ring_sectors(&ring), (0..SECTORS).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn ring_prefers_the_stump_candidate_over_a_neighbour_in_the_same_sector() {
+        // Sectors 13-15 also hold a neighbour's deeper ridge 2.5 mm further out,
+        // listed first: the ring stays on the stump's own candidate (k = 1).
+        let choices = ring_input(|s| match s {
+            13..=15 => vec![(6.5, 2.0), (4.0, 1.0)],
+            _ => vec![(4.0, 1.0)],
+        });
+        let ring = join_ring(&choices, |_| 1.0).unwrap();
+        assert_eq!(ring_sectors(&ring), (0..SECTORS).collect::<Vec<_>>());
+        assert_eq!(&ring[13..16], &[131, 141, 151]);
+    }
+
+    #[test]
+    fn ring_rejects_degenerate_and_sparse_input() {
+        assert!(join_ring(&[], |_| 1.0).is_err());
+        assert!(join_ring(&[(4, vec![(40, 4.0, 1.0)])], |_| 1.0).is_err());
+        // Zero ridge strength everywhere still yields a finite ring.
+        let all = ring_input(|_| vec![(4.0, 1.0)]);
+        assert_eq!(join_ring(&all, |_| 0.0).unwrap().len(), SECTORS);
+        // Exactly MAX_EMPTY_SECTORS empty sectors are bridged; more are not.
+        let sparse = ring_input(|s| if s % 3 == 0 { vec![] } else { vec![(4.0, 1.0)] });
+        assert_eq!(join_ring(&sparse, |_| 1.0).unwrap().len(), 24);
+        let sparse = ring_input(|s| if s % 2 == 0 { vec![] } else { vec![(4.0, 1.0)] });
+        assert!(join_ring(&sparse, |_| 1.0).is_err());
+        // A gap longer than MAX_SECTOR_GAP steps.
+        let arc = ring_input(|s| {
+            if (20..27).contains(&s) {
+                vec![]
+            } else {
+                vec![(4.0, 1.0)]
+            }
+        });
+        assert!(join_ring(&arc, |_| 1.0).is_err());
+        // No member may close the ring: every sector jumps 2 mm from the last.
+        let zigzag = ring_input(|s| vec![(if s % 2 == 0 { 3.0 } else { 5.0 }, 1.0)]);
+        assert!(join_ring(&zigzag, |_| 1.0).is_err());
     }
 }

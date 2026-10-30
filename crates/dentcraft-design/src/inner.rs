@@ -99,6 +99,7 @@ pub fn inner_surface(
     let polygon = Polygon::new(margin, frame)?;
     let prep = Region::new(mesh, region)?;
     reject_margin_undercut(&polygon, frame, &prep, params.min_undercut_depth)?;
+    reject_reversed_prep(&prep, frame.w)?;
     let mut grid = Grid::new(&polygon, params)?;
     grid.cast(&polygon, frame, &prep);
     grid.fill_holes()?;
@@ -664,6 +665,29 @@ fn ordered_parameter_bounds(previous: f64, separation: f64, remaining: usize) ->
     ((previous + separation).min(hi), hi)
 }
 
+/// The projected signed area of an oriented surface equals the signed area enclosed by
+/// its projected boundary, so it is positive for a die whose outer surface faces up the
+/// axis however noisy or undercut the walls are. Zero or negative means the axis points
+/// into the die (the scan's inside is above): no intaglio can be raised over it.
+fn reject_reversed_prep(prep: &Region, axis: DVec3) -> Result<(), DesignError> {
+    let (mut facing, mut total) = (0.0, 0.0);
+    for i in 0..prep.mesh.triangles.len() {
+        let cross = prep.mesh.triangle_cross(i);
+        facing += cross.dot(axis);
+        total += cross.dot(axis).abs();
+    }
+    if facing <= 0.0 {
+        return Err(DesignError::PrepFacesAway {
+            share: if total > 0.0 {
+                0.5 - 0.5 * facing / total
+            } else {
+                1.0
+            },
+        });
+    }
+    Ok(())
+}
+
 /// Reject when the region cannot seat on the margin along `axis`: the worst
 /// horizontal extension beyond the projected margin (region vertices, edge
 /// midpoints and centroids) must stay within `threshold`. Samples within the
@@ -770,12 +794,20 @@ fn clear_point(
     frame: Frame,
     prep: &Region,
 ) -> Result<DVec3, DesignError> {
+    // Beside a near-vertical wall a raise gains clearance only at the wall's slight
+    // lean, so gradient steps stall at a tiny deficit while the nearest face changes
+    // along the noisy wall. A geometrically growing least raise reaches clearance (or
+    // the 1 mm step limit) in bounded steps; the bisection keeps the result low.
+    let mut floor = 1e-4;
     for _ in 0..64 {
         let (distance, normal) = signed_clearance(point, prep);
         if distance >= target - 1e-7 {
             return Ok(point);
         }
-        let raise = ((target - distance) / normal.dot(frame.w).max(0.01)).min(1.0);
+        let raise = ((target - distance) / normal.dot(frame.w).max(0.01))
+            .max(floor)
+            .min(1.0);
+        floor *= 2.0;
         let candidate = point + frame.w * raise;
         let actual = signed_clearance(candidate, prep).0;
         if (actual - target).abs() <= 1e-7 {
@@ -1403,6 +1435,70 @@ mod tests {
                 assert!(signed_clearance(p, &closed).0 >= g - 0.001);
             }
         }
+    }
+
+    /// A tilted die with parallel (0°-taper) walls and scan-like radial noise: the
+    /// noisy wall above the margin, `noise` mm deep, deterministic.
+    fn noisy_parallel_die(noise: f64) -> crate::PreparedStump {
+        let mut die = prepared_stump(&StumpParams {
+            top_radius: 3.0,
+            tilt_deg: 7.3,
+            segments: 96,
+            wall_steps: 40,
+            ..Default::default()
+        })
+        .unwrap();
+        let base = die.margin[0].dot(die.axis);
+        for (i, p) in die.mesh.positions.iter_mut().enumerate() {
+            let h = p.dot(die.axis) - base;
+            if h > 0.05 && h < 3.8 {
+                let radial = (*p - die.axis * p.dot(die.axis)).normalize();
+                let hash = ((i as f64 * 12.9898).sin() * 43_758.545_3).fract();
+                *p += radial * noise * hash;
+            }
+        }
+        die
+    }
+
+    #[test]
+    fn noisy_parallel_wall_reaches_clearance_everywhere() {
+        let die = noisy_parallel_die(0.02);
+        let params = InnerSurfaceParams {
+            cement_gap: 0.03,
+            ..Default::default()
+        };
+        let result = inner_surface(&die.mesh, &die.region, &die.margin, die.axis, &params).unwrap();
+        assert_disk(&result, die.axis);
+        let closed = Region::new(
+            &die.mesh,
+            &(0..die.mesh.triangles.len() as u32).collect::<Vec<_>>(),
+        )
+        .unwrap();
+        for tri in &result.mesh.triangles {
+            let points = tri.map(|i| result.mesh.positions[i as usize]);
+            let gaps = tri.map(|i| result.target_gaps[i as usize]);
+            for weights in ALL_WEIGHTS {
+                let p = (0..3).map(|i| points[i] * weights[i]).sum::<DVec3>();
+                let g = (0..3).map(|i| gaps[i] * weights[i]).sum::<f64>();
+                assert!(signed_clearance(p, &closed).0 >= g - 0.001);
+            }
+        }
+    }
+
+    #[test]
+    fn reversed_axis_reports_a_die_facing_away() {
+        let die = noisy_parallel_die(0.02);
+        let result = inner_surface(
+            &die.mesh,
+            &die.region,
+            &die.margin,
+            -die.axis,
+            &InnerSurfaceParams::default(),
+        );
+        assert!(
+            matches!(result, Err(DesignError::PrepFacesAway { share }) if share > 0.5),
+            "{result:?}"
+        );
     }
 
     /// Sample weights of every vertex, edge midpoint and centroid.

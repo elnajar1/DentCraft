@@ -750,6 +750,124 @@ pub fn rounded_box(
     Ok(mesh)
 }
 
+/// A row of `count` adjacent prepared stumps on one connected intraoral-like scan
+/// sheet, in a local +Z occlusal frame before `rotation`. Stumps stand
+/// `spacing` mm apart along `row` (in the XY plane). Each has an occlusal table
+/// at height 12 to radius 2.2, a steep wall down to a 0.6 mm wide shoulder
+/// whose narrow rounded outer edge, the margin, is the circle of radius 3.6 at
+/// height 8.22, then a drop to the gingiva at height 5.5. Between neighbours the
+/// scan has a ragged hole where the scanner could not see, starting
+/// `hole_clearance` mm outside the margins; the heightfield carries
+/// deterministic `noise_mm` vertical noise. Returns the mesh, each stump's top
+/// centre and its true margin (sampled every degree), all rotated.
+#[cfg(test)]
+pub(crate) fn prepared_row(
+    count: usize,
+    spacing: f64,
+    row: f64,
+    hole_clearance: f64,
+    noise_mm: f64,
+    rotation: DQuat,
+) -> (TriMesh, Vec<DVec3>, Vec<Vec<DVec3>>) {
+    const MARGIN_R: f64 = 3.6;
+    const STEP: f64 = 0.1;
+    let dir = DVec3::new(row.cos(), row.sin(), 0.0);
+    let centres: Vec<DVec3> = (0..count)
+        .map(|k| dir * spacing * (k as f64 - 0.5 * (count - 1) as f64))
+        .collect();
+    let profile = |rho: f64| {
+        if rho <= 2.2 {
+            12.0
+        } else if rho <= 3.0 {
+            12.0 - 3.4 * (rho - 2.2) / 0.8
+        } else if rho <= MARGIN_R - 0.05 {
+            8.6 - 0.3 * (rho - 3.0) / (MARGIN_R - 0.05 - 3.0)
+        } else if rho <= MARGIN_R + 0.05 {
+            // A narrow rounded convex edge from the ledge into the drop.
+            let t = (rho - (MARGIN_R - 0.05)) / 0.1;
+            8.3 - 0.055 * t - 0.2 * t * t
+        } else {
+            (8.045 - 2.5 * (rho - MARGIN_R - 0.05)).max(5.5)
+        }
+    };
+    let hash = |i: i64, j: i64, salt: i64| {
+        let mut h = (i.wrapping_mul(73_856_093) ^ j.wrapping_mul(19_349_663) ^ salt) as u64;
+        h ^= h >> 33;
+        h = h.wrapping_mul(0xff51_afd7_ed55_8ccd);
+        h ^= h >> 33;
+        (h % 10_000) as f64 / 10_000.0 * 2.0 - 1.0
+    };
+    let half_length = spacing * 0.5 * (count - 1) as f64 + 6.0;
+    let half_width = 6.5;
+    let nx = (2.0 * half_length / STEP) as i64;
+    let ny = (2.0 * half_width / STEP) as i64;
+    let mut positions = Vec::new();
+    for j in 0..=ny {
+        for i in 0..=nx {
+            let along = -half_length + i as f64 * STEP;
+            let across = -half_width + j as f64 * STEP;
+            let p = dir * along + DVec3::new(-dir.y, dir.x, 0.0) * across;
+            let z = centres
+                .iter()
+                .map(|c| profile((p - *c).length()))
+                .fold(5.5, f64::max);
+            positions.push(DVec3::new(p.x, p.y, z + noise_mm * hash(i, j, 7)));
+        }
+    }
+    let index = |i: i64, j: i64| (j * (nx + 1) + i) as u32;
+    let mut triangles = Vec::new();
+    for j in 0..ny {
+        for i in 0..nx {
+            let corner = positions[index(i, j) as usize];
+            let mut near: Vec<f64> = centres
+                .iter()
+                .map(|c| (corner.truncate().extend(0.0) - *c).length())
+                .collect();
+            near.sort_by(f64::total_cmp);
+            let across = (corner.truncate().extend(0.0)).dot(DVec3::new(-dir.y, dir.x, 0.0));
+            // Interproximal hole: close to two stumps, ragged at its edge.
+            let clearance = MARGIN_R + hole_clearance + 0.25 * (hash(i, j, 3) + 1.0);
+            if near.len() > 1
+                && near[1] < MARGIN_R + 1.6
+                && near[0] > clearance
+                && across.abs() < 3.2
+            {
+                continue;
+            }
+            let (a, b, c, d) = (
+                index(i, j),
+                index(i + 1, j),
+                index(i + 1, j + 1),
+                index(i, j + 1),
+            );
+            triangles.push([a, b, c]);
+            triangles.push([a, c, d]);
+        }
+    }
+    let mut mesh = TriMesh::new(positions, triangles);
+    for p in &mut mesh.positions {
+        *p = rotation * *p;
+    }
+    let tops = centres
+        .iter()
+        .map(|c| rotation * (*c + DVec3::Z * 12.0))
+        .collect();
+    let margins = centres
+        .iter()
+        .map(|c| {
+            (0..360)
+                .map(|k| {
+                    let a = (k as f64).to_radians();
+                    // The rounded edge bends evenly; its middle is the margin.
+                    let r = MARGIN_R;
+                    rotation * (*c + DVec3::new(r * a.cos(), r * a.sin(), profile(r)))
+                })
+                .collect()
+        })
+        .collect();
+    (mesh, tops, margins)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

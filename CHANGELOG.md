@@ -3,6 +3,28 @@
 DentCraft is in early development. It is not a cleared or certified medical device: every design
 must be checked by a qualified dental professional before clinical use.
 
+## Unreleased
+
+### Real scans
+
+- **Margin line on real scans**: detection works on full arches of adjacent preparations. It
+  tolerates ragged scan edges and gaps, never runs onto a neighbouring tooth's ridges, and says
+  which stage failed when it cannot find the margin.
+- **Smooth margins**: a detected margin is smoothed into a clean curve on the scan. The outline is
+  filtered across the tooth; the height of interproximal peaks is kept within about 0.1 mm.
+- **Upper and lower jaws in one case**: each tooth now uses its own jaw's occlusal direction.
+  Before, teeth on the second jaw got an axis pointing into the root.
+- **Inner surface**: a clear message when the insertion axis points into the die, and better
+  convergence beside steep, noisy walls.
+
+### Safety
+
+- Background jobs that fail show an error in their step instead of closing the app. Crash logs
+  are written to `%APPDATA%\dentcraft\crash-logs`.
+- Unsaved work is saved every 30 s. After a crash the app offers to restore it. Each open window
+  keeps its own recovery file and never touches another window's.
+- Closing the window with unsaved changes asks first: Save, Don't save or Cancel.
+
 ## 0.2.0 — 2026-10-29
 
 The first release that designs a single crown from start to finish and exports it as STL.
