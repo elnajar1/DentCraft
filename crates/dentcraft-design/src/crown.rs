@@ -646,9 +646,16 @@ pub fn build_crown(
     for &(angle, v) in &outer_angles {
         // Each cervical vertex lands where its polar ray crosses the offset
         // loop; refined vertices sit exactly on the loop's own vertices.
+        // `bracket` returns positions in the angle-sorted list; the loop is
+        // indexed by vertex. They differ by a rotation when the offset moves
+        // the first margin vertex across angle zero.
         let (a, b) = bracket(&offset_angles, angle);
-        let t = angular_fraction(polar, offset[a], offset[b], angle);
-        displacements[v as usize] = offset[a].lerp(offset[b], t) - outer.positions[v as usize];
+        let (a, b) = (
+            offset[offset_angles[a].1 as usize],
+            offset[offset_angles[b].1 as usize],
+        );
+        let t = angular_fraction(polar, a, b, angle);
+        displacements[v as usize] = a.lerp(b, t) - outer.positions[v as usize];
         locked[v as usize] = true;
     }
     let height = outer
@@ -1215,6 +1222,59 @@ mod tests {
         include!("../tests/support/crown.rs");
     }
     use verification::verify;
+
+    /// Real-scan regression: the mitred ledge offset also shifts margin points
+    /// along the outline. When the margin vertex with the smallest polar angle
+    /// sits just above angle zero and its offset moves just below it, the
+    /// angle-sorted offset loop is a rotation of the vertex-indexed loop. Every
+    /// cervical vertex then has to land on its own ray's crossing of the loop,
+    /// not on a neighbouring segment (which collapsed the cervical row onto
+    /// itself and failed as a fold on three real teeth).
+    #[test]
+    fn ledge_offset_wrapping_angle_zero_builds() {
+        let mut die = prepared_stump(&StumpParams {
+            segments: 192,
+            ..Default::default()
+        })
+        .unwrap();
+        // An oblique elliptical outline (1.3:1, rotated 30 degrees, a mild
+        // non-grid direction) so the offset normal is not radial.
+        let rotation = DQuat::from_rotation_z(30f64.to_radians());
+        let warp = |p: &mut DVec3| *p = rotation * DVec3::new(p.x, p.y * 1.3, p.z);
+        die.mesh.positions.iter_mut().for_each(warp);
+        die.margin.iter_mut().for_each(warp);
+        let inner = intaglio(&die, 0.05);
+        let origin = centroid(&inner.mesh, &inner.boundary).unwrap();
+        let shifted = |hint: DVec3| {
+            let (x, y, z) = frame(die.axis, hint).unwrap();
+            let polar = Polar { origin, x, y, z };
+            let sorted = polar.ordered(&inner.mesh, &inner.boundary).unwrap();
+            let margin: Vec<_> = sorted
+                .iter()
+                .map(|v| inner.mesh.positions[v.1 as usize])
+                .collect();
+            let (offset, angles) = offset_margin(&margin, polar, 0.08).unwrap();
+            (polar, margin, offset, angles)
+        };
+        // Aim the polar x axis between the margin vertex whose offset moves
+        // furthest clockwise and that offset point.
+        let (polar, margin, offset, _) = shifted(DVec3::X);
+        let wrap = |a: f64| (a + std::f64::consts::PI).rem_euclid(TAU) - std::f64::consts::PI;
+        let (i, shift) = (0..margin.len())
+            .map(|i| (i, wrap(polar.angle(offset[i]) - polar.angle(margin[i]))))
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .unwrap();
+        assert!(shift < -1e-3, "fixture needs a clockwise offset shift");
+        let aim = polar.angle(margin[i]) + shift * 0.5;
+        let hint = polar.x * aim.cos() + polar.y * aim.sin();
+        let (_, _, _, angles) = shifted(hint);
+        assert_ne!(angles[0].1, 0, "the sorted offset loop must be rotated");
+        let (template, cervical) = crown_template(4.0, 5.5, 64, 18).unwrap();
+        let params = CrownParams::default();
+        let placement = auto_placement(&inner, &template, &cervical, die.axis, Some(hint));
+        let crown = build_crown(&inner, &template, &cervical, placement, &params).unwrap();
+        verify(&crown, &inner, &die, &params);
+    }
 
     #[test]
     fn crown_shoulder_chamfer_straight_tilted() {

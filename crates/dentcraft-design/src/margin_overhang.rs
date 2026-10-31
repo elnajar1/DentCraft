@@ -177,6 +177,30 @@ mod tests {
     }
 
     #[test]
+    fn a_margin_overhang_within_the_cement_gap_is_scan_noise() {
+        // One triangle reaching `depth` past the right side of a 3 mm square margin.
+        let undercut = |depth: f64| {
+            let margin =
+                [(0., 0.), (3., 0.), (3., 3.), (0., 3.)].map(|(x, y)| DVec3::new(x, y, 0.));
+            let mesh = TriMesh {
+                positions: vec![
+                    DVec3::new(0.5, 0.5, 1.),
+                    DVec3::new(3. + depth, 1.5, 1.),
+                    DVec3::new(0.5, 2.5, 1.),
+                ],
+                triangles: vec![[0, 1, 2]],
+            };
+            let params = InnerSurfaceParams::default();
+            matches!(
+                inner_surface(&mesh, &[0], &margin, DVec3::Z, &params),
+                Err(DesignError::MarginUndercut { .. })
+            )
+        };
+        assert!(!undercut(0.04));
+        assert!(undercut(0.06));
+    }
+
+    #[test]
     fn triangle_interiors_cross_a_concave_margin() {
         // Every triangle vertex lies inside this U; its upper edge crosses the
         // missing notch. A vertices-only overhang check incorrectly reports zero.

@@ -30,7 +30,8 @@ pub struct InnerSurfaceParams {
     pub transition_width: f64,
     /// Projected grid spacing and axial refinement spacing, at most 0.1 mm.
     pub grid_step: f64,
-    /// Horizontal scan-noise tolerance used to reject an unseatable margin.
+    /// Horizontal scan-noise tolerance used to reject an unseatable margin: an overhang
+    /// this shallow is within intraoral scan noise and milling tolerance.
     pub min_undercut_depth: f64,
 }
 
@@ -42,7 +43,7 @@ impl Default for InnerSurfaceParams {
             margin_seal_width: 0.8,
             transition_width: 0.5,
             grid_step: 0.025,
-            min_undercut_depth: 0.03,
+            min_undercut_depth: 0.05,
         }
     }
 }
@@ -146,7 +147,7 @@ pub fn inner_surface(
         result.mesh.positions[i] = point;
         result.target_gaps[i] = target;
     }
-    correct_faces(&mut result, frame, &prep)?;
+    correct_faces(&mut result, frame, &prep, mesh)?;
     // Certify the final assembly contract. Holes, disconnected islands, unused
     // vertices or a split/pinched margin must never escape as a successful
     // intaglio for crown assembly, including after clearance correction.
@@ -789,36 +790,54 @@ fn signed_clearance(point: DVec3, prep: &Region) -> (f64, DVec3) {
 /// Newton steps use the local signed-distance gradient. Limit steps and recheck:
 /// at a line angle the nearest face can change. Heights never decrease.
 fn clear_point(
-    mut point: DVec3,
+    point: DVec3,
     target: f64,
     frame: Frame,
     prep: &Region,
 ) -> Result<DVec3, DesignError> {
+    clear_point_by(point, target, frame.w, &|p| signed_clearance(p, prep))
+}
+
+/// [`clear_point`] against any signed clearance with its gradient.
+fn clear_point_by(
+    mut point: DVec3,
+    target: f64,
+    axis: DVec3,
+    clearance: &dyn Fn(DVec3) -> (f64, DVec3),
+) -> Result<DVec3, DesignError> {
     // Beside a near-vertical wall a raise gains clearance only at the wall's slight
     // lean, so gradient steps stall at a tiny deficit while the nearest face changes
-    // along the noisy wall. A geometrically growing least raise reaches clearance (or
-    // the 1 mm step limit) in bounded steps; the bisection keeps the result low.
+    // along the noisy wall. After a stalled step (less than half the predicted gain)
+    // a geometrically growing least raise reaches clearance (or the 1 mm step limit)
+    // in bounded steps; the bisection keeps the result low. A step that did not
+    // stall keeps its exact Newton raise, so an ordinary point is not lifted by the
+    // floor at all.
     let mut floor = 1e-4;
+    let mut stalled = false;
     for _ in 0..64 {
-        let (distance, normal) = signed_clearance(point, prep);
+        let (distance, normal) = clearance(point);
         if distance >= target - 1e-7 {
             return Ok(point);
         }
-        let raise = ((target - distance) / normal.dot(frame.w).max(0.01))
-            .max(floor)
-            .min(1.0);
-        floor *= 2.0;
-        let candidate = point + frame.w * raise;
-        let actual = signed_clearance(candidate, prep).0;
-        if (actual - target).abs() <= 1e-7 {
+        let slope = normal.dot(axis).max(0.01);
+        let mut raise = (target - distance) / slope;
+        if stalled {
+            raise = raise.max(floor);
+            floor *= 2.0;
+        }
+        let raise = raise.min(1.0);
+        let candidate = point + axis * raise;
+        let actual = clearance(candidate).0;
+        // A Newton step lands within 0.1 µm above the target: accept it.
+        if actual >= target - 1e-7 && actual <= target + 1e-4 {
             return Ok(candidate);
         }
-        if actual > target + 1e-7 {
+        if actual > target + 1e-4 {
             let mut lo = 0.0;
             let mut hi = raise;
             for _ in 0..24 {
                 let mid = (lo + hi) * 0.5;
-                if signed_clearance(point + frame.w * mid, prep).0 >= target {
+                if clearance(point + axis * mid).0 >= target {
                     hi = mid;
                 } else {
                     lo = mid;
@@ -827,8 +846,9 @@ fn clear_point(
                     break;
                 }
             }
-            return Ok(point + frame.w * hi);
+            return Ok(point + axis * hi);
         }
+        stalled = actual - distance < 0.5 * raise * slope;
         point = candidate;
     }
     Err(DesignError::RefinementLimit)
@@ -856,12 +876,45 @@ fn supporting_planes(prep: &Region) -> Vec<Option<(DVec3, f64)>> {
         .collect()
 }
 
+/// The scan triangles within reach of the margin. The prep region holds whole
+/// triangles inside the traced margin, while the margin itself crosses
+/// triangles; this patch is the surface the margin actually lies on.
+fn margin_scan(mesh: &TriMesh, margin: &[DVec3]) -> Option<Region> {
+    let reach = 2.0 * crate::SEAL_BAND_MM;
+    let (lo, hi) = margin.iter().fold(
+        (DVec3::splat(f64::INFINITY), DVec3::splat(f64::NEG_INFINITY)),
+        |(lo, hi), &p| (lo.min(p), hi.max(p)),
+    );
+    let (lo, hi) = (lo - reach, hi + reach);
+    let near_vertex: Vec<bool> = mesh
+        .positions
+        .par_iter()
+        .map(|&p| p.cmpge(lo).all() && p.cmple(hi).all() && margin_distance(p, margin) <= reach)
+        .collect();
+    let near: Vec<u32> = (0..mesh.triangles.len() as u32)
+        .into_par_iter()
+        .filter(|&t| {
+            mesh.triangles[t as usize]
+                .iter()
+                .any(|&v| near_vertex[v as usize])
+        })
+        .collect();
+    Region::new(mesh, &near).ok()
+}
+
 fn correct_faces(
     surface: &mut InnerSurface,
     frame: Frame,
     prep: &Region,
+    mesh: &TriMesh,
 ) -> Result<(), DesignError> {
     let boundary = surface.boundary.len();
+    // The scan patch around the margin, built at most once and only when a margin
+    // sample fails against the region. It is built between rounds, never inside one:
+    // a lazy initialiser that runs parallel work inside the parallel round can be
+    // re-entered on its own thread and deadlock.
+    let mut scan: Option<Option<Region>> = None;
+    let needs_scan = std::sync::atomic::AtomicBool::new(false);
     let planes = supporting_planes(prep);
     let vertex_planes: Vec<_> = surface
         .mesh
@@ -872,7 +925,10 @@ fn correct_faces(
             planes[hit.triangle as usize]
         })
         .collect();
-    for _ in 0..64 {
+    // Beside a wall almost parallel to the axis a raise climbs the wall, and each
+    // round lifts the next stacked point below it: a 2 mm cliff of 0.025 mm levels
+    // needs about 80 rounds.
+    for _ in 0..256 {
         let corrections = surface
             .mesh
             .triangles
@@ -926,9 +982,23 @@ fn correct_faces(
                         // barrier's triangles, so against the region alone it
                         // can read up to the crossing noise inside although it
                         // lies on the scan; tolerate the seal band, reject a
-                        // margin genuinely buried in the preparation.
-                        if signed_clearance(point, prep).0 >= target - crate::SEAL_BAND_MM {
+                        // margin genuinely buried in the preparation. Where the
+                        // region stops a whole triangle or more short of the
+                        // margin the region's nearest face can be further away
+                        // than that, so judge the margin by the scan it lies on.
+                        let tolerance = target - crate::SEAL_BAND_MM;
+                        if signed_clearance(point, prep).0 >= tolerance {
                             continue;
+                        }
+                        match &scan {
+                            None => needs_scan.store(true, std::sync::atomic::Ordering::Relaxed),
+                            Some(scan) => {
+                                if scan.as_ref().is_some_and(|scan| {
+                                    signed_clearance(point, scan).0 >= tolerance
+                                }) {
+                                    continue;
+                                }
+                            }
                         }
                         return Some(Err(DesignError::RefinementLimit));
                     };
@@ -938,7 +1008,15 @@ fn correct_faces(
                 }
                 shifts.iter().any(|&d| d > 0.0).then_some(Ok((ids, shifts)))
             })
-            .collect::<Result<Vec<_>, DesignError>>()?;
+            .collect::<Result<Vec<_>, DesignError>>();
+        let corrections = match corrections {
+            Err(_) if scan.is_none() && needs_scan.load(std::sync::atomic::Ordering::Relaxed) => {
+                // Judge the failing margin samples by the scan: redo the round with it.
+                scan = Some(margin_scan(mesh, &surface.mesh.positions[..boundary]));
+                continue;
+            }
+            corrections => corrections?,
+        };
         if corrections.is_empty() {
             return Ok(());
         }
@@ -1671,5 +1749,127 @@ mod tests {
         );
         assert!(elapsed < 1.5, "inner surface exceeded 1.5 s: {elapsed}");
         assert_disk(&result, die.axis);
+    }
+
+    /// A flat-topped die whose margin runs along the foot of a 0.3 mm bevel.
+    /// The region leaves out the bevel on the -y side, as a traced region that
+    /// keeps whole triangles inside a margin crossing them can; `drop` lowers
+    /// that side's margin below the scan.
+    fn bevelled_die(drop: f64) -> (TriMesh, Vec<u32>, Vec<DVec3>) {
+        let top = [(-2.0, -2.0), (2.0, -2.0), (2.0, 2.0), (-2.0, 2.0)];
+        let mut positions: Vec<_> = top.iter().map(|&(x, y)| DVec3::new(x, y, 0.0)).collect();
+        positions.extend(
+            top.iter()
+                .map(|&(x, y)| DVec3::new(x * 1.15, y * 1.15, -0.3)),
+        );
+        let mut triangles = vec![[0, 1, 2], [0, 2, 3]];
+        for i in 0..4 {
+            let j = (i + 1) % 4;
+            triangles.push([4 + i, 4 + j, j]);
+            triangles.push([4 + i, j, i]);
+        }
+        let mut margin = Vec::new();
+        for i in 0..4 {
+            let (a, b) = (positions[4 + i], positions[4 + (i + 1) % 4]);
+            for k in 0..46 {
+                let mut p = a.lerp(b, k as f64 / 46.0);
+                if i == 0 && k > 0 {
+                    p.z -= drop;
+                }
+                margin.push(p);
+            }
+        }
+        let region = [0, 1, 4, 5, 6, 7, 8, 9].to_vec();
+        (TriMesh::new(positions, triangles), region, margin)
+    }
+
+    #[test]
+    fn margin_beyond_the_region_edge_is_judged_by_the_scan() {
+        let (mesh, region, margin) = bevelled_die(0.0);
+        let params = InnerSurfaceParams::default();
+        let result = inner_surface(&mesh, &region, &margin, DVec3::Z, &params).unwrap();
+        assert_disk(&result, DVec3::Z);
+        let all: Vec<u32> = (0..mesh.triangles.len() as u32).collect();
+        let scan = Region::new(&mesh, &all).unwrap();
+        for tri in &result.mesh.triangles {
+            let points = tri.map(|i| result.mesh.positions[i as usize]);
+            let gaps = tri.map(|i| result.target_gaps[i as usize]);
+            for weights in ALL_WEIGHTS {
+                let p = (0..3).map(|i| points[i] * weights[i]).sum::<DVec3>();
+                let g = (0..3).map(|i| gaps[i] * weights[i]).sum::<f64>();
+                assert!(signed_clearance(p, &scan).0 >= g - 0.001);
+            }
+        }
+        // A margin 0.5 mm inside the die is still rejected.
+        let (mesh, region, margin) = bevelled_die(0.5);
+        assert_eq!(
+            inner_surface(&mesh, &region, &margin, DVec3::Z, &params).unwrap_err(),
+            DesignError::RefinementLimit
+        );
+    }
+
+    /// A vertical wall in x = 0 with 0.1 µm sawtooth noise, 3 mm tall, closed by a
+    /// top facing +z: beside it no raise gains clearance until the top.
+    fn sawtooth_wall() -> Region {
+        let mut profile: Vec<_> = (0..=120)
+            .map(|k| DVec3::new(if k % 2 == 0 { 0.0 } else { -1e-4 }, 0.0, k as f64 * 0.025))
+            .collect();
+        profile.push(DVec3::new(-3.0, 0.0, 3.0));
+        let mut positions = Vec::new();
+        for p in &profile {
+            positions.push(*p - DVec3::Y * 3.0);
+            positions.push(*p + DVec3::Y * 3.0);
+        }
+        let mut triangles = Vec::new();
+        for j in 0..profile.len() as u32 - 1 {
+            let (a, b, c, d) = (2 * j, 2 * j + 1, 2 * j + 3, 2 * j + 2);
+            triangles.push([a, b, c]);
+            triangles.push([a, c, d]);
+        }
+        let mesh = TriMesh::new(positions, triangles);
+        let all: Vec<u32> = (0..mesh.triangles.len() as u32).collect();
+        Region::new(&mesh, &all).unwrap()
+    }
+
+    #[test]
+    fn stalled_raise_beside_a_sawtooth_wall_climbs_to_clearance() {
+        let wall = sawtooth_wall();
+        let target = 0.0302;
+        let start = DVec3::new(0.03, 0.1, 0.5);
+        let clearance = |p| signed_clearance(p, &wall);
+        let cleared = clear_point_by(start, target, DVec3::Z, &clearance).unwrap();
+        assert_eq!((cleared.x, cleared.y), (start.x, start.y));
+        assert!(signed_clearance(cleared, &wall).0 >= target - 1e-7);
+        // The lowest clear height is about 3.0035 mm, just over the top edge.
+        assert!(cleared.z > 3.0 && cleared.z < 3.01, "{}", cleared.z);
+    }
+
+    #[test]
+    fn ordinary_raises_beside_a_curved_wall_need_few_queries() {
+        // The exact signed distance of a 2 mm sphere: Newton steps beside its
+        // curved side land slightly high, never exactly on the target.
+        let queries = std::cell::Cell::new(0);
+        let clearance = |p: DVec3| {
+            queries.set(queries.get() + 1);
+            (p.length() - 2.0, p.normalize())
+        };
+        let target = 0.03;
+        let points = 40;
+        for k in 0..points {
+            // Off-grid azimuths, heights and small deficits beside the wall.
+            let angle = k as f64 * 0.37 + 0.1;
+            let z = 0.2 + 0.013 * k as f64;
+            let rho = (2.0 + target - 0.001 - 0.0001 * k as f64).powi(2) - z * z;
+            let start = DVec3::new(angle.cos(), angle.sin(), 0.0) * rho.sqrt() + DVec3::Z * z;
+            let cleared = clear_point_by(start, target, DVec3::Z, &clearance).unwrap();
+            let actual = cleared.length() - 2.0;
+            assert!(
+                actual >= target - 1e-7 && actual <= target + 1e-4,
+                "{actual}"
+            );
+        }
+        // One Newton step lands within 0.1 µm above the target. Demanding 0.1 nm
+        // instead costs a bisection of about 15 queries.
+        assert!(queries.get() <= points * 3, "{} queries", queries.get());
     }
 }

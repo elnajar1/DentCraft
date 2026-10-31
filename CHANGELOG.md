@@ -15,7 +15,12 @@ must be checked by a qualified dental professional before clinical use.
 - **Upper and lower jaws in one case**: each tooth now uses its own jaw's occlusal direction.
   Before, teeth on the second jaw got an axis pointing into the root.
 - **Inner surface**: a clear message when the insertion axis points into the die, and better
-  convergence beside steep, noisy walls.
+  convergence beside steep, noisy walls and walls almost parallel to the axis. A margin that lies
+  on the scan just past the preparation region's edge is no longer taken as buried.
+- **Margin undercut**: an overhang at the margin up to 0.05 mm counts as scan noise; a deeper one
+  still stops the design and names its direction.
+- **Crowns on real margins**: fixed crowns that failed with "folds or intersects a surface" when
+  the margin's first point sat near the crown's reference direction.
 - **Plaster (stone) model scans**: the margin search retries with sloped walls and from the top of
   the stump when the click misses it; it never returns a neighbouring tooth's margin. A margin found
   this way says "Check this margin" until you edit or re-trace it.

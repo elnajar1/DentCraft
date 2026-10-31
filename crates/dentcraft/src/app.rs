@@ -40,7 +40,9 @@ use crate::widgets::{Icon, icon_button, paint_icon, small_button};
 use crate::workflow_panel::{self, StepAction, WorkflowView};
 
 const THEME_KEY: &str = "theme";
-const SCREENSHOT_TIMEOUT: Duration = Duration::from_secs(60);
+/// A screenshot run of a full real case designs every step of the tooth: a large preparation takes
+/// about a minute on its own.
+const SCREENSHOT_TIMEOUT: Duration = Duration::from_secs(180);
 /// Frames to wait after loading and camera motion have settled before capturing.
 const SCREENSHOT_SETTLE_FRAMES: u32 = 6;
 const UNTITLED: &str = "Untitled case";
