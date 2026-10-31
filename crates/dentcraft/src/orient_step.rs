@@ -515,6 +515,7 @@ mod tests {
             color: [200, 200, 200],
             visible: true,
             opacity: 1.0,
+            auto_hidden: false,
             state: crate::objects::ObjectState::Ready(Box::new(loaded)),
         }
     }

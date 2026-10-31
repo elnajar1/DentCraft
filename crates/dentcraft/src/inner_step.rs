@@ -5,6 +5,7 @@
 //! translucent mesh. The Section toggle cuts the view through the preparation so the gap shows.
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -374,6 +375,8 @@ pub struct InnerStep {
     drag: Option<(InnerParam, EditGroup)>,
     error: Option<String>,
     repaint: Option<egui::Context>,
+    /// The latest surface computed for each tooth and what it was computed from.
+    built: BTreeMap<Fdi, (Key, Arc<InnerSurface>)>,
 }
 
 impl InnerStep {
@@ -393,7 +396,21 @@ impl InnerStep {
             drag: None,
             error: None,
             repaint,
+            built: BTreeMap::new(),
         }
+    }
+
+    /// The latest inner surface computed for `tooth`, while its margin, axis and parameters in
+    /// the case are still the ones it was computed from. Kept for every tooth, so the viewport
+    /// shows the inner surfaces of teeth other than the step's.
+    pub fn built(
+        &self,
+        design: &Design,
+        material: &Material,
+        tooth: Fdi,
+    ) -> Option<Arc<InnerSurface>> {
+        let (key, surface) = self.built.get(&tooth)?;
+        (Key::of(design, material, tooth).as_ref() == Some(key)).then(|| surface.clone())
     }
 
     /// Forgets the open case's surface, jobs and error; keeps the Section toggle.
@@ -505,6 +522,8 @@ impl InnerStep {
             match message {
                 Ok(o) => {
                     self.prep = Some(o.prep);
+                    self.built
+                        .insert(o.key.tooth, (o.key.clone(), o.surface.clone()));
                     if Some(&o.key) == self.wanted.as_ref() {
                         self.error = None;
                         let mut shared = self.shared.borrow_mut();
