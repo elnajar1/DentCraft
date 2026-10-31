@@ -652,7 +652,7 @@ fn active_card(
     } else {
         let note = if id == StepId::Scans {
             if view.has_jaw_scan {
-                "Jaw scan loaded. Check each scan's role in the case panel."
+                "Jaw scan loaded. Check each scan's role in Case setup (toolbar)."
             } else {
                 NEEDS_JAW_SCAN
             }

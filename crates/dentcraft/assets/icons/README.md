@@ -6,7 +6,7 @@ SVG masters for the application's icons, embedded at build time (`src/icon_svg.r
 - **Monochrome glyphs** for small UI controls draw in `currentColor`; the app rasterises them as
   white masks and tints them with the theme's ink. Lines are 4–5.6 units wide with round caps
   and joins, following SolidCraft's flat set.
-- **Coloured command icons** (ribbon commands, view presets, workspaces) follow SolidCraft's
+- **Coloured command icons** (toolbar and menu commands, view presets, workspaces) follow SolidCraft's
   isometric model icons: passive faces grey (`#e2e8ef` top, `#b8c3cf` left, `#8e9faf` right),
   active faces blue (`#b9ddf8`, `#328bd3`, `#236ead`), outline `#34465b` 2.55 wide with round
   joins, accent arrows `#236ead`. They may use only these colours (and `currentColor` for line
@@ -43,3 +43,4 @@ DentCraft in the same style and released under the repository licence.
 | `jaw_upper.svg`, `jaw_lower.svg` | DentCraft (two arches, the shown jaw in blue) |
 | `view_occlusal.svg`, `view_facial.svg`, `view_lingual.svg`, `view_left.svg`, `view_right.svg`, `view_bottom.svg` | DentCraft (arch with a blue arrow for the viewing direction) |
 | `ws_crown_bridge.svg`, `ws_model_builder.svg`, `ws_implant.svg`, `ws_splint.svg`, `ws_denture.svg`, `ws_smile.svg` | DentCraft (workspaces) |
+| `case_setup.svg` | DentCraft (clipboard with an arch of teeth, two in blue) |

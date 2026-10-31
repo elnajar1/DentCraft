@@ -57,7 +57,7 @@ pub struct ScanColors {
 
 /// An interactive viewport tool. Every method has a do-nothing default.
 pub trait Tool {
-    /// Shown in the ribbon and the status bar.
+    /// Shown in the toolbar menus and the status bar.
     fn name(&self) -> &'static str;
     /// Whether the tool picks points on scans; the cursor is then a crosshair.
     fn picks_surface(&self) -> bool {

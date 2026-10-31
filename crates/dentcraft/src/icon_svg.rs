@@ -58,6 +58,7 @@ pub fn source(icon: Icon) -> &'static str {
         Icon::Contacts => svg!("contacts"),
         Icon::Undo => svg!("undo"),
         Icon::Redo => svg!("redo"),
+        Icon::CaseSetup => svg!("case_setup"),
         Icon::View(preset) => match preset {
             ViewPreset::Occlusal => svg!("view_occlusal"),
             ViewPreset::Facial => svg!("view_facial"),
@@ -224,6 +225,7 @@ mod tests {
             Icon::Export,
             Icon::Undo,
             Icon::Redo,
+            Icon::CaseSetup,
         ];
         icons.extend(ViewPreset::ALL.map(Icon::View));
         icons.extend(Workspace::ALL.map(Icon::Workspace));

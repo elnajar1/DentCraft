@@ -17,10 +17,11 @@ mod loader;
 mod margin_edit;
 mod margin_step;
 mod objects;
+mod objects_panel;
 mod orient_step;
 mod recovery;
-mod ribbon;
 mod theme;
+mod toolbar;
 mod tools;
 mod tooth_view;
 mod viewport;
@@ -97,8 +98,8 @@ fn main() -> ExitCode {
         view: args.view,
         theme: args.theme.map(Into::into),
         hide: args.hide,
-        tab: args.tab.map(Into::into),
         workspace_menu_open: args.open == Some(OpenArg::WorkspaceMenu),
+        case_setup_open: args.open == Some(OpenArg::CaseSetup),
         screenshot: args.screenshot,
         measure: args.measure,
         orient: args.orient,

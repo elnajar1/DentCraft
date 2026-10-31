@@ -27,6 +27,14 @@ must be checked by a qualified dental professional before clinical use.
 - **Preparation region**: found on scans with holes, loose sheets, non-manifold edges and fused
   contacts; an implausible region (a loose flap, part of a neighbour) is rejected instead of used.
 
+### Interface
+
+- **Viewport-first layout**: the ribbon is gone. A floating toolbar at the top left holds the file
+  commands and the Design and Tools menus; view buttons sit at the bottom right.
+- **Objects panel**: scans grouped by role, shown or hidden per group or one by one.
+- **Case setup**: the tooth chart, material and scan roles open in their own screen, for a new
+  case and from the toolbar, instead of taking the left side of the window.
+
 ### Safety
 
 - Background jobs that fail show an error in their step instead of closing the app. Crash logs

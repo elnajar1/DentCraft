@@ -8,7 +8,7 @@ Third-party material
 
 Software dependencies are listed in Cargo.lock and keep their own licences.
 
-The application's UI colour tokens, type scale and layout conventions (ribbon toolbar, browser
+The application's UI colour tokens, type scale and layout conventions (toolbar, browser
 panels) are adapted from SolidCraft (https://github.com/tangency-labs/solidcraft), Copyright (c)
 2026 SolidCraft contributors, licensed under the Apache License, Version 2.0. Text colours were
 adjusted for contrast. Icons adapted from SolidCraft's icon set (assets/icons/ui/design/svg), its

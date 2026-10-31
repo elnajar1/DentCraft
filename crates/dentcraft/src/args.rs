@@ -9,7 +9,6 @@ use dentcraft_render::ViewPreset;
 use dentcraft_workflow::StepId;
 use glam::DVec3;
 
-use crate::ribbon::RibbonTab;
 use crate::theme::ThemeKind;
 
 /// Default window size, in logical points.
@@ -37,10 +36,6 @@ pub struct Args {
     /// or other. Repeat to hide several.
     #[arg(long, value_name = "ROLE", value_parser = parse_role)]
     pub hide: Vec<ScanRole>,
-
-    /// Ribbon tab to show.
-    #[arg(long, value_enum)]
-    pub tab: Option<TabArg>,
 
     /// Popup to show open at startup, e.g. for a screenshot: workspace-menu.
     #[arg(long, value_enum, value_name = "POPUP")]
@@ -138,26 +133,11 @@ impl From<ThemeArg> for ThemeKind {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
-pub enum TabArg {
-    Case,
-    Design,
-    View,
-}
-
-impl From<TabArg> for RibbonTab {
-    fn from(arg: TabArg) -> Self {
-        match arg {
-            TabArg::Case => RibbonTab::Case,
-            TabArg::Design => RibbonTab::Design,
-            TabArg::View => RibbonTab::View,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum OpenArg {
-    /// The workspace list under the switcher at the left end of the ribbon.
+    /// The workspace list under the switcher at the left end of the toolbar.
     WorkspaceMenu,
+    /// The case setup screen: teeth chart, material and scans.
+    CaseSetup,
 }
 
 /// Parses a scan role as written on the command line.
@@ -318,28 +298,20 @@ mod tests {
     }
 
     #[test]
-    fn hide_repeats_and_tab_selects_a_ribbon_tab() {
-        let args = Args::try_parse_from([
-            "dentcraft",
-            "--hide",
-            "lower",
-            "--hide",
-            "upper-pre-op",
-            "--tab",
-            "design",
-        ])
-        .unwrap();
+    fn hide_repeats() {
+        let args = Args::try_parse_from(["dentcraft", "--hide", "lower", "--hide", "upper-pre-op"])
+            .unwrap();
         assert_eq!(args.hide, vec![ScanRole::Lower, ScanRole::UpperPreOp]);
-        assert_eq!(args.tab.map(RibbonTab::from), Some(RibbonTab::Design));
         let none = Args::try_parse_from(["dentcraft"]).unwrap();
         assert!(none.hide.is_empty());
-        assert_eq!(none.tab, None);
     }
 
     #[test]
     fn open_shows_the_workspace_menu() {
         let args = Args::try_parse_from(["dentcraft", "--open", "workspace-menu"]).unwrap();
         assert_eq!(args.open, Some(OpenArg::WorkspaceMenu));
+        let args = Args::try_parse_from(["dentcraft", "--open", "case-setup"]).unwrap();
+        assert_eq!(args.open, Some(OpenArg::CaseSetup));
         assert_eq!(Args::try_parse_from(["dentcraft"]).unwrap().open, None);
         assert!(Args::try_parse_from(["dentcraft", "--open", "settings"]).is_err());
     }
@@ -359,9 +331,10 @@ mod tests {
     }
 
     #[test]
-    fn unknown_role_and_tab_are_errors() {
+    fn unknown_role_and_the_removed_tab_option_are_errors() {
         assert!(Args::try_parse_from(["dentcraft", "--hide", "maxilla"]).is_err());
-        assert!(Args::try_parse_from(["dentcraft", "--tab", "sculpt"]).is_err());
+        // `--tab` chose a ribbon tab; the toolbar that replaced the ribbon has none.
+        assert!(Args::try_parse_from(["dentcraft", "--tab", "design"]).is_err());
     }
 
     #[test]

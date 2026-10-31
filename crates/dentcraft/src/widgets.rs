@@ -119,6 +119,8 @@ pub enum Icon {
     Undo,
     /// Arrow curving on to the right.
     Redo,
+    /// Clipboard with a tooth chart, for the case setup screen.
+    CaseSetup,
     /// Cube with the face the view looks at filled in.
     View(ViewPreset),
     /// Picture of a workspace for the switcher and its menu.
