@@ -68,6 +68,14 @@ const FINE_ROWS: usize = 200;
 const ROWS: usize = 58;
 /// Taubin smoothing iterations over the resampled crown.
 const SMOOTHING: u32 = 30;
+/// Smallest cosine, between a face's normal and the ray to it from the radial pole, that the
+/// radial repair leaves. `dentcraft_design::build_crown` needs it above 0; the margin survives
+/// the crown's placement on a die and its thickening.
+const RADIAL_MARGIN: f64 = 0.05;
+/// Smoothing rounds the radial repair may take.
+const REPAIR_ROUNDS: usize = 400;
+/// Largest vertex move (template millimetres) the radial repair may make before it gives up.
+const REPAIR_MAX_MOVE: f64 = 1.0;
 
 /// A tooth library that failed to load or could not build a crown.
 #[derive(Clone, Debug, PartialEq)]
@@ -80,6 +88,15 @@ impl std::fmt::Display for LibraryError {
 }
 
 impl std::error::Error for LibraryError {}
+
+/// What the radial repair did to a library crown: see [`ToothLibrary::crown_with_repair`].
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RadialRepair {
+    /// Faces of the unrepaired crown that failed the radial test.
+    pub faces: usize,
+    /// Largest distance a vertex moved, template millimetres.
+    pub largest_move: f64,
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -195,6 +212,22 @@ impl ToothLibrary {
         fdi: Fdi,
         params: &CrownParams,
     ) -> Result<Option<CrownTemplate>, LibraryError> {
+        Ok(self.crown_with_repair(fdi, params)?.map(|(t, _)| t))
+    }
+
+    /// [`Self::crown`] with what its radial repair did.
+    ///
+    /// `dentcraft_design::build_crown` deforms a crown in polar coordinates about a point just
+    /// below the centre of its cervical loop ([`radial_pole`]) and rejects a crown with a face
+    /// seen edge-on or from behind from there (a cusp slope or fissure wall, an incisor's thin
+    /// incisal edge or lingual fossa). The loader smooths only those faces' neighbourhood (two
+    /// rings round them, the cervical line fixed) until every face is seen from the front with
+    /// a small margin. A crown that would need more than [`REPAIR_MAX_MOVE`] mm is an error.
+    pub fn crown_with_repair(
+        &self,
+        fdi: Fdi,
+        params: &CrownParams,
+    ) -> Result<Option<(CrownTemplate, RadialRepair)>, LibraryError> {
         let Some(tooth) = self.tooth_for(fdi) else {
             return Ok(None);
         };
@@ -339,7 +372,7 @@ fn build_open(
     mut cervical: Vec<u32>,
     fdi: Fdi,
     p: &CrownParams,
-) -> Result<CrownTemplate, String> {
+) -> Result<(CrownTemplate, RadialRepair), String> {
     let dim = dimensions(fdi);
     let at = |crown: &TriMesh, v: u32| crown.positions[v as usize];
     let (clo, chi) = cervical
@@ -390,6 +423,7 @@ fn build_open(
     for q in &mut crown.positions {
         *q *= scale;
     }
+    let repair = repair_radial(&mut crown, &cervical)?;
     let landmarks = landmarks_from_surface(fdi, &crown.positions, p);
     if matches!(fdi.quadrant(), 2 | 4) {
         for q in &mut crown.positions {
@@ -398,14 +432,21 @@ fn build_open(
         crown.flip_orientation();
         cervical[1..].reverse();
     }
-    Ok(CrownTemplate {
-        mesh: crown,
-        cervical,
-        landmarks,
-    })
+    Ok((
+        CrownTemplate {
+            mesh: crown,
+            cervical,
+            landmarks,
+        },
+        repair,
+    ))
 }
 
-fn build(tooth: &LibraryTooth, fdi: Fdi, params: &CrownParams) -> Result<CrownTemplate, String> {
+fn build(
+    tooth: &LibraryTooth,
+    fdi: Fdi,
+    params: &CrownParams,
+) -> Result<(CrownTemplate, RadialRepair), String> {
     let p = params.sanitised();
     if tooth.seals.is_empty()
         && let Some((crown, cervical)) = open_crown(&tooth.mesh)
@@ -595,6 +636,7 @@ fn build(tooth: &LibraryTooth, fdi: Fdi, params: &CrownParams) -> Result<CrownTe
     for q in &mut crown.positions {
         *q = (*q - shift) * scale;
     }
+    let repair = repair_radial(&mut crown, &cervical)?;
     let landmarks = landmarks_for(fdi, &crown.positions, &p);
 
     let mut cervical = cervical;
@@ -608,11 +650,102 @@ fn build(tooth: &LibraryTooth, fdi: Fdi, params: &CrownParams) -> Result<CrownTe
         // Same start (mid-facial), the other way round.
         cervical[1..].reverse();
     }
-    Ok(CrownTemplate {
-        mesh: crown,
-        cervical,
-        landmarks,
-    })
+    Ok((
+        CrownTemplate {
+            mesh: crown,
+            cervical,
+            landmarks,
+        },
+        repair,
+    ))
+}
+
+/// The point `dentcraft_design::build_crown` sees a crown's faces from: 0.01 mm below the
+/// centre (vertex mean) of its cervical loop.
+pub fn radial_pole(mesh: &TriMesh, cervical: &[u32]) -> DVec3 {
+    cervical
+        .iter()
+        .map(|&v| mesh.positions[v as usize])
+        .sum::<DVec3>()
+        / cervical.len().max(1) as f64
+        - DVec3::Z * 0.01
+}
+
+/// Faces that are degenerate or whose normal makes a cosine of at most `margin` with the ray
+/// from `pole` to their centroid (`margin = 0` is `build_crown`'s test).
+pub fn radially_failing(mesh: &TriMesh, pole: DVec3, margin: f64) -> Vec<usize> {
+    (0..mesh.triangle_count())
+        .filter(|&i| {
+            let cross = mesh.triangle_cross(i);
+            let [a, b, c] = mesh.triangle(i);
+            let ray = (a + b + c) / 3.0 - pole;
+            !cross.is_finite()
+                || cross.length_squared() < 1e-24
+                || cross.dot(ray) <= margin * cross.length() * ray.length()
+        })
+        .collect()
+}
+
+/// Smooths the neighbourhood of the faces failing the radial test until none fails with
+/// [`RADIAL_MARGIN`]; the cervical line stays fixed. Bounded by [`REPAIR_ROUNDS`] and
+/// [`REPAIR_MAX_MOVE`].
+fn repair_radial(mesh: &mut TriMesh, cervical: &[u32]) -> Result<RadialRepair, String> {
+    let pole = radial_pole(mesh, cervical);
+    let faces = radially_failing(mesh, pole, 0.0).len();
+    let original = mesh.positions.clone();
+    let adjacency = mesh.vertex_adjacency();
+    let mut locked = vec![false; original.len()];
+    for &v in cervical {
+        locked[v as usize] = true;
+    }
+    let largest = |mesh: &TriMesh| {
+        mesh.positions
+            .iter()
+            .zip(&original)
+            .map(|(a, b)| a.distance(*b))
+            .fold(0.0, f64::max)
+    };
+    for _ in 0..REPAIR_ROUNDS {
+        let bad = radially_failing(mesh, pole, RADIAL_MARGIN);
+        if bad.is_empty() {
+            return Ok(RadialRepair {
+                faces,
+                largest_move: largest(mesh),
+            });
+        }
+        let mut region = vec![false; original.len()];
+        for &f in &bad {
+            for v in mesh.triangles[f] {
+                region[v as usize] = true;
+            }
+        }
+        for _ in 0..2 {
+            let ring: Vec<u32> = (0..region.len() as u32)
+                .filter(|&v| region[v as usize])
+                .collect();
+            for v in ring {
+                for &w in adjacency.neighbors(v) {
+                    region[w as usize] = true;
+                }
+            }
+        }
+        let old = mesh.positions.clone();
+        for v in 0..old.len() {
+            let ring = adjacency.neighbors(v as u32);
+            if !region[v] || locked[v] || ring.is_empty() {
+                continue;
+            }
+            let mean = ring.iter().map(|&w| old[w as usize]).sum::<DVec3>() / ring.len() as f64;
+            mesh.positions[v] = old[v].lerp(mean, 0.5);
+        }
+        if largest(mesh) > REPAIR_MAX_MOVE {
+            break;
+        }
+    }
+    Err(format!(
+        "{faces} faces are seen from behind from the crown's axis; smoothing them away would \
+         move the surface more than {REPAIR_MAX_MOVE} mm"
+    ))
 }
 
 /// Fills the radii of sealed samples with a smooth membrane (a harmonic interpolation by

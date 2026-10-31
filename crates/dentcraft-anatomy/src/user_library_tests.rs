@@ -313,3 +313,69 @@ fn an_open_library_crown_keeps_its_own_surface_and_cervical_line() {
         assert_eq!(t.landmarks.cusps.len(), 2);
     }
 }
+
+/// A library of one open crown, `source` in the template frame (+Z occlusal, +Y facial), serving
+/// 14 and 24.
+fn open_library(name: &str, source: &TriMesh) -> ToothLibrary {
+    let dir = std::env::temp_dir().join(format!("dentcraft-lib-{}-{name}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("tooth.stl"),
+        dentcraft_io::write_stl_binary(source),
+    )
+    .unwrap();
+    let json = r#"{ "teeth": [ { "file": "tooth.stl", "serves": [14], "occlusal": [0, 0, 1],
+        "facial": [0, 1, 0], "cervical": [0, 4.5, 0] } ] }"#;
+    std::fs::write(dir.join(MANIFEST), json).unwrap();
+    let lib = ToothLibrary::load(&dir).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    lib
+}
+
+#[test]
+fn faces_seen_from_behind_are_smoothed_away_locally() {
+    let clean = crate::setup::tests::dome(3.5, 4.5, 7.0, 40);
+    // One vertex high on the crown pushed sideways past its neighbours: its fan folds over and
+    // part of it faces away from the crown's axis, as an overhanging cusp slope does.
+    let mut folded = clean.clone();
+    let v = 8 * 40 + 5;
+    let q = folded.positions[v];
+    folded.positions[v] += DVec3::new(-q.y, q.x, 0.0).normalize() * 0.4;
+    let p = CrownParams::default();
+    let reference = open_library("unfolded", &clean);
+    let lib = open_library("folded", &folded);
+    for code in [14, 24] {
+        let fdi = Fdi::new(code).unwrap();
+        let (t, repair) = lib.crown_with_repair(fdi, &p).unwrap().unwrap();
+        assert!(
+            repair.faces > 0,
+            "{code}: the fold did not fail the radial test"
+        );
+        let pole = radial_pole(&t.mesh, &t.cervical);
+        assert!(radially_failing(&t.mesh, pole, 0.0).is_empty(), "{code}");
+        assert!(
+            repair.largest_move > 0.0 && repair.largest_move < 0.5,
+            "{code}: moved {}",
+            repair.largest_move
+        );
+        // Only the fold's neighbourhood moved (a few of this coarse dome's 1 mm rows round it):
+        // the rest is the clean crown's surface.
+        let (clean_t, clean_repair) = reference.crown_with_repair(fdi, &p).unwrap().unwrap();
+        assert_eq!(clean_repair, RadialRepair::default());
+        // Vertex order is the file's, not `dome`'s: the fold is the vertex furthest off.
+        let pairs = || t.mesh.positions.iter().zip(&clean_t.mesh.positions);
+        let (_, &fold) = pairs()
+            .max_by(|x, y| x.0.distance(*x.1).total_cmp(&y.0.distance(*y.1)))
+            .unwrap();
+        let moved: Vec<f64> = pairs()
+            .filter(|(a, b)| a.distance(**b) > 1e-6)
+            .map(|(_, b)| b.distance(fold))
+            .collect();
+        let reach = moved.iter().copied().fold(0.0, f64::max);
+        assert!(
+            moved.len() < clean.vertex_count() / 5 && reach < 3.5,
+            "{code}: {} vertices moved, up to {reach:.2} mm from the fold",
+            moved.len()
+        );
+    }
+}

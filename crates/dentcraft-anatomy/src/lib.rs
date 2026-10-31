@@ -60,7 +60,9 @@ use dentcraft_case::Fdi;
 use dentcraft_mesh::TriMesh;
 
 pub use setup::{SetupTooth, split_setup, write_library};
-pub use user_library::{LibraryError, MANIFEST, ToothLibrary};
+pub use user_library::{
+    LibraryError, MANIFEST, RadialRepair, ToothLibrary, radial_pole, radially_failing,
+};
 
 /// A library tooth: anatomic crown mesh, its open cervical boundary and named landmarks.
 #[derive(Clone, Debug)]

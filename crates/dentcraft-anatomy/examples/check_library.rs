@@ -12,30 +12,25 @@
 //! fails when it is degenerate or when its normal points towards the crown axis, measured from a
 //! point 0.01 mm below the centre of the cervical loop. Here the test runs on the template in its
 //! own frame (`+Z` occlusal), where the textbook crowns have none; a library tooth that is not
-//! star-shaped about its axis (deep embrasures, overhanging cusps) has some, and `build_crown`
-//! rejects it until those faces are dealt with. The parametric crown's count is printed beside
-//! it for comparison. The exit code is non-zero when a template does not build or is unsound.
+//! star-shaped about its axis (fissure walls, overhanging cusps) has some, which `build_crown`
+//! rejects them. The loader repairs such a crown by smoothing round those faces; the count before
+//! the repair and the largest vertex move it made are printed beside the count after it, with
+//! the parametric crown's count for comparison. The exit code is non-zero when a template does
+//! not build, is unsound or still has a failing face.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use dentcraft_anatomy::{CrownParams, CrownTemplate, ToothLibrary, crown};
+use dentcraft_anatomy::{
+    CrownParams, CrownTemplate, ToothLibrary, crown, radial_pole, radially_failing,
+};
 use dentcraft_case::Fdi;
 use dentcraft_mesh::TriMesh;
 use glam::DVec3;
 
 /// Faces failing the radial Jacobian test about the template's cervical centre.
 fn radial_failures(t: &CrownTemplate) -> usize {
-    let origin = cervical_centre(t) - DVec3::Z * 0.01;
-    (0..t.mesh.triangle_count())
-        .filter(|&i| {
-            let cross = t.mesh.triangle_cross(i);
-            let [a, b, c] = t.mesh.triangle(i);
-            !cross.is_finite()
-                || cross.length_squared() < 1e-24
-                || cross.dot((a + b + c) / 3.0 - origin) <= 0.0
-        })
-        .count()
+    radially_failing(&t.mesh, radial_pole(&t.mesh, &t.cervical), 0.0).len()
 }
 
 fn cervical_centre(t: &CrownTemplate) -> DVec3 {
@@ -89,18 +84,24 @@ fn main() -> ExitCode {
     };
     let params = CrownParams::default();
     let mut failed = 0;
-    println!("tooth  triangles  radial-fail  (parametric)  problems");
+    println!("tooth  triangles  radial-fail  (before  moved mm)  (parametric)  problems");
     for fdi in Fdi::all() {
         let parametric = radial_failures(&crown(fdi, &params));
-        match library.crown(fdi, &params) {
-            Ok(Some(t)) => {
-                let problems = problems(&t);
+        match library.crown_with_repair(fdi, &params) {
+            Ok(Some((t, repair))) => {
+                let mut problems = problems(&t);
+                let fails = radial_failures(&t);
+                if fails > 0 {
+                    problems.push("faces fail the radial test".into());
+                }
                 failed += usize::from(!problems.is_empty());
                 println!(
-                    "{:<7}{:>9}  {:>11}  {:>12}  {}",
+                    "{:<7}{:>9}  {:>11}  ({:>6}  {:>8.3})  {:>12}  {}",
                     fdi.code(),
                     t.mesh.triangle_count(),
-                    radial_failures(&t),
+                    fails,
+                    repair.faces,
+                    repair.largest_move,
                     parametric,
                     if problems.is_empty() {
                         "none".to_string()
@@ -120,7 +121,7 @@ fn main() -> ExitCode {
         }
     }
     if failed == 0 {
-        println!("all 32 templates build and are sound");
+        println!("all 32 templates build, are sound and pass the radial test");
         ExitCode::SUCCESS
     } else {
         println!("{failed} tooth/teeth failed");
