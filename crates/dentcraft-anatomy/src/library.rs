@@ -810,6 +810,82 @@ pub(crate) fn landmarks_for(fdi: Fdi, positions: &[DVec3], p: &CrownParams) -> C
     find_landmarks(positions, &spec.field, &ctx, fdi.is_anterior())
 }
 
+/// Landmarks of a crown whose surface is a library's own anatomy: like [`landmarks_for`], but
+/// every cusp tip is one of the crown's own occlusal peaks (a vertex in the upper half of the
+/// crown that nothing within a fifth of the crown's smaller width, in plan, rises above), the
+/// one nearest the designed tip of that name. A designed cusp with no peak within half the
+/// crown's smaller width keeps the highest vertex near the designed tip.
+pub(crate) fn landmarks_from_surface(
+    fdi: Fdi,
+    positions: &[DVec3],
+    p: &CrownParams,
+) -> CrownLandmarks {
+    let mut landmarks = landmarks_for(fdi, positions, p);
+    if landmarks.cusps.is_empty() {
+        return landmarks;
+    }
+    let dims = scaled_dims(fdi, p);
+    let radius = 0.2 * dims.md.min(dims.bl);
+    let top = positions.iter().map(|q| q.z).fold(f64::MIN, f64::max);
+    let peaks = occlusal_peaks(positions, radius, 0.5 * top);
+    let mut used = vec![false; peaks.len()];
+    let reach = 0.5 * dims.md.min(dims.bl);
+    for cusp in &mut landmarks.cusps {
+        // The designed tip: the fallback landmark already sits near it.
+        let tip = positions[cusp.vertex as usize];
+        let near = |v: u32| {
+            let q = positions[v as usize];
+            ((q.x - tip.x).powi(2) + (q.y - tip.y).powi(2)).sqrt()
+        };
+        if let Some(k) = (0..peaks.len())
+            .filter(|&k| !used[k] && near(peaks[k]) < reach)
+            .min_by(|&a, &b| near(peaks[a]).total_cmp(&near(peaks[b])))
+        {
+            used[k] = true;
+            cusp.vertex = peaks[k];
+        }
+    }
+    landmarks
+}
+
+/// Vertices at or above `floor` with no higher vertex within `radius` in plan.
+fn occlusal_peaks(positions: &[DVec3], radius: f64, floor: f64) -> Vec<u32> {
+    let cell = |q: &DVec3| ((q.x / radius).floor() as i64, (q.y / radius).floor() as i64);
+    let mut grid: std::collections::HashMap<(i64, i64), Vec<u32>> = Default::default();
+    for (i, q) in positions.iter().enumerate() {
+        if q.z >= floor {
+            grid.entry(cell(q)).or_default().push(i as u32);
+        }
+    }
+    let higher = |a: u32, b: u32| {
+        let (pa, pb) = (positions[a as usize], positions[b as usize]);
+        pa.z > pb.z || (pa.z == pb.z && a < b)
+    };
+    let mut peaks = Vec::new();
+    for (i, q) in positions.iter().enumerate() {
+        if q.z < floor {
+            continue;
+        }
+        let (cx, cy) = cell(q);
+        let beaten = (-1..=1).any(|dx| {
+            (-1..=1).any(|dy| {
+                grid.get(&(cx + dx, cy + dy)).is_some_and(|list| {
+                    list.iter().any(|&j| {
+                        let o = positions[j as usize];
+                        j != i as u32
+                            && (o.x - q.x).powi(2) + (o.y - q.y).powi(2) < radius * radius
+                            && higher(j, i as u32)
+                    })
+                })
+            })
+        });
+        if !beaten {
+            peaks.push(i as u32);
+        }
+    }
+    peaks
+}
+
 // ---------------------------------------------------------------------------
 // Landmarks
 // ---------------------------------------------------------------------------

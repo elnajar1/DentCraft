@@ -262,3 +262,54 @@ fn a_bad_library_reports_a_plain_error() {
     }
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn an_open_library_crown_keeps_its_own_surface_and_cervical_line() {
+    let dir = std::env::temp_dir().join(format!("dentcraft-lib-{}-open", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    // A dome with a wavy cervical line (0.8 mm up mesially and distally), turned, inside out.
+    let mut source = crate::setup::tests::dome(3.5, 4.5, 7.0, 40);
+    for q in &mut source.positions {
+        q.z += 0.8 * (2.0 * q.y.atan2(q.x)).cos() * (1.0 - q.z / 7.0);
+    }
+    let r = DMat3::from_cols(-DVec3::Z, DVec3::X, -DVec3::Y);
+    let to_file = |p: DVec3| r * p + DVec3::new(10.0, -3.0, 7.0);
+    let mut file = source.clone();
+    for q in &mut file.positions {
+        *q = to_file(*q);
+    }
+    file.flip_orientation();
+    std::fs::write(dir.join("tooth.stl"), dentcraft_io::write_stl_binary(&file)).unwrap();
+    let json = format!(
+        r#"{{ "teeth": [ {{ "file": "tooth.stl", "serves": [14], "occlusal": {:?},
+            "facial": {:?}, "cervical": {:?} }} ] }}"#,
+        (r * DVec3::Z).to_array(),
+        (r * DVec3::Y).to_array(),
+        to_file(DVec3::new(0.0, 4.5, -0.8)).to_array()
+    );
+    std::fs::write(dir.join(MANIFEST), json).unwrap();
+    let lib = ToothLibrary::load(&dir).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    for code in [14, 24] {
+        let t = template(&lib, code, &CrownParams::default());
+        let mesh = &t.mesh;
+        // The library's own vertices and cervical line, not a 160-column resampling.
+        assert_eq!(mesh.vertex_count(), source.vertex_count());
+        assert_eq!(t.cervical.len(), 40);
+        assert_eq!(mesh.boundary_loops().len(), 1);
+        assert!(closed_volume(&t) > 0.0, "{code}: normals point inward");
+        assert!(cervical_follows_the_winding(&t), "{code}");
+        let first = mesh.positions[t.cervical[0] as usize];
+        assert!(first.z.abs() < 1e-9 && first.y > 2.0, "{first:?}");
+        // Its own CEJ wave (1.6 mm in 7.8 mm of height, scaled to 8.5 mm) survives.
+        let zs: Vec<f64> = t
+            .cervical
+            .iter()
+            .map(|&v| mesh.positions[v as usize].z)
+            .collect();
+        let wave = zs.iter().copied().fold(f64::MIN, f64::max)
+            - zs.iter().copied().fold(f64::MAX, f64::min);
+        assert!((wave - 1.6 * 8.5 / 7.8).abs() < 0.15, "{code}: wave {wave}");
+        assert_eq!(t.landmarks.cusps.len(), 2);
+    }
+}

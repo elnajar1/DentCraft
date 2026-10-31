@@ -52,12 +52,14 @@
 
 mod dimensions;
 mod library;
+mod setup;
 mod shape;
 mod user_library;
 
 use dentcraft_case::Fdi;
 use dentcraft_mesh::TriMesh;
 
+pub use setup::{SetupTooth, split_setup, write_library};
 pub use user_library::{LibraryError, MANIFEST, ToothLibrary};
 
 /// A library tooth: anatomic crown mesh, its open cervical boundary and named landmarks.

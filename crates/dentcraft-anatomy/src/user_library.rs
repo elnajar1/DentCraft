@@ -42,7 +42,7 @@ use glam::DVec3;
 use serde::Deserialize;
 
 use crate::dimensions::dimensions;
-use crate::library::{COLUMNS, cej_lingual, landmarks_for};
+use crate::library::{COLUMNS, cej_lingual, landmarks_for, landmarks_from_surface};
 use crate::{CrownParams, CrownTemplate};
 
 /// Manifest file name inside a library folder.
@@ -165,7 +165,8 @@ impl ToothLibrary {
         let other = counterpart(fdi);
         self.teeth
             .iter()
-            .find(|t| t.serves.iter().any(|&s| s == fdi || s == other))
+            .find(|t| t.serves.contains(&fdi))
+            .or_else(|| self.teeth.iter().find(|t| t.serves.contains(&other)))
     }
 
     /// Whether the library has a tooth for `fdi`.
@@ -268,8 +269,135 @@ fn segment_meets_sphere(a: DVec3, b: DVec3, c: DVec3, r: f64) -> bool {
     (a + ab * t).distance(c) < r
 }
 
+/// The tooth as an open crown with its own cervical line, wound outward, when it is one: a
+/// single connected, consistently wound surface with exactly one boundary loop, distinct vertex
+/// positions and no zero-area triangles once those are dropped.
+fn open_crown(mesh: &TriMesh) -> Option<(TriMesh, Vec<u32>)> {
+    let mut crown = mesh.clone();
+    crown.remove_degenerate_triangles(1e-10);
+    crown.remove_unreferenced_vertices();
+    if crown.is_empty()
+        || crown.connected_components().len() != 1
+        || !crown.is_consistently_oriented()
+        || crown.non_manifold_edge_count() != 0
+    {
+        return None;
+    }
+    let mut seen = std::collections::HashSet::new();
+    if !crown
+        .positions
+        .iter()
+        .all(|q| seen.insert(q.to_array().map(|x| (x + 0.0).to_bits())))
+    {
+        return None;
+    }
+    let mut loops = crown.boundary_loops();
+    if loops.len() != 1 {
+        return None;
+    }
+    // Closed with a fan over its cervical line, an outward crown has a positive volume.
+    let fan = |crown: &TriMesh, l: &[u32]| {
+        let c = l
+            .iter()
+            .map(|&v| crown.positions[v as usize])
+            .sum::<DVec3>()
+            / l.len() as f64;
+        let mut closed = crown.clone();
+        let ci = closed.positions.len() as u32;
+        closed.positions.push(c);
+        for k in 0..l.len() {
+            closed.triangles.push([ci, l[(k + 1) % l.len()], l[k]]);
+        }
+        closed.signed_volume()
+    };
+    if fan(&crown, &loops[0]) < 0.0 {
+        crown.flip_orientation();
+        loops = crown.boundary_loops();
+    }
+    let l = loops.pop()?;
+    Some((crown, l))
+}
+
+/// A crown template from a library crown that already is an open crown: its own surface and
+/// cervical line, moved and scaled like the resampled crown, with landmarks from its geometry.
+fn build_open(
+    mut crown: TriMesh,
+    mut cervical: Vec<u32>,
+    fdi: Fdi,
+    p: &CrownParams,
+) -> Result<CrownTemplate, String> {
+    let dim = dimensions(fdi);
+    let at = |crown: &TriMesh, v: u32| crown.positions[v as usize];
+    let (clo, chi) = cervical
+        .iter()
+        .map(|&v| at(&crown, v))
+        .fold((DVec3::MAX, DVec3::MIN), |(lo, hi), q| {
+            (lo.min(q), hi.max(q))
+        });
+    let (cx, cy) = ((clo.x + chi.x) / 2.0, (clo.y + chi.y) / 2.0);
+    let angle = |q: DVec3| (q.x - cx).atan2(q.y - cy);
+    // Seen from occlusal the outward crown's cervical line runs counter-clockwise, its angle
+    // from +Y (facial) towards +X falling steadily.
+    let n = cervical.len();
+    let turning: f64 = (0..n)
+        .map(|k| {
+            let d = angle(at(&crown, cervical[(k + 1) % n])) - angle(at(&crown, cervical[k]));
+            (d + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI
+        })
+        .sum();
+    if turning > -1.0 {
+        return Err(
+            "the open crown's boundary is not a cervical line round its occlusal axis".into(),
+        );
+    }
+    let start = (0..n)
+        .min_by(|&a, &b| {
+            angle(at(&crown, cervical[a]))
+                .abs()
+                .total_cmp(&angle(at(&crown, cervical[b])).abs())
+        })
+        .unwrap_or(0);
+    cervical.rotate_left(start);
+    let shift = DVec3::new(cx, cy, at(&crown, cervical[0]).z);
+    for q in &mut crown.positions {
+        *q -= shift;
+    }
+    let b = crown.bounds().ok_or("empty crown")?;
+    let size = b.size();
+    let height = b.max.z;
+    if size.x < 1e-6 || size.y < 1e-6 || height < 1e-6 {
+        return Err("the crown has no extent".into());
+    }
+    let scale = DVec3::new(
+        dim.mesiodistal * p.mesiodistal / size.x,
+        dim.buccolingual * p.buccolingual / size.y,
+        dim.crown_length * p.height / height,
+    );
+    for q in &mut crown.positions {
+        *q *= scale;
+    }
+    let landmarks = landmarks_from_surface(fdi, &crown.positions, p);
+    if matches!(fdi.quadrant(), 2 | 4) {
+        for q in &mut crown.positions {
+            q.x = -q.x;
+        }
+        crown.flip_orientation();
+        cervical[1..].reverse();
+    }
+    Ok(CrownTemplate {
+        mesh: crown,
+        cervical,
+        landmarks,
+    })
+}
+
 fn build(tooth: &LibraryTooth, fdi: Fdi, params: &CrownParams) -> Result<CrownTemplate, String> {
     let p = params.sanitised();
+    if tooth.seals.is_empty()
+        && let Some((crown, cervical)) = open_crown(&tooth.mesh)
+    {
+        return build_open(crown, cervical, fdi, &p);
+    }
     let dim = dimensions(fdi);
     let mesh = &tooth.mesh;
     let top = mesh.positions.iter().map(|q| q.z).fold(f64::MIN, f64::max);
