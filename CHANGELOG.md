@@ -31,7 +31,9 @@ must be checked by a qualified dental professional before clinical use.
 
 - **Viewport-first layout**: the ribbon is gone. A floating toolbar at the top left holds the file
   commands and the Design and Tools menus; view buttons sit at the bottom right.
-- **Objects panel**: scans grouped by role, shown or hidden per group or one by one.
+- **Objects panel**: scans grouped by role, and every tooth's margin, inner surface and crown,
+  shown or hidden per group or per tooth, all designed teeth on screen at once. An option hides the
+  opposite jaw when the view looks at it from behind.
 - **Case setup**: the tooth chart, material and scan roles open in their own screen, for a new
   case and from the toolbar, instead of taking the left side of the window.
 
