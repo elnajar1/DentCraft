@@ -106,6 +106,8 @@ pub struct AnatomyCard {
     pub library: String,
     /// The tooth library could not be loaded.
     pub library_error: Option<String>,
+    /// The tooth's crown uses the parametric tooth although the library serves it, and why.
+    pub library_note: Option<String>,
     pub error: Option<String>,
 }
 
@@ -1024,6 +1026,9 @@ fn anatomy_section(
             );
             if let Some(error) = &card.library_error {
                 ui.label(RichText::new(error).size(SIZE_SMALL).color(p.danger));
+            }
+            if let Some(note) = &card.library_note {
+                ui.label(RichText::new(note).size(SIZE_SMALL).color(p.accent));
             }
             if card.pontic {
                 ui.label(

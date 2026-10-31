@@ -18,8 +18,8 @@ use dentcraft_case::{
     ToothType,
 };
 use dentcraft_design::{
-    Crown, CrownParams as BuildParams, CrownPlacement, CrownReport, InnerSurface, auto_placement,
-    build_crown,
+    Crown, CrownParams as BuildParams, CrownPlacement, CrownReport, DesignError, InnerSurface,
+    auto_placement, build_crown,
 };
 use dentcraft_render::{DrawItem, MeshData, MeshId};
 use eframe::egui;
@@ -327,10 +327,44 @@ struct Outcome {
     crown: Arc<Crown>,
     /// The tooth's mesial direction as placed, perpendicular to the crown's occlusal axis.
     mesial: DVec3,
+    /// Why the crown is not the library's tooth although the library serves it.
+    note: Option<String>,
 }
 
 fn run(key: Key, stamp: Stamp, source: &LibrarySource) -> Result<Outcome, String> {
-    let template = template_for(source, key.tooth, &shape_params(&key.anatomy))?;
+    let params = shape_params(&key.anatomy);
+    let template = template_for(source, key.tooth, &params)?;
+    let (built, mesial, note) = match fit(&key, &template) {
+        // A library tooth whose shape the fit cannot follow on this preparation: design the
+        // crown from DentCraft's own tooth rather than none, and say so.
+        Err(e) if source.serves(key.tooth) => {
+            let (built, mesial) = fit(&key, &crown(key.tooth, &params)).map_err(describe)?;
+            let note = format!(
+                "The library's tooth {} could not be fitted here ({}), so this crown uses \
+                 DentCraft's parametric tooth.",
+                key.tooth,
+                describe(e).trim_end_matches('.').to_lowercase()
+            );
+            (built, mesial, Some(note))
+        }
+        fitted => {
+            let (built, mesial) = fitted.map_err(describe)?;
+            (built, mesial, None)
+        }
+    };
+    Ok(Outcome {
+        mesh: Arc::new(MeshData::from_mesh(&built.mesh)),
+        crown: Arc::new(built),
+        mesial,
+        note,
+        stamp,
+        key,
+    })
+}
+
+/// Places `template` on the key's inner surface and builds the crown, with the tooth's mesial
+/// direction as placed.
+fn fit(key: &Key, template: &CrownTemplate) -> Result<(Crown, DVec3), DesignError> {
     let inner = &*key.surface;
     let hint = key
         .forward
@@ -346,15 +380,8 @@ fn run(key: Key, stamp: Stamp, source: &LibrarySource) -> Result<Outcome, String
         &template.cervical,
         placement,
         &BuildParams::new(key.min_occlusal, key.min_wall),
-    )
-    .map_err(describe)?;
-    Ok(Outcome {
-        mesh: Arc::new(MeshData::from_mesh(&built.mesh)),
-        crown: Arc::new(built),
-        mesial,
-        stamp,
-        key,
-    })
+    )?;
+    Ok((built, mesial))
 }
 
 /// The viewport tool of the Anatomy step: draws the crown.
@@ -435,6 +462,11 @@ impl LibrarySource {
         }
     }
 
+    /// Whether the library has its own tooth for `tooth`.
+    fn serves(&self, tooth: Fdi) -> bool {
+        self.library.as_ref().is_some_and(|l| l.serves(tooth))
+    }
+
     /// What the card calls the source of the crowns.
     pub fn label(&self) -> String {
         self.name
@@ -482,6 +514,8 @@ pub struct AnatomyStep {
     built: BTreeMap<Fdi, (Stamp, Arc<Crown>, DVec3)>,
     /// Teeth whose first crown was built, so the view has framed it once.
     framed: BTreeSet<Fdi>,
+    /// Teeth whose latest crown fell back from the library to the parametric tooth, and why.
+    notes: BTreeMap<Fdi, String>,
     /// A tooth's first crown was built since the app last asked: the view should take it in.
     new_crown: bool,
 }
@@ -505,6 +539,7 @@ impl AnatomyStep {
             repaint,
             built: BTreeMap::new(),
             framed: BTreeSet::new(),
+            notes: BTreeMap::new(),
             new_crown: false,
         }
     }
@@ -586,6 +621,7 @@ impl AnatomyStep {
             busy,
             library: self.library.label(),
             library_error: self.library.error.clone(),
+            library_note: self.notes.get(&tooth).cloned(),
             error: inner_error.or_else(|| self.error.clone().filter(|_| current)),
         }
     }
@@ -631,6 +667,10 @@ impl AnatomyStep {
             self.running = false;
             match message {
                 Ok(o) => {
+                    match &o.note {
+                        Some(note) => self.notes.insert(o.key.tooth, note.clone()),
+                        None => self.notes.remove(&o.key.tooth),
+                    };
                     // Kept even when no longer wanted: the stamp tells the export if it is current.
                     self.built
                         .insert(o.key.tooth, (o.stamp, o.crown.clone(), o.mesial));
