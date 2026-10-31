@@ -788,6 +788,28 @@ pub(crate) fn build_crown(fdi: Fdi, params: &CrownParams) -> CrownTemplate {
     }
 }
 
+/// Lingual CEJ curvature of `fdi` at the textbook height (mm, usually negative).
+pub(crate) fn cej_lingual(fdi: Fdi) -> f64 {
+    tooth_spec(fdi).cej_lingual
+}
+
+/// Landmarks of a crown of type `fdi` with the +X-mesial frame and sanitised `p`, found on
+/// `positions` the way the parametric crown finds its own (designed cusp tips of the textbook
+/// tooth, extremes along the frame axes).
+pub(crate) fn landmarks_for(fdi: Fdi, positions: &[DVec3], p: &CrownParams) -> CrownLandmarks {
+    let spec = tooth_spec(fdi);
+    let dims = scaled_dims(fdi, p);
+    let ctx = FieldCtx {
+        half_md: dims.md / 2.0,
+        half_bl: dims.bl / 2.0,
+        height: dims.height,
+        pole: (spec.pole[0] * dims.md / 2.0, spec.pole[1] * dims.bl / 2.0),
+        wear: 0.0,
+        cusp_factor: 1.0,
+    };
+    find_landmarks(positions, &spec.field, &ctx, fdi.is_anterior())
+}
+
 // ---------------------------------------------------------------------------
 // Landmarks
 // ---------------------------------------------------------------------------

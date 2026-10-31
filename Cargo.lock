@@ -556,10 +556,13 @@ name = "dentcraft-anatomy"
 version = "0.2.0"
 dependencies = [
  "dentcraft-case",
+ "dentcraft-io",
  "dentcraft-mesh",
  "dentcraft-render",
  "glam",
  "image",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

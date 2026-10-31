@@ -10,6 +10,9 @@ description = "Parametric tooth anatomy: crown templates generated from publishe
 [dependencies]
 dentcraft-mesh.workspace = true
 dentcraft-case.workspace = true
+dentcraft-io.workspace = true
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
 glam = { version = "0.34.1", features = ["serde"] }
 
 [dev-dependencies]
