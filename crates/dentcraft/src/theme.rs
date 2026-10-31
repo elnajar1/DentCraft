@@ -13,6 +13,8 @@ use eframe::egui::{
 pub const RADIUS_SM: u8 = 4;
 pub const RADIUS_MD: u8 = 6;
 pub const RADIUS_LG: u8 = 8;
+/// Opacity of the floating viewport panels' fill.
+const FLOATING_ALPHA: u8 = 228;
 
 /// Text sizes in points, from SolidCraft's type scale.
 pub const SIZE_SMALL: f32 = 11.0;
@@ -163,6 +165,12 @@ impl Palette {
     };
 
     /// Background and back-face look of the 3D viewport.
+    /// Fill of the panels that float over the viewport: the panel colour, slightly see-through.
+    pub fn floating(&self) -> Color32 {
+        let [r, g, b, _] = self.panel.to_array();
+        Color32::from_rgba_unmultiplied(r, g, b, FLOATING_ALPHA)
+    }
+
     pub fn render_options(&self, kind: ThemeKind) -> RenderOptions {
         let rgb = |c: Color32| [c.r(), c.g(), c.b()].map(|v| v as f32 / 255.0);
         let base = match kind {

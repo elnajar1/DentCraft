@@ -19,8 +19,8 @@ mod margin_step;
 mod objects;
 mod orient_step;
 mod recovery;
-mod ribbon;
 mod theme;
+mod toolbar;
 mod tools;
 mod tooth_view;
 mod viewport;
@@ -97,7 +97,6 @@ fn main() -> ExitCode {
         view: args.view,
         theme: args.theme.map(Into::into),
         hide: args.hide,
-        tab: args.tab.map(Into::into),
         workspace_menu_open: args.open == Some(OpenArg::WorkspaceMenu),
         screenshot: args.screenshot,
         measure: args.measure,

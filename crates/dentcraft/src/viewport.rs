@@ -422,10 +422,21 @@ impl Viewport {
     }
 }
 
+/// Centre of the axis gizmo in the viewport `rect`, and the length of its arrows.
+fn gizmo_centre(rect: Rect) -> (Pos2, f32) {
+    (rect.left_bottom() + vec2(52.0, -52.0), 30.0)
+}
+
+/// The area the axis gizmo paints in: arrows and their tip labels.
+#[cfg(test)]
+pub fn gizmo_rect(rect: Rect) -> Rect {
+    let (center, radius) = gizmo_centre(rect);
+    Rect::from_center_size(center, egui::Vec2::splat(2.0 * (radius + 8.0)))
+}
+
 /// X/Y/Z arrows in the bottom-left corner, matching the camera orientation.
 fn paint_axis_gizmo(ui: &Ui, rect: Rect, camera: &Camera) {
-    let center = rect.left_bottom() + vec2(52.0, -52.0);
-    let radius = 30.0;
+    let (center, radius) = gizmo_centre(rect);
     let painter = ui.painter_at(rect);
     let colors = [
         Color32::from_rgb(0xe0, 0x6c, 0x64),

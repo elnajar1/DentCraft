@@ -31,8 +31,8 @@ use crate::margin_step::{self, MARGIN, MarginStep, StepFrame};
 use crate::objects::{self, ObjectState, SceneObject};
 use crate::orient_step::{self, ORIENT, OrientStep};
 use crate::recovery::{self, Autosave};
-use crate::ribbon::{self, Command, RibbonTab, RibbonView, WorkspaceMenu};
 use crate::theme::{self, Palette, RADIUS_LG, SIZE_SMALL, ThemeKind};
+use crate::toolbar::{self, Command, ToolbarView, WorkspaceMenu};
 use crate::tools::{self, MEASURE, Measure, Tools};
 use crate::tooth_view::{self, FrameTrigger};
 use crate::viewport::Viewport;
@@ -56,8 +56,6 @@ pub struct StartOptions {
     pub theme: Option<ThemeKind>,
     /// Roles of the startup scans to hide.
     pub hide: Vec<ScanRole>,
-    /// Ribbon tab to show first.
-    pub tab: Option<RibbonTab>,
     /// Show the workspace menu open, for screenshots.
     pub workspace_menu_open: bool,
     pub screenshot: Option<PathBuf>,
@@ -208,7 +206,6 @@ pub struct DentCraftApp {
     /// Why the prompt's last choice was refused, shown in its place until acknowledged.
     recovery_refused: Option<String>,
     window_title: String,
-    ribbon_tab: RibbonTab,
     workspace_menu: WorkspaceMenu,
     /// Open and collapsed sections of the side panels.
     sections: Sections,
@@ -320,7 +317,6 @@ impl DentCraftApp {
             recovery_prompt,
             recovery_refused: None,
             window_title: String::new(),
-            ribbon_tab: start.tab.unwrap_or_default(),
             workspace_menu: WorkspaceMenu::new(start.workspace_menu_open),
             sections,
             tools: Tools::default(),
@@ -1519,11 +1515,10 @@ impl DentCraftApp {
         });
     }
 
-    /// Row 2: the ribbon.
-    fn ribbon(&mut self, ui: &mut egui::Ui) {
+    /// The toolbar and the view cluster floating over the viewport `rect`.
+    fn toolbar(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
         let has_jaw_scan = self.has_jaw_scan();
-        let command = RibbonView {
-            tab: &mut self.ribbon_tab,
+        let command = ToolbarView {
             workspace_menu: &mut self.workspace_menu,
             session: &self.session,
             has_jaw_scan,
@@ -1534,13 +1529,13 @@ impl DentCraftApp {
             lower_visible: objects::role_visible(&self.objects, ScanRole::Lower),
             active_tool: self.tools.active_name(),
         }
-        .show(ui);
+        .show(ui, rect);
         if let Some(command) = command {
             self.run(command);
         }
     }
 
-    /// Carries out a ribbon or app bar command with the app's existing actions.
+    /// Carries out a toolbar, view cluster or app bar command with the app's existing actions.
     fn run(&mut self, command: Command) {
         match command {
             Command::New => self.request_new(),
@@ -2165,6 +2160,7 @@ impl DentCraftApp {
                 p.text,
             );
         }
+        self.toolbar(ui, rect);
         self.show_toasts(ui, rect);
     }
 
@@ -2173,7 +2169,8 @@ impl DentCraftApp {
         let mut dismissed = None;
         let width = 520.0_f32.min(rect.width() - 48.0);
         let area = egui::Rect::from_min_size(
-            rect.center_top() + vec2(-width * 0.5, 16.0),
+            // Below the toolbar, which a wide toast would otherwise cover.
+            rect.center_top() + vec2(-width * 0.5, toolbar::INSET + toolbar::HEIGHT + 8.0),
             vec2(width, rect.height() * 0.5),
         );
         ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
@@ -2535,10 +2532,6 @@ impl eframe::App for DentCraftApp {
             .frame(bar(Margin::symmetric(10, 0)).fill(p.app_bg))
             .exact_size(32.0)
             .show(ui, |ui| self.app_bar(ui));
-        egui::Panel::top("ribbon")
-            .frame(bar(Margin::ZERO))
-            .exact_size(ribbon::HEIGHT)
-            .show(ui, |ui| self.ribbon(ui));
         egui::Panel::bottom("status_bar")
             .frame(bar(Margin::symmetric(10, 0)).fill(p.panel_header))
             .exact_size(22.0)

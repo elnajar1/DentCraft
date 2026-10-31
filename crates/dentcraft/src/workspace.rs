@@ -1,18 +1,18 @@
 //! Workspaces: the kinds of restoration work DentCraft is organised into. Each has its own
-//! ribbon tabs over the same case; the switcher at the left end of the ribbon lists them.
+//! toolbar over the same case; the switcher at the left end of the toolbar lists them.
 
 use eframe::egui::Color32;
 
-use crate::ribbon::RibbonTab;
 use crate::theme::Palette;
+use crate::toolbar;
 
 /// Footer note under the workspace list.
 pub const FOOTER: &str = "Every workspace works on the same case, scans and teeth; only the \
-    ribbon changes. Planned workspaces are on the roadmap.";
+    toolbar changes. Planned workspaces are on the roadmap.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
-    /// The workspace the ribbon shows now.
+    /// The workspace the toolbar shows now.
     Current,
     /// Ships and can be switched to.
     #[cfg_attr(
@@ -59,7 +59,7 @@ impl Workspace {
         Self::SmileDesign,
     ];
 
-    /// The workspace the ribbon shows.
+    /// The workspace the toolbar shows.
     pub fn current() -> Self {
         Self::ALL
             .into_iter()
@@ -76,18 +76,6 @@ impl Workspace {
             Self::Splint => "Splint",
             Self::Denture => "Denture",
             Self::SmileDesign => "Smile Design",
-        }
-    }
-
-    /// Name under the icon of the switcher, which is only 88 px wide.
-    pub fn short_name(self) -> &'static str {
-        match self {
-            Self::CrownBridge => "Crowns",
-            Self::ModelBuilder => "Models",
-            Self::Implant => "Implant",
-            Self::Splint => "Splint",
-            Self::Denture => "Denture",
-            Self::SmileDesign => "Smile",
         }
     }
 
@@ -114,10 +102,10 @@ impl Workspace {
         self.status() != Status::Planned
     }
 
-    /// The ribbon tabs of a workspace that ships, joined for the menu; planned ones have none.
+    /// The toolbar groups of a workspace that ships, joined for the menu; planned ones have none.
     pub fn tabs(self) -> Option<String> {
         match self {
-            Self::CrownBridge => Some(RibbonTab::ALL.map(RibbonTab::label).join(" \u{b7} ")),
+            Self::CrownBridge => Some(toolbar::GROUPS.join(" \u{b7} ")),
             _ => None,
         }
     }
@@ -174,15 +162,14 @@ mod tests {
         }
         assert_eq!(
             Workspace::CrownBridge.tabs().as_deref(),
-            Some("Case \u{b7} Design \u{b7} View")
+            Some("File \u{b7} Design \u{b7} Tools \u{b7} Views")
         );
     }
 
     #[test]
-    fn every_workspace_has_a_title_short_name_and_description() {
+    fn every_workspace_has_a_title_and_description() {
         for w in Workspace::ALL {
             assert!(!w.title().trim().is_empty(), "{w:?}");
-            assert!(!w.short_name().trim().is_empty(), "{w:?}");
             assert!(!w.description().trim().is_empty(), "{w:?}");
         }
     }
