@@ -84,10 +84,26 @@ pub struct Args {
     #[arg(long, value_name = "DIR")]
     pub export: Option<PathBuf>,
 
+    /// Folder of a tooth library (STL teeth and library.json) to design crowns from. Falls back
+    /// to the DENTCRAFT_TOOTH_LIBRARY environment variable.
+    #[arg(long, value_name = "DIR")]
+    pub tooth_library: Option<PathBuf>,
+
     /// Close the app cleanly after this many seconds (automation): unsaved changes are not
     /// asked about. Fractions allowed, e.g. 30 or 0.5.
     #[arg(long, value_name = "SECONDS", value_parser = parse_exit_after)]
     pub exit_after: Option<Duration>,
+}
+
+impl Args {
+    /// The tooth library folder: `--tooth-library`, else `DENTCRAFT_TOOTH_LIBRARY` when set.
+    pub fn tooth_library_dir(&self) -> Option<PathBuf> {
+        self.tooth_library.clone().or_else(|| {
+            std::env::var_os("DENTCRAFT_TOOTH_LIBRARY")
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from)
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]

@@ -92,6 +92,7 @@ fn main() -> ExitCode {
     };
 
     let exit_code = Arc::new(Mutex::new(None));
+    let tooth_library = args.tooth_library_dir();
     let start = StartOptions {
         files: args.files,
         case: args.case,
@@ -109,6 +110,7 @@ fn main() -> ExitCode {
         tooth: args.tooth,
         section: args.section,
         export: args.export,
+        tooth_library,
         recovery,
         recovery_lock: instance.map(|(_, lock)| lock),
         restore,

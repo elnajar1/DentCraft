@@ -7,11 +7,12 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::RangeInclusive;
+use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
-use dentcraft_anatomy::{CrownParams as ShapeParams, crown};
+use dentcraft_anatomy::{CrownParams as ShapeParams, CrownTemplate, ToothLibrary, crown};
 use dentcraft_case::{
     AnatomyDesign, Arch, Case, Design, Fdi, JawFrame, Material, RestorationKind, ToothDesign,
     ToothType,
@@ -328,8 +329,8 @@ struct Outcome {
     mesial: DVec3,
 }
 
-fn run(key: Key, stamp: Stamp) -> Result<Outcome, String> {
-    let template = crown(key.tooth, &shape_params(&key.anatomy));
+fn run(key: Key, stamp: Stamp, source: &LibrarySource) -> Result<Outcome, String> {
+    let template = template_for(source, key.tooth, &shape_params(&key.anatomy))?;
     let inner = &*key.surface;
     let hint = key
         .forward
@@ -397,6 +398,69 @@ pub struct StepFrame<'a> {
     pub surface: Option<Arc<InnerSurface>>,
 }
 
+/// Where the Anatomy step's crown templates come from: the user's tooth library, or DentCraft's
+/// parametric crowns.
+#[derive(Clone, Default)]
+pub struct LibrarySource {
+    library: Option<Arc<ToothLibrary>>,
+    /// The library folder's name; `None` for the parametric crowns.
+    name: Option<String>,
+    /// Why the library could not be loaded.
+    error: Option<String>,
+}
+
+impl LibrarySource {
+    /// Loads the library in `dir`; no folder means the parametric crowns.
+    pub fn load(dir: Option<&Path>) -> Self {
+        let Some(dir) = dir else {
+            return Self::default();
+        };
+        let name = dir
+            .file_name()
+            .map_or_else(|| dir.display().to_string(), |n| n.to_string_lossy().into());
+        match ToothLibrary::load(dir) {
+            Ok(library) => Self {
+                library: Some(Arc::new(library)),
+                name: Some(name),
+                error: None,
+            },
+            Err(e) => Self {
+                library: None,
+                name: Some(name),
+                error: Some(format!(
+                    "The tooth library {} could not be loaded: {e}",
+                    dir.display()
+                )),
+            },
+        }
+    }
+
+    /// What the card calls the source of the crowns.
+    pub fn label(&self) -> String {
+        self.name
+            .clone()
+            .unwrap_or_else(|| "DentCraft parametric".into())
+    }
+}
+
+/// The crown template of `tooth`: from the library when it serves the tooth, else parametric.
+fn template_for(
+    source: &LibrarySource,
+    tooth: Fdi,
+    params: &ShapeParams,
+) -> Result<CrownTemplate, String> {
+    if let Some(error) = &source.error {
+        return Err(error.clone());
+    }
+    match source.library.as_deref().map(|l| l.crown(tooth, params)) {
+        Some(Ok(Some(template))) => Ok(template),
+        Some(Err(e)) => Err(format!(
+            "The tooth library could not build tooth {tooth}: {e}"
+        )),
+        Some(Ok(None)) | None => Ok(crown(tooth, params)),
+    }
+}
+
 /// The app side of the Anatomy step: worker jobs, the shown crown and its report.
 pub struct AnatomyStep {
     mesh: Rc<RefCell<Option<Arc<MeshData>>>>,
@@ -412,6 +476,7 @@ pub struct AnatomyStep {
     /// The parameter being dragged and its edit group.
     drag: Option<(AnatomyParam, EditGroup)>,
     error: Option<String>,
+    library: LibrarySource,
     repaint: Option<egui::Context>,
     /// The latest crown built for each tooth and what it was built from, for the export.
     built: BTreeMap<Fdi, (Stamp, Arc<Crown>, DVec3)>,
@@ -422,7 +487,7 @@ pub struct AnatomyStep {
 }
 
 impl AnatomyStep {
-    pub fn new(repaint: Option<egui::Context>) -> Self {
+    pub fn new(repaint: Option<egui::Context>, library: LibrarySource) -> Self {
         let (tx, rx) = channel();
         Self {
             mesh: Rc::default(),
@@ -436,6 +501,7 @@ impl AnatomyStep {
             next_group: FIRST_GROUP,
             drag: None,
             error: None,
+            library,
             repaint,
             built: BTreeMap::new(),
             framed: BTreeSet::new(),
@@ -463,7 +529,7 @@ impl AnatomyStep {
 
     /// Forgets the open case's crown, jobs and error.
     pub fn reset(&mut self) {
-        *self = Self::new(self.repaint.take());
+        *self = Self::new(self.repaint.take(), self.library.clone());
     }
 
     pub fn tool(&self) -> Box<dyn Tool> {
@@ -518,6 +584,8 @@ impl AnatomyStep {
                 .filter(|_| shown)
                 .map(|r| (r.min_thickness, r.thickened_area)),
             busy,
+            library: self.library.label(),
+            library_error: self.library.error.clone(),
             error: inner_error.or_else(|| self.error.clone().filter(|_| current)),
         }
     }
@@ -618,9 +686,10 @@ impl AnatomyStep {
         // The surface in the key was computed from the case as it is this frame.
         let stamp = Stamp::of(f.case, key.tooth);
         let k = key.clone();
+        let source = self.library.clone();
         crate::crash::spawn_worker(
             "anatomy",
-            move || run(key, stamp),
+            move || run(key, stamp, &source),
             move |result| {
                 let _ = tx.send(result.and_then(|r| r).map_err(|e| (k, e)));
                 if let Some(ctx) = repaint {
@@ -656,7 +725,7 @@ mod tests {
                 max_thickening: 0.0,
             },
         });
-        let mut step = AnatomyStep::new(None);
+        let mut step = AnatomyStep::new(None, LibrarySource::default());
         step.built
             .insert(tooth, (Stamp::of(&case, tooth), crown.clone(), DVec3::Y));
         assert!(step.crown(&case, tooth).is_some());
@@ -782,7 +851,7 @@ mod tests {
         let tooth = t(36);
         let mut design = Design::default();
         let mut history = History::default();
-        let mut step = AnatomyStep::new(None);
+        let mut step = AnatomyStep::new(None, LibrarySource::default());
         for v in [101.0, 103.4, 105.0] {
             step.set_param(
                 &mut design,
@@ -847,5 +916,83 @@ mod tests {
         assert!(design.teeth.is_empty());
         history.undo(&mut design);
         assert_eq!(design.teeth[&tooth].anatomy.cusp_height, 0.3);
+    }
+
+    /// An open dome (one boundary loop, wound outward), tip on +Z, in the template frame.
+    fn dome() -> dentcraft_mesh::TriMesh {
+        let (rows, cols) = (10, 40);
+        let mut positions = Vec::new();
+        for r in 0..rows {
+            let phi = std::f64::consts::FRAC_PI_2 * r as f64 / rows as f64;
+            for c in 0..cols {
+                let th = std::f64::consts::TAU * c as f64 / cols as f64;
+                positions.push(DVec3::new(
+                    3.5 * phi.cos() * th.cos(),
+                    4.5 * phi.cos() * th.sin(),
+                    7.0 * phi.sin(),
+                ));
+            }
+        }
+        let top = positions.len() as u32;
+        positions.push(DVec3::new(0.0, 0.0, 7.0));
+        let v = |r: usize, c: usize| (r * cols + c % cols) as u32;
+        let mut triangles = Vec::new();
+        for c in 0..cols {
+            for r in 0..rows - 1 {
+                triangles.push([v(r, c), v(r, c + 1), v(r + 1, c + 1)]);
+                triangles.push([v(r, c), v(r + 1, c + 1), v(r + 1, c)]);
+            }
+            triangles.push([v(rows - 1, c), v(rows - 1, c + 1), top]);
+        }
+        dentcraft_mesh::TriMesh::new(positions, triangles)
+    }
+
+    #[test]
+    fn a_tooth_library_serves_its_teeth_and_the_rest_stay_parametric() {
+        let dir = std::env::temp_dir().join(format!(
+            "dentcraft-anatomy-step-library-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dome();
+        std::fs::write(
+            dir.join("tooth.stl"),
+            dentcraft_io::write_stl_binary(&source),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("library.json"),
+            r#"{ "teeth": [ { "file": "tooth.stl", "serves": [11], "occlusal": [0, 0, 1],
+                "facial": [0, 1, 0], "cervical": [0, 4.5, 0] } ] }"#,
+        )
+        .unwrap();
+        let lib = LibrarySource::load(Some(&dir));
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(lib.error, None);
+        assert_eq!(lib.label(), dir.file_name().unwrap().to_string_lossy());
+        let params = ShapeParams::default();
+        // 11 comes from the library's own dome, 36 from the parametric crown.
+        let served = template_for(&lib, t(11), &params).unwrap();
+        assert_eq!(served.mesh.vertex_count(), source.vertex_count());
+        let other = template_for(&lib, t(36), &params).unwrap();
+        assert_eq!(
+            other.mesh.vertex_count(),
+            crown(t(36), &params).mesh.vertex_count()
+        );
+        assert_ne!(other.mesh.vertex_count(), source.vertex_count());
+        // Without a library every tooth is parametric.
+        let none = LibrarySource::default();
+        assert_eq!(none.label(), "DentCraft parametric");
+        assert_eq!(
+            template_for(&none, t(11), &params)
+                .unwrap()
+                .mesh
+                .vertex_count(),
+            crown(t(11), &params).mesh.vertex_count()
+        );
+        // A library that cannot be loaded is a plain error, not a silent fallback.
+        let broken = LibrarySource::load(Some(&dir));
+        let err = template_for(&broken, t(11), &params).err().unwrap();
+        assert!(err.contains("could not be loaded"), "{err}");
     }
 }

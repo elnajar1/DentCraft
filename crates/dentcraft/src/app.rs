@@ -16,7 +16,7 @@ use eframe::egui::{
     Modifiers, RichText, Stroke, TextureHandle, TextureOptions, vec2,
 };
 
-use crate::anatomy_step::{self, ANATOMY, AnatomyStep};
+use crate::anatomy_step::{self, ANATOMY, AnatomyStep, LibrarySource};
 use crate::axis_step::{self, AXIS, AxisStep};
 use crate::browser::{self, SECTIONS_KEY, Section, Sections};
 use crate::chart::{self, ChartEdit};
@@ -78,6 +78,8 @@ pub struct StartOptions {
     pub section: bool,
     /// Folder to export every built crown to once the startup steps are done.
     pub export: Option<PathBuf>,
+    /// Folder of the tooth library crowns are designed from.
+    pub tooth_library: Option<PathBuf>,
     /// This instance's recovery file; `None` when unsaved work is not kept (screenshot runs).
     pub recovery: Option<PathBuf>,
     /// This instance's lock on the recovery folder, held while it runs.
@@ -336,7 +338,10 @@ impl DentCraftApp {
                 inner.set_section(start.section);
                 inner
             },
-            anatomy: AnatomyStep::new(Some(cc.egui_ctx.clone())),
+            anatomy: AnatomyStep::new(
+                Some(cc.egui_ctx.clone()),
+                LibrarySource::load(start.tooth_library.as_deref()),
+            ),
             contacts: ContactsStep::new(Some(cc.egui_ctx.clone())),
             pending_inner: None,
             export: ExportStep::new(Some(cc.egui_ctx.clone())),

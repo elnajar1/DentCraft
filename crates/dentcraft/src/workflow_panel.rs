@@ -102,6 +102,10 @@ pub struct AnatomyCard {
     pub report: Option<(f64, f64)>,
     /// What the step is busy with.
     pub busy: Option<&'static str>,
+    /// Where the crowns come from: the tooth library's folder name or "DentCraft parametric".
+    pub library: String,
+    /// The tooth library could not be loaded.
+    pub library_error: Option<String>,
     pub error: Option<String>,
 }
 
@@ -1013,6 +1017,14 @@ fn anatomy_section(
                     });
                 }
             });
+            ui.label(
+                RichText::new(format!("Crowns from: {}", card.library))
+                    .size(SIZE_SMALL)
+                    .color(p.text_dim),
+            );
+            if let Some(error) = &card.library_error {
+                ui.label(RichText::new(error).size(SIZE_SMALL).color(p.danger));
+            }
             if card.pontic {
                 ui.label(
                     RichText::new(PONTIC_NOTE)
