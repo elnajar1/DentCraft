@@ -16,6 +16,11 @@ must be checked by a qualified dental professional before clinical use.
   Before, teeth on the second jaw got an axis pointing into the root.
 - **Inner surface**: a clear message when the insertion axis points into the die, and better
   convergence beside steep, noisy walls.
+- **Plaster (stone) model scans**: the margin search retries with sloped walls and from the top of
+  the stump when the click misses it; it never returns a neighbouring tooth's margin. A margin found
+  this way says "Check this margin" until you edit or re-trace it.
+- **Preparation region**: found on scans with holes, loose sheets, non-manifold edges and fused
+  contacts; an implausible region (a loose flap, part of a neighbour) is rejected instead of used.
 
 ### Safety
 

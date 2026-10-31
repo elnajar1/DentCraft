@@ -100,6 +100,10 @@ fn plausible(margin: &[DVec3], seed: DVec3) -> bool {
 const MANUAL_PROMPT: &str = "Couldn't find the margin automatically. Click points along the \
                              margin instead \u{2014} the line follows the edge between them.";
 
+/// Shown on the card while the tooth's margin is one a fallback detection pass found.
+const FALLBACK_NOTE: &str = "Check this margin: it was found with a fallback search and may sit \
+                             above the finish line.";
+
 impl Edit {
     pub fn label(self, tooth: Fdi) -> String {
         match self {
@@ -514,7 +518,9 @@ struct Job {
 
 enum Message {
     Tracer(MeshId, Result<(MarginTracer, Option<DVec3>), String>),
-    Job(Job, Result<Margin, String>),
+    /// The traced margin and the detection pass that found it (`MarginTracer::propose_pass`;
+    /// 0 for a trace).
+    Job(Job, Result<(Margin, usize), String>),
 }
 
 /// What the step needs from the app for one frame.
@@ -541,6 +547,9 @@ pub struct MarginStep {
     /// Scan the current tooth's margin was last traced on.
     scan: Option<MeshId>,
     seeds: HashMap<Fdi, (MeshId, DVec3)>,
+    /// Margins stored by a fallback detection pass, per tooth: the card asks to check the
+    /// stored curve while it is still this one (no edit, hand trace or first-pass detection).
+    fallback: HashMap<Fdi, Vec<DVec3>>,
     next_group: u64,
     /// The open drag's group, and whether the drag has ended.
     drag: Option<(EditGroup, bool)>,
@@ -561,6 +570,7 @@ impl MarginStep {
             synced: (None, None),
             scan: None,
             seeds: HashMap::new(),
+            fallback: HashMap::new(),
             next_group: 1,
             drag: None,
             error: None,
@@ -591,6 +601,9 @@ impl MarginStep {
     pub fn card(&self, tooth: Fdi) -> MarginCard {
         let s = self.shared.borrow();
         let building = self.tracers.values().any(|s| matches!(s, Slot::Building));
+        let fallback = s.tooth == Some(tooth)
+            && s.mode != Mode::Manual
+            && self.fallback.get(&tooth) == Some(&s.curve);
         MarginCard {
             tooth,
             length_mm: (s.tooth == Some(tooth))
@@ -612,7 +625,10 @@ impl MarginStep {
             } else {
                 None
             },
-            error: self.error.clone(),
+            error: self
+                .error
+                .clone()
+                .or_else(|| fallback.then(|| FALLBACK_NOTE.to_owned())),
             can_detect_again: s.mode == Mode::Manual || self.seeds.contains_key(&tooth),
         }
     }
@@ -813,13 +829,40 @@ impl MarginStep {
                 }
                 Message::Job(job, result) => {
                     self.running = false;
-                    self.finish(job, result, f.design, f.history);
+                    self.record(job, result, f.design, f.history);
                 }
             }
         }
         self.start_next(f.objects);
         self.commit_manual(f.design, f.history);
         self.close_drag(f.history);
+    }
+
+    /// Finishes a job (`finish`) and remembers whether a stored detection came from a fallback
+    /// pass.
+    fn record(
+        &mut self,
+        job: Job,
+        result: Result<(Margin, usize), String>,
+        design: &mut Design,
+        history: &mut History,
+    ) {
+        let tooth = job.tooth;
+        let proposed = match (&job.kind, &result) {
+            (JobKind::Propose { .. }, Ok((m, pass))) => Some((m.points.clone(), *pass > 0)),
+            _ => None,
+        };
+        self.finish(job, result.map(|(m, _)| m), design, history);
+        if let Some((points, fallback)) = proposed {
+            let stored = design.teeth.get(&tooth).and_then(|t| t.margin.as_ref());
+            if stored == Some(&points) {
+                if fallback {
+                    self.fallback.insert(tooth, points);
+                } else {
+                    self.fallback.remove(&tooth);
+                }
+            }
+        }
     }
 
     fn finish(
@@ -993,11 +1036,18 @@ impl MarginStep {
             let traced = match &job.kind {
                 JobKind::Propose { seed, axis } => {
                     match proposal_axis(tracer.mesh(), *axis, occlusal, *seed) {
-                        Some(axis) => tracer.propose(*seed, axis),
+                        Some(axis) => tracer.propose_pass(*seed, axis).inspect(|(_, pass)| {
+                            if *pass > 0 {
+                                eprintln!(
+                                    "dentcraft: margin {:?} on {}: found by fallback pass {pass}",
+                                    job.edit, job.tooth
+                                );
+                            }
+                        }),
                         None => Err(DesignError::InvalidAxis),
                     }
                 }
-                JobKind::Trace(controls) => tracer.trace(controls),
+                JobKind::Trace(controls) => tracer.trace(controls).map(|m| (m, 0)),
             };
             traced.map_err(|e| {
                 // The technical reason goes to the log; the panel shows what to do next.
@@ -1390,6 +1440,42 @@ mod tests {
         );
         assert_eq!(step.shared.borrow().mode, Mode::Edit);
         assert_eq!(history.undo_label(), Some("Detect margin 33"));
+    }
+
+    #[test]
+    fn a_fallback_detection_asks_to_check_the_margin_until_it_is_replaced() {
+        let mut design = Design::default();
+        let mut history = History::default();
+        let mut step = MarginStep::new(None);
+        step.sync(&design, Some(t(33)));
+        let detected = |radius, pass| Ok((margin_of(ring(radius, 40)).unwrap(), pass));
+        let note = |step: &MarginStep| step.card(t(33)).error;
+
+        // A first-pass detection carries no note; a fallback one does.
+        step.record(propose_job(), detected(4.0, 0), &mut design, &mut history);
+        assert_eq!(note(&step), None);
+        step.record(propose_job(), detected(4.2, 2), &mut design, &mut history);
+        assert_eq!(note(&step).as_deref(), Some(FALLBACK_NOTE));
+        // On another tooth's card it does not show.
+        assert_eq!(step.card(t(34)).error, None);
+
+        // An edit of the curve drops the note.
+        let moved = job(JobKind::Trace(ring(4.4, 8)), Edit::Move);
+        step.record(moved, detected(4.4, 0), &mut design, &mut history);
+        assert_eq!(note(&step), None);
+
+        // A later first-pass detection of the same tooth replaces the fallback one.
+        step.record(propose_job(), detected(4.2, 1), &mut design, &mut history);
+        assert_eq!(note(&step).as_deref(), Some(FALLBACK_NOTE));
+        step.record(propose_job(), detected(4.0, 0), &mut design, &mut history);
+        assert_eq!(note(&step), None);
+
+        // A fallback result that is not stored (implausible) leaves no note either.
+        step.shared.borrow_mut().leave_manual(Mode::Auto);
+        step.record(propose_job(), detected(1.0, 3), &mut design, &mut history);
+        assert_eq!(note(&step).as_deref(), Some(MANUAL_PROMPT));
+        step.trace_by_hand();
+        assert_eq!(note(&step), None);
     }
 
     #[test]

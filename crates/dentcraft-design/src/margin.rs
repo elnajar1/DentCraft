@@ -24,6 +24,14 @@ const MAX_SECTOR_GAP: usize = 7;
 /// routed, and the fewest it keeps.
 const MAX_DROPPED_WAYPOINTS: usize = 6;
 const MIN_RING_WAYPOINTS: usize = 12;
+/// What counts as stump wall in a proposal's first pass: the largest
+/// |normal . axis| and the smallest outward |normal . radial| of the wall hits.
+/// A proposal first asks for a steep wall, as on intraoral scans. When that
+/// fails it retries with a tapered wall: on a stone model the incisors'
+/// lingual and proximal faces slope 30-60 degrees in the arch's occlusal frame,
+/// and an off-centre seed sees the far wall of a molar obliquely.
+const STEEP_WALL: (f64, f64) = (0.65, 0.5);
+const TAPERED_WALL: (f64, f64) = (0.9, 0.3);
 
 /// Closed curve: neither list repeats the first entry at the end.
 #[derive(Clone, Debug, PartialEq)]
@@ -515,18 +523,74 @@ impl MarginTracer {
     /// Sectors without ridge evidence (a ragged scan or a neighbouring
     /// preparation) are bridged if few and narrow enough.
     /// The final projected loop must be simple, enclose the seed and measure
-    /// 8–45 mm. Failures return `MarginDetect` naming the stage that gave up.
+    /// 8–45 mm. When no steep stump wall bounds the search, the search is
+    /// retried accepting tapered walls (see `TAPERED_WALL`). When both fail,
+    /// both are retried from the top of the stump (`stump_top`) instead of the
+    /// clicked point: a click on a face of the stump, off its top, leaves the
+    /// seed's axis line near one wall. A loop found from the stump top must
+    /// also enclose the click, so a click on the gum or low on a wall never
+    /// returns a neighbour's margin. Failures return the first pass's
+    /// `MarginDetect`, naming the stage that gave up.
     pub fn propose(&self, seed: DVec3, axis: DVec3) -> Result<Margin, DesignError> {
+        self.propose_pass(seed, axis).map(|(margin, _)| margin)
+    }
+
+    /// `propose`, also returning which pass found the margin: 0 is the
+    /// steep-wall pass from the click, 1 the tapered-wall pass from the click,
+    /// 2 and 3 the steep- and tapered-wall passes from the stump top. A pass
+    /// above 0 is a fallback: its loop can sit above the finish line.
+    pub fn propose_pass(&self, seed: DVec3, axis: DVec3) -> Result<(Margin, usize), DesignError> {
         if !axis.is_finite() || axis.length_squared() < 1e-24 {
             return Err(DesignError::InvalidAxis);
         }
         let axis = axis.normalize();
         let seed_vertex = self.snap(seed)?;
-        let center = self.mesh.positions[seed_vertex as usize];
         // Exclude disconnected fragments. Connected neighbouring teeth are
         // excluded separately by the wall outline and radial visibility tests.
         let component = self.component(seed_vertex);
-        let first = self.sector_ridges(center, axis, &component, None, None)?;
+        let clicked = self.mesh.positions[seed_vertex as usize];
+        let attempts = [
+            (STEEP_WALL, false),
+            (TAPERED_WALL, false),
+            (STEEP_WALL, true),
+            (TAPERED_WALL, true),
+        ];
+        let mut top = None;
+        let mut first_error = None;
+        for (pass, (wall, recentre)) in attempts.into_iter().enumerate() {
+            let center = if recentre {
+                let top = *top.get_or_insert_with(|| self.stump_top(seed_vertex, axis, &component));
+                if top.distance_squared(clicked) < 0.1 * 0.1 {
+                    // Same centre as the passes before: nothing new to try.
+                    break;
+                }
+                top
+            } else {
+                clicked
+            };
+            let enclose = recentre.then_some(clicked);
+            match self.propose_with_wall(center, enclose, axis, &component, wall) {
+                Err(error @ DesignError::MarginDetect { .. }) => {
+                    first_error.get_or_insert(error);
+                }
+                result => return result.map(|margin| (margin, pass)),
+            }
+        }
+        Err(first_error.expect("the first attempt always runs"))
+    }
+
+    /// One detection pass around `center`, a surface point of `component`
+    /// (`axis` normalized). `enclose`, when set, is a point the loop must also
+    /// enclose: the click, when `center` is not the click.
+    fn propose_with_wall(
+        &self,
+        center: DVec3,
+        enclose: Option<DVec3>,
+        axis: DVec3,
+        component: &[bool],
+        wall: (f64, f64),
+    ) -> Result<Margin, DesignError> {
+        let first = self.sector_ridges(center, axis, component, None, None, wall)?;
         let first_cost = self.local_cost(
             self.mesh
                 .positions
@@ -573,7 +637,8 @@ impl MarginTracer {
                 stage: "the first ring tilts more than 60 degrees from the axis",
             });
         }
-        let second = self.sector_ridges(centroid, refined, &component, Some(1.5), Some(&points))?;
+        let second =
+            self.sector_ridges(centroid, refined, component, Some(1.5), Some(&points), wall)?;
         let local = self
             .mesh
             .positions
@@ -595,7 +660,132 @@ impl MarginTracer {
         validate_proposal(&margin, center, axis).map_err(|_| DesignError::MarginDetect {
             stage: "the margin is not a simple 8-45 mm loop around the seed",
         })?;
-        Ok(self.smoothed(&margin, center, axis).unwrap_or(margin))
+        let encloses = |m: &Margin| enclose.is_none_or(|p| validate_proposal(m, p, axis).is_ok());
+        if !encloses(&margin) {
+            return Err(DesignError::MarginDetect {
+                stage: "the margin found from the stump top does not enclose the click",
+            });
+        }
+        Ok(self
+            .smoothed(&margin, center, axis)
+            .filter(|m| encloses(m))
+            .unwrap_or(margin))
+    }
+
+    /// The top of the stump under a click anywhere on it: the occlusal-most
+    /// point reachable from the click without descending more than 0.5 mm,
+    /// within 5 mm (then up the stump above it, when it stands higher), then
+    /// the surface point above the centroid of the top-down outline of the
+    /// stump's top 2 mm (projected-area weighted). Only the click's own
+    /// component counts. Falls back to the clicked vertex when no such point is
+    /// found.
+    fn stump_top(&self, seed: u32, axis: DVec3, component: &[bool]) -> DVec3 {
+        let positions = &self.mesh.positions;
+        let clicked = positions[seed as usize];
+        let flood = |start: u32, keep: &dyn Fn(DVec3) -> bool| {
+            let mut inside = vec![false; positions.len()];
+            let mut stack = vec![start];
+            inside[start as usize] = true;
+            while let Some(i) = stack.pop() {
+                for &j in self.adjacency.neighbors(i) {
+                    if !inside[j as usize] && keep(positions[j as usize]) {
+                        inside[j as usize] = true;
+                        stack.push(j);
+                    }
+                }
+            }
+            inside
+        };
+        let height = |p: DVec3| (p - clicked).dot(axis);
+        // The highest vertex of `inside`; of equally high ones, the nearest to
+        // the click (a flat top or plane is its own top).
+        let highest = |inside: &[bool]| {
+            (0..positions.len())
+                .filter(|&i| inside[i])
+                .max_by(|&a, &b| {
+                    let (pa, pb) = (positions[a], positions[b]);
+                    height(pa).total_cmp(&height(pb)).then_with(|| {
+                        pb.distance_squared(clicked)
+                            .total_cmp(&pa.distance_squared(clicked))
+                    })
+                })
+        };
+        let reach = flood(seed, &|p| {
+            height(p) >= -0.5 && p.distance_squared(clicked) <= 5.0 * 5.0
+        });
+        let Some(mut top) = highest(&reach) else {
+            return clicked;
+        };
+        let cap_of = |top: usize| {
+            let top_point = positions[top];
+            flood(top as u32, &|p| {
+                let d = p - top_point;
+                d.dot(axis) >= -2.0 && d.reject_from_normalized(axis).length_squared() <= 7.0 * 7.0
+            })
+        };
+        let mut cap = cap_of(top);
+        // A stump standing more than 5 mm above the click: the flood stopped
+        // on its wall, and the cap above that point reaches the real top.
+        if let Some(summit) = highest(&cap)
+            && height(positions[summit]) > height(positions[top]) + 0.5
+        {
+            top = summit;
+            cap = cap_of(top);
+        }
+        let top_point = positions[top];
+        let (mut area, mut moment) = (0.0, DVec3::ZERO);
+        for (t, triangle) in self.mesh.triangles.iter().enumerate() {
+            if triangle.iter().all(|&v| cap[v as usize]) {
+                let projected = self.mesh.triangle_cross(t).dot(axis).abs() * 0.5;
+                let centroid = triangle
+                    .iter()
+                    .map(|&v| positions[v as usize])
+                    .sum::<DVec3>()
+                    / 3.0;
+                area += projected;
+                moment += centroid * projected;
+            }
+        }
+        if area < 1e-9 {
+            return clicked;
+        }
+        let mut centroid = moment / area;
+        // Refine with the centroid of the stump's cross-section 2.5 mm below
+        // its top, seen from the current centre: the cap of a proclined or
+        // bevelled incisor lies to one side of the stump below it.
+        let u = axis.any_orthonormal_vector();
+        let v = axis.cross(u);
+        for _ in 0..3 {
+            let origin = centroid + axis * ((top_point - centroid).dot(axis) - 2.5);
+            let hits: Vec<DVec3> = (0..SECTORS)
+                .filter_map(|k| {
+                    let angle = TAU * (k as f64 + 0.5) / SECTORS as f64;
+                    let radial = u * angle.cos() + v * angle.sin();
+                    let hit = self.bvh.raycast(&self.mesh, origin, radial)?;
+                    let normal = self.mesh.triangle_cross(hit.triangle as usize);
+                    let own = self.mesh.triangles[hit.triangle as usize]
+                        .iter()
+                        .all(|&v| component[v as usize]);
+                    (hit.t < 8.0 && normal.dot(radial) > 0.0 && own).then_some(hit.point)
+                })
+                .collect();
+            if hits.len() < SECTORS * 3 / 4 {
+                break;
+            }
+            centroid = hits.iter().sum::<DVec3>() / hits.len() as f64;
+        }
+        let above = centroid + axis * ((top_point - centroid).dot(axis) + 1.0);
+        match self.bvh.raycast(&self.mesh, above, -axis) {
+            Some(hit)
+                if hit.t <= 1.0 + 2.5
+                    && self.mesh.triangles[hit.triangle as usize]
+                        .iter()
+                        .all(|&v| component[v as usize]) =>
+            {
+                hit.point
+            }
+            _ => clicked,
+        }
     }
 
     /// The detected loop as a smooth surface curve: low-pass filtered in arc
@@ -616,6 +806,7 @@ impl MarginTracer {
         component: &[bool],
         band: Option<f64>,
         guide: Option<&[DVec3]>,
+        wall: (f64, f64),
     ) -> Result<Vec<u32>, DesignError> {
         let u = axis.any_orthonormal_vector();
         let v = axis.cross(u);
@@ -659,7 +850,7 @@ impl MarginTracer {
                 let angle = TAU * (index as f64 + 0.5) / SECTORS as f64;
                 let radial = u * angle.cos() + v * angle.sin();
                 if let Some((wall_radius, top, bottom)) =
-                    self.wall_outline(center, axis, radial, depth_limit)
+                    self.wall_outline(center, axis, radial, depth_limit, wall)
                 {
                     sector.retain(|&(_, r, d)| r <= wall_radius + 1.1 && d >= top && d <= bottom);
                 } else {
@@ -704,7 +895,8 @@ impl MarginTracer {
         join_ring(&choices, |i| self.ridge_strength[i as usize])
     }
 
-    /// Follow the first surface seen from the stump axis down through the wall.
+    /// Follow the first surface seen from the stump axis down through the wall,
+    /// which starts at four consecutive hits within the `wall` bounds.
     /// Once the radial profile flares away from its recent wall slope, allow
     /// only the outer millimetre of that turn, not a later gingival crest.
     fn wall_outline(
@@ -713,6 +905,7 @@ impl MarginTracer {
         axis: DVec3,
         radial: DVec3,
         limit: f64,
+        (max_axial, min_radial): (f64, f64),
     ) -> Option<(f64, f64, f64)> {
         let mut wall = Vec::new();
         for step in 1..=(limit / 0.25) as usize {
@@ -732,7 +925,7 @@ impl MarginTracer {
         }
         let start = wall
             .windows(4)
-            .position(|w| w.iter().all(|p| p.2.abs() < 0.65 && p.3 > 0.5))?;
+            .position(|w| w.iter().all(|p| p.2.abs() < max_axial && p.3 > min_radial))?;
         let end = wall[start + 3];
         let mut radius = end.1;
         let mut bottom = limit;
@@ -839,14 +1032,21 @@ impl MarginTracer {
         kept
     }
 
-    /// Triangles on the seed side of the closed edge barrier. Invalid loops or seeds
-    /// on the barrier return an empty region. The seed must be inside the prep.
+    /// Triangles on the seed side of the closed edge barrier, flooded from the
+    /// scan face nearest the seed, so a seed beside the margin on a coarse scan
+    /// starts on its own side even when its nearest vertex is on the loop.
+    ///
+    /// Scans of plaster models have holes and loose sheets. A barrier edge on a
+    /// hole (one face) blocks nothing and is accepted; across a non-manifold
+    /// edge (more than two faces) the flood continues only onto faces that run
+    /// the edge in the opposite direction, the consistently wound continuation
+    /// of the surface. Invalid loops, a seed off the scan and a loop that does
+    /// not bound the flood return an empty region: the flood reaches both sides
+    /// of a barrier edge (the loop does not separate the scan), or it reaches no
+    /// barrier edge at all. The seed must be inside the prep.
     pub fn region(&self, margin: &Margin, seed: DVec3) -> Vec<u32> {
-        let Ok(seed) = self.snap(seed) else {
-            return Vec::new();
-        };
-        if margin.vertices.len() < 3
-            || margin.vertices.contains(&seed)
+        if !seed.is_finite()
+            || margin.vertices.len() < 3
             || margin
                 .vertices
                 .iter()
@@ -860,6 +1060,10 @@ impl MarginTracer {
         {
             return Vec::new();
         }
+        let Some(start) = self.bvh.closest_point(&self.mesh, seed) else {
+            return Vec::new();
+        };
+        let start = start.triangle as usize;
         use std::collections::{HashMap, HashSet};
         let unique: HashSet<_> = margin.vertices.iter().copied().collect();
         if unique.len() != margin.vertices.len() {
@@ -874,18 +1078,15 @@ impl MarginTracer {
                 )
             })
             .collect();
-        let mut edges = HashMap::<(u32, u32), Vec<usize>>::new();
+        // Faces of each undirected edge, with whether the face runs it from the
+        // lower to the higher vertex index.
+        let mut edges = HashMap::<(u32, u32), Vec<(usize, bool)>>::new();
         for (i, t) in self.mesh.triangles.iter().enumerate() {
             for j in 0..3 {
-                edges.entry(key(t[j], t[(j + 1) % 3])).or_default().push(i);
+                let (a, b) = (t[j], t[(j + 1) % 3]);
+                edges.entry(key(a, b)).or_default().push((i, a < b));
             }
         }
-        if edges.values().any(|faces| faces.len() > 2) {
-            return Vec::new();
-        }
-        let Some(start) = self.mesh.triangles.iter().position(|t| t.contains(&seed)) else {
-            return Vec::new();
-        };
         // Flood faces across NON-LOOP edges. This also classifies triangles with
         // three barrier corners by their actual side, including zig-zag ears.
         let mut inside = vec![false; self.mesh.triangles.len()];
@@ -894,32 +1095,188 @@ impl MarginTracer {
         while let Some(i) = stack.pop() {
             let t = self.mesh.triangles[i];
             for j in 0..3 {
-                let edge = key(t[j], t[(j + 1) % 3]);
+                let (a, b) = (t[j], t[(j + 1) % 3]);
+                let edge = key(a, b);
                 if barrier.contains(&edge) {
                     continue;
                 }
-                for &next in &edges[&edge] {
-                    if !inside[next] {
-                        inside[next] = true;
-                        stack.push(next);
-                    }
+                if let Some(next) = self.across(i, a < b, &edges[&edge])
+                    && !inside[next]
+                {
+                    inside[next] = true;
+                    stack.push(next);
                 }
             }
         }
-        if !barrier.iter().all(|edge| {
+        let mut bounded = false;
+        let mut leaks = false;
+        for edge in &barrier {
             let faces = &edges[edge];
-            faces.len() == 2 && inside[faces[0]] != inside[faces[1]]
-        }) {
+            let reached =
+                |forward: bool| faces.iter().any(|&(face, f)| inside[face] && f == forward);
+            leaks |= if faces.len() == 2 {
+                inside[faces[0].0] && inside[faces[1].0]
+            } else {
+                reached(true) && reached(false)
+            };
+            bounded |= faces.iter().any(|&(face, _)| inside[face]);
+        }
+        if !bounded {
             return Vec::new();
         }
-        inside
+        if leaks {
+            match self.split_at_leak(margin, &barrier, &edges, start) {
+                Some(side) => inside = side,
+                None => return Vec::new(),
+            }
+        }
+        let region: Vec<u32> = inside
             .iter()
             .enumerate()
             .filter(|(_, yes)| **yes)
             .map(|(i, _)| i as u32)
-            .collect()
+            .collect();
+        // The loop's vector area is the largest area of its projection on a
+        // plane: the area of the disc it spans.
+        let n = margin.vertices.len();
+        let corner = |k: usize| self.mesh.positions[margin.vertices[k % n] as usize];
+        let disc = (0..n)
+            .map(|i| corner(i).cross(corner(i + 1)))
+            .sum::<DVec3>()
+            .length()
+            / 2.0;
+        let area: f64 = region
+            .iter()
+            .map(|&f| {
+                let [a, b, c] = self.mesh.triangle(f as usize);
+                (b - a).cross(c - a).length() / 2.0
+            })
+            .sum();
+        if !(area >= REGION_AREA_MIN * disc && area <= REGION_AREA_MAX * disc) {
+            return Vec::new();
+        }
+        region
+    }
+
+    /// The face the flood crosses to from face `from` over one of its edges,
+    /// given whether `from` runs that edge from the lower to the higher vertex
+    /// index, and the edge's faces. A manifold edge leads to its other face. On
+    /// an edge with more than two faces only those running the edge the other
+    /// way continue the consistently wound surface, and of these the one that
+    /// turns least from `from` is the surface itself: a loose flap of scan
+    /// hanging off the edge turns away from it.
+    fn across(&self, from: usize, forward: bool, faces: &[(usize, bool)]) -> Option<usize> {
+        if faces.len() <= 2 {
+            return faces.iter().map(|&(f, _)| f).find(|&f| f != from);
+        }
+        let normal = |f: usize| {
+            let [a, b, c] = self.mesh.triangle(f);
+            (b - a).cross(c - a).normalize_or_zero()
+        };
+        let here = normal(from);
+        let mut best: Option<(usize, f64)> = None;
+        for &(f, fw) in faces {
+            if f == from || fw == forward {
+                continue;
+            }
+            let alignment = here.dot(normal(f));
+            if best.is_none_or(|(_, b)| alignment > b) {
+                best = Some((f, alignment));
+            }
+        }
+        best.map(|(f, _)| f)
+    }
+
+    /// The flood from inside a margin loop reached its far side: the scan has a
+    /// handle through the loop, such as neighbouring surfaces fused into a
+    /// bridge. Grow both sides of the loop at once, by surface distance between
+    /// face centroids, and give each face to the side that reaches it first, so
+    /// the handle is cut where the two fronts meet. Returns the faces on the
+    /// start face's side, or None when that cut is not short beside the loop:
+    /// then the loop itself does not separate the scan (it runs around a tube).
+    fn split_at_leak(
+        &self,
+        margin: &Margin,
+        barrier: &std::collections::HashSet<(u32, u32)>,
+        edges: &std::collections::HashMap<(u32, u32), Vec<(usize, bool)>>,
+        start: usize,
+    ) -> Option<Vec<bool>> {
+        use std::cmp::Reverse;
+        use std::collections::BinaryHeap;
+        let key = |a: u32, b: u32| (a.min(b), a.max(b));
+        let centroid = |f: usize| self.mesh.triangle(f).iter().sum::<DVec3>() / 3.0;
+        // Side 1 runs the loop edges forward (the loop's left), side 2 backward.
+        let mut side = vec![0u8; self.mesh.triangles.len()];
+        let mut dist = vec![f64::INFINITY; side.len()];
+        let mut heap = BinaryHeap::new();
+        let n = margin.vertices.len();
+        let mut loop_length = 0.0;
+        for i in 0..n {
+            let (a, b) = (margin.vertices[i], margin.vertices[(i + 1) % n]);
+            loop_length +=
+                self.mesh.positions[a as usize].distance(self.mesh.positions[b as usize]);
+            for &(face, forward) in &edges[&key(a, b)] {
+                if side[face] == 0 {
+                    side[face] = if forward == (a < b) { 1 } else { 2 };
+                    dist[face] = 0.0;
+                    heap.push(Reverse((0u64, face)));
+                }
+            }
+        }
+        while let Some(Reverse((bits, i))) = heap.pop() {
+            if f64::from_bits(bits) > dist[i] {
+                continue;
+            }
+            let t = self.mesh.triangles[i];
+            for j in 0..3 {
+                let (a, b) = (t[j], t[(j + 1) % 3]);
+                let edge = key(a, b);
+                if barrier.contains(&edge) {
+                    continue;
+                }
+                let Some(next) = self.across(i, a < b, &edges[&edge]) else {
+                    continue;
+                };
+                let d = dist[i] + centroid(i).distance(centroid(next));
+                if d < dist[next] {
+                    dist[next] = d;
+                    side[next] = side[i];
+                    heap.push(Reverse((d.to_bits(), next)));
+                }
+            }
+        }
+        // Length of the surface edges between the two sides, off the loop.
+        let cut: f64 = edges
+            .iter()
+            .filter(|(edge, faces)| {
+                !barrier.contains(edge)
+                    && faces.iter().any(|&(f, fw)| {
+                        side[f] != 0
+                            && self
+                                .across(f, fw, faces)
+                                .is_some_and(|g| side[g] != 0 && side[g] != side[f])
+                    })
+            })
+            .map(|(&(a, b), _)| {
+                self.mesh.positions[a as usize].distance(self.mesh.positions[b as usize])
+            })
+            .sum();
+        if side[start] == 0 || cut > LEAK_CUT_FRACTION * loop_length {
+            return None;
+        }
+        Some(side.iter().map(|&s| s == side[start]).collect())
     }
 }
+
+/// The longest cut, as a fraction of the margin loop's length, that
+/// `MarginTracer::region` makes through a handle of the scan that joins the two
+/// sides of the loop.
+const LEAK_CUT_FRACTION: f64 = 0.25;
+
+/// The bounds of a plausible prep region's area, as multiples of the area of
+/// the disc its margin loop spans (see `MarginTracer::region`).
+const REGION_AREA_MIN: f64 = 0.8;
+const REGION_AREA_MAX: f64 = 6.0;
 
 /// A sector's ridge candidate: scan vertex, radius from the stump axis and
 /// depth below the seed, both in mm.
@@ -1390,6 +1747,214 @@ mod tests {
             error <= 0.05,
             "proposal Hausdorff {error} mm; {p:?}, tilt {tilt}, offset {offset}"
         );
+    }
+
+    /// A click on the axial wall 2 mm below the top, as on a stone die whose
+    /// top the user missed: the seed's axis line runs beside the wall, and the
+    /// proposal must re-centre on the stump top to find the margin.
+    #[test]
+    fn propose_from_a_click_on_the_stump_wall() {
+        for (finish, gingiva) in [(FinishLine::Shoulder, true), (FinishLine::Chamfer, false)] {
+            let p = ToothParams {
+                finish,
+                gingiva,
+                smooth_passes: 2,
+                noise_mm: 0.02,
+                ..Default::default()
+            };
+            let clean = prepared_tooth(&ToothParams {
+                noise_mm: 0.0,
+                ..p.clone()
+            })
+            .unwrap();
+            let die = prepared_tooth(&p).unwrap();
+            let rotation =
+                glam::DQuat::from_axis_angle(DVec3::new(1.0, 2.0, 3.0).normalize(), 0.71);
+            let mut mesh = die.mesh;
+            for v in &mut mesh.positions {
+                *v = rotation * *v;
+            }
+            let expected: Vec<_> = clean.margin.iter().map(|v| rotation * *v).collect();
+            let tracer = MarginTracer::new(Arc::new(mesh)).unwrap();
+            // Wall radius is about 2.9 mm at height 10: the click snaps onto
+            // the wall, not the top disc at height 12.
+            let seed = rotation * (die.axis * 10.0 + DVec3::new(3.2, 0.4, 0.0));
+            let axis = rotation * die.axis;
+            let result = tracer.propose_pass(seed, axis);
+            assert!(result.is_ok(), "{finish:?}: {result:?}");
+            let (margin, pass) = result.unwrap();
+            // Only a pass from the stump top finds it, and says so.
+            assert!(pass >= 2, "{finish:?}: found by pass {pass}");
+            let error = hausdorff(&expected, &margin.points);
+            assert!(error <= 0.05, "{finish:?}: Hausdorff {error} mm");
+        }
+    }
+
+    /// A 0.1 mm heightfield `z(x, y)` over `[x0, x1] x [y0, y1]`, outward (+Z)
+    /// winding.
+    fn heightfield(x: (f64, f64), y: (f64, f64), z: impl Fn(f64, f64) -> f64) -> TriMesh {
+        let nx = ((x.1 - x.0) / 0.1).round() as u32;
+        let ny = ((y.1 - y.0) / 0.1).round() as u32;
+        let mut positions = Vec::new();
+        for j in 0..=ny {
+            for i in 0..=nx {
+                let (px, py) = (x.0 + 0.1 * i as f64, y.0 + 0.1 * j as f64);
+                positions.push(DVec3::new(px, py, z(px, py)));
+            }
+        }
+        let index = |i: u32, j: u32| j * (nx + 1) + i;
+        let mut triangles = Vec::new();
+        for j in 0..ny {
+            for i in 0..nx {
+                let (a, b) = (index(i, j), index(i + 1, j));
+                let (c, d) = (index(i + 1, j + 1), index(i, j + 1));
+                triangles.push([a, b, c]);
+                triangles.push([a, c, d]);
+            }
+        }
+        TriMesh::new(positions, triangles)
+    }
+
+    /// Height of a stump centred on the Z axis at radial distance `rho`: an
+    /// occlusal table at `top` to radius 2.2, a steep wall down to a shoulder
+    /// whose outer edge, the margin, is the circle of radius 3.6 near height
+    /// 8.2, then a drop to the gingiva at 5.5.
+    fn stump_height(rho: f64, top: f64) -> f64 {
+        if rho <= 2.2 {
+            top
+        } else if rho <= 3.0 {
+            top - (top - 8.6) * (rho - 2.2) / 0.8
+        } else if rho <= 3.55 {
+            8.6 - 0.3 * (rho - 3.0) / 0.55
+        } else {
+            (8.3 - 2.5 * (rho - 3.55)).max(5.5)
+        }
+    }
+
+    /// A prepared stump at the origin (top 12) beside a taller one at x = 8.2
+    /// (top 15) on one connected gingiva sheet, as a premolar prep beside the
+    /// neighbour's higher proximal face.
+    fn prep_beside_a_taller_neighbour() -> MarginTracer {
+        let neighbour = DVec3::new(8.2, 0.0, 0.0);
+        let mesh = heightfield((-7.0, 15.2), (-7.0, 7.0), |x, y| {
+            let p = DVec3::new(x, y, 0.0);
+            stump_height(p.length(), 12.0).max(stump_height((p - neighbour).length(), 15.0))
+        });
+        MarginTracer::new(Arc::new(mesh)).unwrap()
+    }
+
+    /// Re-centring a click on the stump top must not carry it onto the taller
+    /// neighbour: from the gum or the low wall near it, the flood up to the
+    /// highest point within 5 mm ends on the neighbour's wall. The proposal is
+    /// then an error or the clicked stump's own margin, never the neighbour's.
+    #[test]
+    fn a_click_beside_a_taller_neighbour_never_returns_the_neighbours_margin() {
+        let tracer = prep_beside_a_taller_neighbour();
+        let neighbour = DVec3::new(8.2, 0.0, 0.0);
+        // Both clicks are nearer the neighbour's tall wall than the prep's top.
+        for click in [DVec3::new(5.0, 4.2, 5.5), DVec3::new(4.9, 3.6, 5.5)] {
+            match tracer.propose_pass(click, DVec3::Z) {
+                Err(DesignError::MarginDetect { .. }) => {}
+                Ok((margin, pass)) => {
+                    let centre = margin.points.iter().sum::<DVec3>() / margin.points.len() as f64;
+                    assert!(
+                        centre.truncate().length() < 1.0,
+                        "click {click}: pass {pass} returned the loop around {centre}, \
+                         {:.1} mm from the neighbour",
+                        (centre - neighbour).truncate().length()
+                    );
+                }
+                Err(e) => panic!("click {click}: {e}"),
+            }
+        }
+        // The prep itself is still found from its top, by the first pass.
+        let (margin, pass) = tracer
+            .propose_pass(DVec3::new(0.0, 0.0, 12.0), DVec3::Z)
+            .unwrap();
+        assert_eq!(pass, 0);
+        let worst = margin
+            .points
+            .iter()
+            .map(|p| (p.truncate().length() - 3.6).abs())
+            .fold(0.0, f64::max);
+        assert!(worst < 0.3, "prep margin strays {worst} mm");
+    }
+
+    fn top_of(tracer: &MarginTracer, click: DVec3, axis: DVec3) -> DVec3 {
+        let seed = tracer.snap(click).unwrap();
+        tracer.stump_top(seed, axis, &tracer.component(seed))
+    }
+
+    #[test]
+    fn stump_top_on_a_flat_plane_is_the_click() {
+        let tracer = MarginTracer::new(Arc::new(heightfield(
+            (-10.0, 10.0),
+            (-10.0, 10.0),
+            |_, _| 0.0,
+        )))
+        .unwrap();
+        let click = DVec3::new(0.3, -0.2, 0.0);
+        let top = top_of(&tracer, click, DVec3::Z);
+        assert!(top.distance(click) < 0.1, "flat plane: top {top}");
+    }
+
+    #[test]
+    fn stump_top_of_a_click_on_the_top_is_the_click() {
+        let die = prepared_tooth(&ToothParams::default()).unwrap();
+        let tracer = MarginTracer::new(Arc::new(die.mesh)).unwrap();
+        let click = die.axis * 12.0;
+        let top = top_of(&tracer, click, die.axis);
+        assert!(top.distance(click) < 0.1, "top {top}");
+    }
+
+    #[test]
+    fn stump_top_of_a_stump_more_than_5_mm_above_the_click() {
+        // Top at height 16, click on the wall at 9: the 5 mm flood stops on the
+        // wall, below the top.
+        let die = prepared_tooth(&ToothParams {
+            extra_wall: 4.0,
+            ..Default::default()
+        })
+        .unwrap();
+        let tracer = MarginTracer::new(Arc::new(die.mesh)).unwrap();
+        let click = die.axis * 9.0 + DVec3::new(3.3, 0.4, 0.0);
+        let seed = tracer.snap(click).unwrap();
+        let clicked = tracer.mesh.positions[seed as usize];
+        assert!(16.0 - clicked.dot(die.axis) > 5.0, "click {clicked}");
+        let top = top_of(&tracer, click, die.axis);
+        let lateral = top.reject_from_normalized(die.axis).length();
+        assert!(lateral < 0.3, "top {top} is {lateral} mm off the axis");
+        assert!((top.dot(die.axis) - 16.0).abs() < 0.3, "top {top}");
+    }
+
+    #[test]
+    fn stump_top_of_a_click_on_a_detached_fragment_stays_on_it() {
+        // A loose 2 x 2 mm sheet floating 1 mm over the stump top, off its
+        // axis: the stump below must neither re-centre it nor be returned.
+        let die = prepared_tooth(&ToothParams::default()).unwrap();
+        let mut mesh = die.mesh;
+        let base = mesh.positions.len() as u32;
+        let sheet = heightfield((0.5, 2.5), (-1.0, 1.0), |_, _| 13.0);
+        mesh.positions.extend(&sheet.positions);
+        mesh.triangles.extend(
+            sheet
+                .triangles
+                .iter()
+                .map(|t| [t[0] + base, t[1] + base, t[2] + base]),
+        );
+        let tracer = MarginTracer::new(Arc::new(mesh)).unwrap();
+        let centre = DVec3::new(1.5, 0.0, 13.0);
+        for click in [DVec3::new(0.7, -0.8, 13.0), centre] {
+            let seed = tracer.snap(click).unwrap();
+            let component = tracer.component(seed);
+            let top = tracer.stump_top(seed, DVec3::Z, &component);
+            let on = tracer.snap(top).unwrap();
+            assert!(
+                component[on as usize],
+                "click {click}: top {top} left the sheet"
+            );
+            assert!(top.distance(centre) < 0.2, "click {click}: top {top}");
+        }
     }
 
     #[test]
@@ -1900,10 +2465,415 @@ mod tests {
             "{covered} of {}",
             die.region.len()
         );
-        // A seed on the base plate floods the other side of the margin barrier.
-        let outside = tracer.region(&margin, DVec3::ZERO);
-        assert!(!outside.is_empty());
-        assert!(outside.iter().all(|t| !prep.contains(t)));
+        // A seed on the base plate floods the other side of the margin barrier,
+        // the base and gum: far larger than a prep inside that margin could be.
+        assert!(tracer.region(&margin, DVec3::ZERO).is_empty());
+    }
+
+    #[test]
+    fn region_survives_scan_holes_and_loose_sheets_at_the_margin() {
+        // Plaster-model scans have holes and loose sheets (non-manifold edges),
+        // also right at the margin, and a seed beside the margin on a coarse
+        // scan can have a loop vertex as its nearest vertex.
+        let die = prepared_tooth(&ToothParams::default()).unwrap();
+        let clean = MarginTracer::new(Arc::new(die.mesh.clone())).unwrap();
+        let margin = clean.propose(die.axis * 12.0, die.axis).unwrap();
+        let reference: HashSet<u32> = clean.region(&margin, die.axis * 12.0).into_iter().collect();
+        assert!(!reference.is_empty());
+        let mesh = &die.mesh;
+        let n = margin.vertices.len();
+        let faces_of_loop_edge = |i: usize| -> Vec<usize> {
+            let (a, b) = (margin.vertices[i], margin.vertices[(i + 1) % n]);
+            (0..mesh.triangles.len())
+                .filter(|&f| mesh.triangles[f].contains(&a) && mesh.triangles[f].contains(&b))
+                .collect()
+        };
+        let side = |i: usize, inside: bool| {
+            let faces = faces_of_loop_edge(i);
+            assert_eq!(faces.len(), 2);
+            *faces
+                .iter()
+                .find(|&&f| reference.contains(&(f as u32)) == inside)
+                .unwrap()
+        };
+        // Holes: one loop edge loses its outside face, another its inside face.
+        let dropped = [side(0, false), side(n / 3, true)];
+        // Loose sheets: a fin on a loop edge, one on an edge just inside the
+        // margin and one on the base far below it.
+        let fin_on_loop = (margin.vertices[2 * n / 3], margin.vertices[2 * n / 3 + 1]);
+        let near = margin.vertices[n / 2];
+        let fin_inside = (0..mesh.triangles.len())
+            .filter(|&f| reference.contains(&(f as u32)) && mesh.triangles[f].contains(&near))
+            .flat_map(|f| mesh.triangles[f])
+            .find(|w| !margin.vertices.contains(w))
+            .map(|w| (near, w))
+            .unwrap();
+        let base = (0..mesh.triangles.len())
+            .min_by(|&a, &b| {
+                let low = |f: usize| mesh.triangle(f).iter().sum::<DVec3>().dot(die.axis);
+                low(a).total_cmp(&low(b))
+            })
+            .unwrap();
+        let fin_base = (mesh.triangles[base][0], mesh.triangles[base][1]);
+        let mut positions = mesh.positions.clone();
+        let mut triangles = Vec::new();
+        let mut original = Vec::new();
+        for (f, t) in mesh.triangles.iter().enumerate() {
+            if !dropped.contains(&f) {
+                triangles.push(*t);
+                original.push(Some(f as u32));
+            }
+        }
+        let fins = triangles.len();
+        for (a, b) in [fin_on_loop, fin_inside, fin_base] {
+            let pa = positions[a as usize];
+            let pb = positions[b as usize];
+            positions.push((pa + pb) / 2.0 + 0.4 * die.axis.any_orthonormal_vector());
+            triangles.push([a, b, positions.len() as u32 - 1]);
+            original.push(None);
+        }
+        let tracer = MarginTracer::new(Arc::new(TriMesh::new(positions, triangles))).unwrap();
+        // Beside loop vertex n/4 on an inside face: that vertex is its nearest.
+        let v = margin.vertices[n / 4];
+        let seed_face = (0..mesh.triangles.len())
+            .find(|&f| {
+                reference.contains(&(f as u32))
+                    && mesh.triangles[f].contains(&v)
+                    && !dropped.contains(&f)
+            })
+            .unwrap();
+        let seed = mesh.triangles[seed_face]
+            .iter()
+            .map(|&w| mesh.positions[w as usize] * if w == v { 0.9 } else { 0.05 })
+            .sum::<DVec3>();
+        let region = tracer.region(&margin, seed);
+        assert!(!region.is_empty(), "no region on the damaged scan");
+        let mut found = HashSet::new();
+        for &f in &region {
+            match original[f as usize] {
+                Some(old) => {
+                    assert!(reference.contains(&old), "face {old} is outside the margin");
+                    found.insert(old);
+                }
+                None => assert_eq!(f as usize, fins + 1, "fin {f} is not inside the margin"),
+            }
+        }
+        for &f in &reference {
+            assert!(
+                found.contains(&f) || dropped.contains(&(f as usize)),
+                "prep face {f} is missing"
+            );
+        }
+    }
+
+    /// A planar grid of unit cells, `cols` by `rows` vertices, minus the cells
+    /// listed, as positions and triangles.
+    fn holed_grid(cols: u32, rows: u32, holes: &[(u32, u32)]) -> (Vec<DVec3>, Vec<[u32; 3]>) {
+        let positions = (0..cols * rows)
+            .map(|i| DVec3::new((i % cols) as f64, (i / cols) as f64, 0.0))
+            .collect();
+        let mut triangles = Vec::new();
+        for y in 0..rows - 1 {
+            for x in 0..cols - 1 {
+                if !holes.contains(&(x, y)) {
+                    let a = y * cols + x;
+                    triangles.extend([[a, a + 1, a + cols + 1], [a, a + cols + 1, a + cols]]);
+                }
+            }
+        }
+        (positions, triangles)
+    }
+
+    #[test]
+    fn region_cuts_a_thin_handle_joining_the_two_sides_of_the_margin() {
+        // A scan whose surfaces fuse into a thin tube from inside the margin to
+        // outside it: the loop no longer separates the scan, but only through
+        // the tube, which the region cuts.
+        use std::f64::consts::PI;
+        let cols = 21;
+        let (mut positions, mut triangles) = holed_grid(cols, cols, &[(9, 9), (9, 1)]);
+        let plane = triangles.len();
+        let square = |x: u32, y: u32| [(x, y), (x + 1, y), (x + 1, y + 1), (x, y + 1)];
+        let mut rings: Vec<[u32; 4]> = vec![square(9, 9).map(|(x, y)| y * cols + x)];
+        let segments = 6;
+        for k in 1..segments {
+            let t = k as f64 / segments as f64;
+            rings.push(square(9, 9).map(|(x, y)| {
+                let p = DVec3::new(x as f64, y as f64 - 8.0 * t, 3.0 * (t * PI).sin());
+                positions.push(p);
+                positions.len() as u32 - 1
+            }));
+        }
+        rings.push(square(9, 1).map(|(x, y)| y * cols + x));
+        for pair in rings.windows(2) {
+            let (r, s) = (pair[0], pair[1]);
+            for i in 0..4 {
+                let j = (i + 1) % 4;
+                triangles.extend([[r[i], r[j], s[j]], [r[i], s[j], s[i]]]);
+            }
+        }
+        let mut vertices: Vec<u32> = (5..15).map(|x| 5 * cols + x).collect();
+        vertices.extend((5..15).map(|y| y * cols + 15));
+        vertices.extend((6..=15).rev().map(|x| 15 * cols + x));
+        vertices.extend((6..=15).rev().map(|y| y * cols + 5));
+        let margin = Margin {
+            points: vec![],
+            vertices,
+        };
+        let mesh = TriMesh::new(positions, triangles);
+        let tracer = MarginTracer::new(Arc::new(mesh.clone())).unwrap();
+        let region: HashSet<u32> = tracer
+            .region(&margin, DVec3::new(12.3, 12.6, 0.0))
+            .into_iter()
+            .collect();
+        assert!(!region.is_empty(), "the handle emptied the region");
+        for f in 0..plane {
+            let c = mesh.triangle(f).iter().sum::<DVec3>() / 3.0;
+            let inside = (5.0..15.0).contains(&c.x) && (5.0..15.0).contains(&c.y);
+            assert_eq!(
+                region.contains(&(f as u32)),
+                inside,
+                "plane face {f} at {c}"
+            );
+        }
+    }
+
+    #[test]
+    fn region_rejects_a_loop_that_does_not_separate_the_scan() {
+        // A loop around the tube of a torus bounds nothing: its two sides are
+        // one surface, joined everywhere along the far side of the ring.
+        let (around, tube) = (24u32, 12u32);
+        let positions = (0..around * tube)
+            .map(|i| {
+                let u = TAU * (i / tube) as f64 / around as f64;
+                let v = TAU * (i % tube) as f64 / tube as f64;
+                let r = 10.0 + 3.0 * v.cos();
+                DVec3::new(r * u.cos(), r * u.sin(), 3.0 * v.sin())
+            })
+            .collect();
+        let mut triangles = Vec::new();
+        for i in 0..around {
+            for j in 0..tube {
+                let at = |i: u32, j: u32| (i % around) * tube + j % tube;
+                let (a, b, c, d) = (at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j + 1));
+                triangles.extend([[a, b, c], [a, c, d]]);
+            }
+        }
+        let tracer = MarginTracer::new(Arc::new(TriMesh::new(positions, triangles))).unwrap();
+        let margin = Margin {
+            points: vec![],
+            vertices: (0..tube).collect(),
+        };
+        assert!(
+            tracer
+                .region(&margin, DVec3::new(-13.0, 0.0, 0.0))
+                .is_empty()
+        );
+    }
+
+    /// The vertices of a `holed_grid` with `cols` columns around the square
+    /// from (x0, y0) to (x1, y1), as a margin loop.
+    fn square_loop(cols: u32, (x0, y0): (u32, u32), (x1, y1): (u32, u32)) -> Margin {
+        let mut vertices: Vec<u32> = (x0..x1).map(|x| y0 * cols + x).collect();
+        vertices.extend((y0..y1).map(|y| y * cols + x1));
+        vertices.extend((x0 + 1..=x1).rev().map(|x| y1 * cols + x));
+        vertices.extend((y0 + 1..=y1).rev().map(|y| y * cols + x0));
+        Margin {
+            points: vec![],
+            vertices,
+        }
+    }
+
+    #[test]
+    fn region_excludes_a_scan_flap_hanging_from_the_wall_over_the_ditch() {
+        // A loose flap of scan attached to the prep wall just above the margin
+        // and hanging out and down past it, over the ditch: its edge on the
+        // wall has three faces, and the flap is not the wall's continuation
+        // whichever way it is wound. A zero-area sliver on the same edge is
+        // not either.
+        let die = prepared_tooth(&ToothParams::default()).unwrap();
+        let clean = MarginTracer::new(Arc::new(die.mesh.clone())).unwrap();
+        let margin = clean.propose(die.axis * 12.0, die.axis).unwrap();
+        let reference: HashSet<u32> = clean.region(&margin, die.axis * 12.0).into_iter().collect();
+        assert!(!reference.is_empty());
+        let mesh = &die.mesh;
+        let below = mesh.positions[margin.vertices[0] as usize];
+        let wall = (0..mesh.triangles.len())
+            .filter(|&f| {
+                reference.contains(&(f as u32))
+                    && mesh.triangles[f]
+                        .iter()
+                        .all(|v| !margin.vertices.contains(v))
+            })
+            .min_by(|&a, &b| {
+                let gap = |f: usize| (mesh.triangle(f).iter().sum::<DVec3>() / 3.0).distance(below);
+                gap(a).total_cmp(&gap(b))
+            })
+            .unwrap();
+        let [p, q, _] = mesh.triangles[wall];
+        let (pp, pq) = (mesh.positions[p as usize], mesh.positions[q as usize]);
+        let mid = (pp + pq) / 2.0;
+        let out = (mid - die.axis * mid.dot(die.axis)).normalize();
+        let step = 0.6 * out - 0.6 * die.axis;
+        assert!(
+            (mid + 2.0 * step - below).dot(die.axis) < -0.3,
+            "the flap does not hang past the margin"
+        );
+        for flipped in [false, true] {
+            let mut positions = mesh.positions.clone();
+            let mut triangles = mesh.triangles.clone();
+            let flap = triangles.len();
+            let mut add = |p: DVec3| {
+                positions.push(p);
+                positions.len() as u32 - 1
+            };
+            let (p1, q1) = (add(pp + step), add(pq + step));
+            let (p2, q2) = (add(pp + 2.0 * step), add(pq + 2.0 * step));
+            let sliver = add(mid);
+            for mut t in [
+                [q, p, p1],
+                [q, p1, q1],
+                [q1, p1, p2],
+                [q1, p2, q2],
+                [q, p, sliver],
+            ] {
+                if flipped {
+                    t.swap(0, 1);
+                }
+                triangles.push(t);
+            }
+            let tracer = MarginTracer::new(Arc::new(TriMesh::new(positions, triangles))).unwrap();
+            let region: HashSet<u32> = tracer
+                .region(&margin, die.axis * 12.0)
+                .into_iter()
+                .collect();
+            for f in flap..flap + 5 {
+                assert!(
+                    !region.contains(&(f as u32)),
+                    "flap face {f} (flipped {flipped}) is in the region"
+                );
+            }
+            assert_eq!(region, reference, "flipped {flipped}");
+        }
+    }
+
+    #[test]
+    fn region_rejects_a_cut_through_a_neighbour_beyond_a_short_handle() {
+        // A short handle from just inside the margin to a neighbour that is
+        // close in space but far round the scan from the margin: a strip of
+        // the scan folds back over the prep in a hairpin, like a neighbouring
+        // tooth across a narrow gap. Grown at once, the inside of the loop
+        // reaches the neighbour through the handle before the outside comes
+        // round the fold, so the two meet at the fold, not in the handle. That
+        // cut is longer than a handle's beside the loop, so the region is
+        // rejected rather than taking the neighbour.
+        use std::f64::consts::PI;
+        let (cols, rows, fold, lap) = (31u32, 15u32, 14u32, 3u32);
+        let height = 2.0;
+        let (hx, hy) = (11u32, 7u32);
+        let top = 2 * fold + lap - 1 - hx;
+        let mut holes = vec![(hx, hy), (top, hy)];
+        holes.extend((fold..cols).flat_map(|x| (0..3).chain(12..rows).map(move |y| (x, y))));
+        let (mut positions, mut triangles) = holed_grid(cols, rows, &holes);
+        // Columns past `fold` turn over a half circle and run back on top.
+        for p in &mut positions {
+            let x = p.x;
+            let (f, l) = (fold as f64, lap as f64);
+            *p = if x <= f {
+                *p
+            } else if x < f + l {
+                let a = PI * (x - f) / l;
+                DVec3::new(
+                    f + height / 2.0 * a.sin(),
+                    p.y,
+                    height / 2.0 * (1.0 - a.cos()),
+                )
+            } else {
+                DVec3::new(f - (x - f - l), p.y, height)
+            };
+        }
+        let grid = triangles.len();
+        let at = |x: u32, y: u32| y * cols + x;
+        let lower = [
+            at(hx, hy),
+            at(hx + 1, hy),
+            at(hx + 1, hy + 1),
+            at(hx, hy + 1),
+        ];
+        let upper = [
+            at(top + 1, hy),
+            at(top, hy),
+            at(top, hy + 1),
+            at(top + 1, hy + 1),
+        ];
+        let middle = lower.map(|v| {
+            positions.push(positions[v as usize] + DVec3::Z * height / 2.0);
+            positions.len() as u32 - 1
+        });
+        for (r, s) in [(lower, middle), (middle, upper)] {
+            for i in 0..4 {
+                let j = (i + 1) % 4;
+                triangles.extend([[r[i], r[j], s[j]], [r[i], s[j], s[i]]]);
+            }
+        }
+        let mesh = TriMesh::new(positions, triangles);
+        let tracer = MarginTracer::new(Arc::new(mesh.clone())).unwrap();
+        let margin = square_loop(cols, (2, 2), (12, 12));
+        let region = tracer.region(&margin, DVec3::new(6.3, 6.6, 0.0));
+        for &f in &region {
+            let c = mesh.triangle(f as usize).iter().sum::<DVec3>() / 3.0;
+            let inside = c.z < 1e-9 && (2.0..12.0).contains(&c.x) && (2.0..12.0).contains(&c.y);
+            assert!(
+                inside || f as usize >= grid,
+                "face {f} at {c} outside the margin is in the region"
+            );
+        }
+    }
+
+    #[test]
+    fn region_rejects_a_lone_flap_on_the_margin_as_the_start() {
+        // A seed on a loose flap standing on a loop edge floods only that flap:
+        // it touches the loop and reaches one side of it, but it is no prep.
+        let cols = 21;
+        let (mut positions, mut triangles) = holed_grid(cols, cols, &[]);
+        let margin = square_loop(cols, (5, 5), (15, 15));
+        let (a, b) = (margin.vertices[3], margin.vertices[4]);
+        positions.push((positions[a as usize] + positions[b as usize]) / 2.0 + DVec3::Z * 0.8);
+        triangles.push([a, b, positions.len() as u32 - 1]);
+        let tracer = MarginTracer::new(Arc::new(TriMesh::new(positions, triangles))).unwrap();
+        let tip = tracer.mesh.positions[tracer.mesh.positions.len() - 1];
+        assert!(tracer.region(&margin, tip - DVec3::Z * 0.1).is_empty());
+        assert_eq!(tracer.region(&margin, DVec3::new(9.3, 9.6, 0.0)).len(), 200);
+    }
+
+    #[test]
+    fn region_rejects_an_implausible_area_beside_the_margin_disc() {
+        // A prep's area is a little over the disc its margin spans (a short
+        // wide molar) to a few times it (a tall narrow incisor stump). The far
+        // side of a small loop on a large scan is far more, and a region with
+        // most of it missing is far less.
+        let outside = |cells: u32| {
+            let (positions, triangles) = holed_grid(cells + 1, cells + 1, &[]);
+            let tracer = MarginTracer::new(Arc::new(TriMesh::new(positions, triangles))).unwrap();
+            let margin = square_loop(cells + 1, (3, 3), (7, 7));
+            assert_eq!(tracer.region(&margin, DVec3::new(5.3, 5.6, 0.0)).len(), 32);
+            tracer.region(&margin, DVec3::new(0.3, 0.6, 0.0))
+        };
+        // 84 and 105 square cells beside a disc of 16.
+        assert_eq!(outside(10).len(), 2 * 84);
+        assert!(outside(11).is_empty());
+        let holed = |missing: u32| {
+            let holes: Vec<_> = (0..missing).map(|i| (8 + i % 5, 8 + i / 5)).collect();
+            let (positions, triangles) = holed_grid(21, 21, &holes);
+            let tracer = MarginTracer::new(Arc::new(TriMesh::new(positions, triangles))).unwrap();
+            tracer.region(
+                &square_loop(21, (5, 5), (15, 15)),
+                DVec3::new(5.3, 5.6, 0.0),
+            )
+        };
+        // 85 and 75 square cells inside a disc of 100.
+        assert_eq!(holed(15).len(), 2 * 85);
+        assert!(holed(25).is_empty());
     }
 
     #[test]
