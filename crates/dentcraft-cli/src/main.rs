@@ -1,10 +1,11 @@
-//! Headless DentCraft: mesh info, mesh conversion and case plans.
+//! Headless DentCraft: mesh info, mesh conversion, case plans and tooth library import.
 
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, error::ErrorKind};
+use dentcraft_anatomy::{split_setup, write_library};
 use dentcraft_case::{Case, Connector, Fdi, RestorationKind, Unit};
 use dentcraft_io::{load_mesh, save_mesh};
 use dentcraft_mesh::TriMesh;
@@ -45,6 +46,35 @@ enum Command {
         #[arg(long = "connect", value_name = "A-B")]
         connectors: Vec<String>,
     },
+    /// Build and manage tooth libraries.
+    Library {
+        #[command(subcommand)]
+        command: LibraryCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum LibraryCommand {
+    /// Split a set-up (one mesh of separate open crowns in an upper and a lower arch) into one
+    /// file per tooth plus a library.json manifest.
+    FromSetup {
+        setup: PathBuf,
+        /// Library folder to write (created if missing).
+        out: PathBuf,
+    },
+}
+
+/// Splits `setup` into named crowns and writes them as a library into `out`.
+fn library_from_setup(setup: &TriMesh, out: &Path) -> Result<String, String> {
+    let teeth = split_setup(setup).map_err(|e| e.to_string())?;
+    write_library(&teeth, out).map_err(|e| e.to_string())?;
+    let codes: Vec<String> = teeth.iter().map(|t| t.fdi.to_string()).collect();
+    Ok(format!(
+        "wrote {} teeth to {}: {}\n",
+        teeth.len(),
+        out.display(),
+        codes.join(" ")
+    ))
 }
 
 #[derive(Serialize)]
@@ -202,6 +232,9 @@ fn run(command: Command) -> Result<String, String> {
             ))
         }
         Command::Plan { units, connectors } => Ok(plan_text(&build_case(&units, &connectors)?)),
+        Command::Library {
+            command: LibraryCommand::FromSetup { setup, out },
+        } => library_from_setup(&load_mesh(&setup).map_err(|e| e.to_string())?, &out),
     }
 }
 
@@ -278,5 +311,24 @@ mod tests {
         assert!(text.starts_with("Issues:"), "{text}");
         assert!(text.contains("more than one restoration"));
         assert!(text.contains("not connected"));
+    }
+
+    #[test]
+    fn library_from_setup_names_the_bad_component() {
+        let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scratch/cli-library-test");
+        let message = library_from_setup(&tetrahedron(), &out).unwrap_err();
+        assert!(message.contains("component 1"), "{message}");
+        assert!(!out.exists(), "nothing is written for a rejected set-up");
+    }
+
+    #[test]
+    fn library_from_setup_is_a_subcommand() {
+        let cli = Cli::try_parse_from(["dentcraft", "library", "from-setup", "a.stl", "lib"]);
+        assert!(matches!(
+            cli.map(|c| c.command),
+            Ok(Command::Library {
+                command: LibraryCommand::FromSetup { .. }
+            })
+        ));
     }
 }

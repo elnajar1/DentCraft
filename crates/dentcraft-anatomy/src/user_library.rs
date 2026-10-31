@@ -18,15 +18,29 @@
 //!   side of the same arch (11 serves 21); the first entry naming a tooth wins.
 //! - `occlusal`, `facial`: the tooth's occlusal (incisal) and facial directions in file
 //!   coordinates. `facial` need not be perpendicular to `occlusal`.
-//! - `cervical`: a point on the mid-facial CEJ, in file coordinates. The crown is cut off there,
-//!   with the textbook CEJ curvature of the served tooth type rising mesially and distally.
+//! - `cervical`: a point on the mid-facial CEJ, in file coordinates. A resampled crown (see
+//!   below) is cut off there, with the textbook CEJ curvature of the served tooth type rising
+//!   mesially and distally.
 //! - `mirror`: `true` when the file is a left tooth (quadrant 2 or 4 handedness), so that
 //!   `facial × occlusal` points distally rather than mesially.
 //! - `seal`: optional spheres (file coordinates, millimetres) over openings in the crown surface
 //!   to close, such as an endodontic access cavity or an engraved mark. The surface under them
 //!   is rebuilt as a smooth membrane from its surroundings.
 //!
-//! The crown is resampled rather than cut from the file's triangles: rays from outside towards
+//! A file that already is a clean open crown (one connected, consistently wound, manifold surface
+//! with exactly one boundary loop, no duplicate vertex positions once zero-area triangles are
+//! dropped) and has no `seal` is kept as it is: its own triangles and its own boundary as the
+//! cervical line, such as the teeth [`crate::write_library`] splits from a set-up. Its winding
+//! is made outward (the crown closed with a fan over its boundary has a positive volume), the
+//! boundary must turn once round the occlusal axis, the cervical loop starts at the boundary
+//! vertex straight facial of the loop's centre (the centre of its outline seen from occlusal),
+//! and the crown is moved so that this centre is on the axis at the height of that mid-facial
+//! vertex. It is then scaled per axis to the served tooth's textbook dimensions times the
+//! [`CrownParams`] factors, its landmarks (cusp tips included) come from its own surface, and it
+//! is mirrored for quadrants 2 and 4. The crown keeps the file's own cervical line: it is not
+//! cut at `cervical` or to the textbook CEJ curvature.
+//!
+//! Any other file is resampled rather than cut from the file's triangles: rays from outside towards
 //! a centre inside the crown find its outer surface, so roots, pulp chambers, canals, defects
 //! and the file's own winding never reach the template. The result has the parametric crown's
 //! layout (160 columns from the mid-facial cervix, rows by arc length, a pole fan), is smoothed,
