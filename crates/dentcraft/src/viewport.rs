@@ -428,7 +428,6 @@ fn gizmo_centre(rect: Rect) -> (Pos2, f32) {
 }
 
 /// The area the axis gizmo paints in: arrows and their tip labels.
-#[cfg(test)]
 pub fn gizmo_rect(rect: Rect) -> Rect {
     let (center, radius) = gizmo_centre(rect);
     Rect::from_center_size(center, egui::Vec2::splat(2.0 * (radius + 8.0)))

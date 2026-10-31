@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>Case setup</title>
+  <path d="M15 10L49 10Q53 10 53 14L53 54Q53 58 49 58L15 58Q11 58 11 54L11 14Q11 10 15 10Z" fill="#e2e8ef" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M24 6L40 6Q42 6 42 8L42 14Q42 16 40 16L24 16Q22 16 22 14L22 8Q22 6 24 6Z" fill="#b8c3cf" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M18 26A14 6 0 0 0 46 26" fill="none" stroke="#8e9faf" stroke-width="2.55" stroke-linecap="round"/>
+  <circle cx="18" cy="26" r="3.6" fill="#b8c3cf" stroke="#34465b" stroke-width="2.55"/>
+  <circle cx="25" cy="31" r="3.6" fill="#328bd3" stroke="#34465b" stroke-width="2.55"/>
+  <circle cx="32" cy="32.5" r="3.6" fill="#328bd3" stroke="#34465b" stroke-width="2.55"/>
+  <circle cx="39" cy="31" r="3.6" fill="#b8c3cf" stroke="#34465b" stroke-width="2.55"/>
+  <circle cx="46" cy="26" r="3.6" fill="#b8c3cf" stroke="#34465b" stroke-width="2.55"/>
+  <path d="M19 44L45 44M19 50L37 50" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linecap="round"/>
+</svg>

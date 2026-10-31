@@ -43,3 +43,4 @@ DentCraft in the same style and released under the repository licence.
 | `jaw_upper.svg`, `jaw_lower.svg` | DentCraft (two arches, the shown jaw in blue) |
 | `view_occlusal.svg`, `view_facial.svg`, `view_lingual.svg`, `view_left.svg`, `view_right.svg`, `view_bottom.svg` | DentCraft (arch with a blue arrow for the viewing direction) |
 | `ws_crown_bridge.svg`, `ws_model_builder.svg`, `ws_implant.svg`, `ws_splint.svg`, `ws_denture.svg`, `ws_smile.svg` | DentCraft (workspaces) |
+| `case_setup.svg` | DentCraft (clipboard with an arch of teeth, two in blue) |

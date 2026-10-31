@@ -1,4 +1,4 @@
-//! The application shell: top bar, case panel, workflow panel, viewport and status bar.
+//! The application shell: top bar, case setup screen, objects panel, workflow panel, viewport and status bar.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -29,6 +29,7 @@ use crate::inner_step::{self, INNER, InnerStep};
 use crate::loader::Loader;
 use crate::margin_step::{self, MARGIN, MarginStep, StepFrame};
 use crate::objects::{self, ObjectState, SceneObject};
+use crate::objects_panel;
 use crate::orient_step::{self, ORIENT, OrientStep};
 use crate::recovery::{self, Autosave};
 use crate::theme::{self, Palette, RADIUS_LG, SIZE_SMALL, ThemeKind};
@@ -58,6 +59,8 @@ pub struct StartOptions {
     pub hide: Vec<ScanRole>,
     /// Show the workspace menu open, for screenshots.
     pub workspace_menu_open: bool,
+    /// Show the case setup screen even when the case has units.
+    pub case_setup_open: bool,
     pub screenshot: Option<PathBuf>,
     /// Two points to measure between, snapped to the scans once they have loaded.
     pub measure: Option<[DVec3; 2]>,
@@ -207,6 +210,9 @@ pub struct DentCraftApp {
     recovery_refused: Option<String>,
     window_title: String,
     workspace_menu: WorkspaceMenu,
+    /// The case setup screen is shown: for a new case, a case without units and from the
+    /// toolbar.
+    case_setup: bool,
     /// Open and collapsed sections of the side panels.
     sections: Sections,
     /// The active viewport tool.
@@ -318,6 +324,7 @@ impl DentCraftApp {
             recovery_refused: None,
             window_title: String::new(),
             workspace_menu: WorkspaceMenu::new(start.workspace_menu_open),
+            case_setup: false,
             sections,
             tools: Tools::default(),
             pending_measure: start.measure,
@@ -377,6 +384,8 @@ impl DentCraftApp {
                 message: format!("Autosave is off: {reason}"),
             });
         }
+        // A scripted run of a case with units goes straight to the design.
+        app.case_setup = start.case_setup_open || app.case.units.is_empty();
         app
     }
 
@@ -1014,6 +1023,7 @@ impl DentCraftApp {
         self.contacts.reset();
         self.export.reset();
         self.tooth = None;
+        self.case_setup = case.units.is_empty();
         self.case = case;
     }
 
@@ -1533,6 +1543,8 @@ impl DentCraftApp {
         if let Some(command) = command {
             self.run(command);
         }
+        let bottom = crate::viewport::gizmo_rect(rect).top();
+        objects_panel::show(ui, rect, bottom, &mut self.objects);
     }
 
     /// Carries out a toolbar, view cluster or app bar command with the app's existing actions.
@@ -1544,6 +1556,7 @@ impl DentCraftApp {
                 self.save_case();
             }
             Command::Import => self.pick_files(),
+            Command::CaseSetup => self.case_setup = true,
             Command::Step(action) => self.apply_step_action(action),
             Command::View(preset) => self.viewport.go_to(preset, self.bounds().as_ref()),
             Command::Fit => self.viewport.fit(self.bounds().as_ref()),
@@ -1657,6 +1670,88 @@ impl DentCraftApp {
         }
     }
 
+    /// The case setup screen, centred over the window: the case name and tooth chart at the
+    /// left, material and scans at the right, and "Start design" to go to the design.
+    fn case_setup_modal(&mut self, ctx: &egui::Context) {
+        if !self.case_setup || self.recovery_prompt.is_some() {
+            return;
+        }
+        let p = self.palette();
+        let screen = ctx.content_rect();
+        let width = (screen.width() - 80.0).clamp(480.0, 920.0);
+        let height = (screen.height() - 220.0).clamp(240.0, 720.0);
+        let mut close = false;
+        let modal = egui::Modal::new(egui::Id::unique("case_setup"))
+            .frame(
+                egui::Frame::new()
+                    .fill(p.panel)
+                    .stroke(Stroke::new(1.0, p.border))
+                    .corner_radius(CornerRadius::same(RADIUS_LG))
+                    .inner_margin(Margin::same(20)),
+            )
+            .show(ctx, |ui| {
+                ui.set_width(width);
+                ui.label(RichText::new("Case setup").heading().color(p.text));
+                ui.label(
+                    RichText::new(
+                        "Choose the teeth and their restorations, the material, and the role \
+                         of each scan.",
+                    )
+                    .size(SIZE_SMALL)
+                    .color(p.text_dim),
+                );
+                ui.add_space(10.0);
+                let column = (width - 16.0) * 0.5;
+                ui.horizontal_top(|ui| {
+                    ui.spacing_mut().item_spacing.x = 16.0;
+                    for left in [true, false] {
+                        ui.allocate_ui_with_layout(
+                            vec2(column, height),
+                            Layout::top_down(Align::Min),
+                            |ui| {
+                                ui.set_width(column);
+                                egui::ScrollArea::vertical()
+                                    .id_salt(("case_setup_column", left))
+                                    .max_height(height)
+                                    .auto_shrink([false, true])
+                                    .show(ui, |ui| {
+                                        if left {
+                                            self.case_panel(ui);
+                                        } else {
+                                            self.setup_material_scans(ui);
+                                        }
+                                    });
+                            },
+                        );
+                    }
+                });
+                ui.add_space(12.0);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let start = !self.case.units.is_empty();
+                    let label = if start { "Start design" } else { "Close" };
+                    let button = egui::Button::new(RichText::new(label).color(if start {
+                        egui::Color32::WHITE
+                    } else {
+                        p.text
+                    }))
+                    .min_size(vec2(120.0, 30.0));
+                    let button = if start { button.fill(p.accent) } else { button };
+                    let tip = if start {
+                        "Go to the design"
+                    } else {
+                        "Close the case setup; the toolbar opens it again"
+                    };
+                    if ui.add(button).on_hover_text(tip).clicked() {
+                        close = true;
+                    }
+                });
+            });
+        if close || modal.should_close() {
+            self.case_setup = false;
+        }
+    }
+
+    /// The left column of the case setup screen: the case name and the tooth chart.
     fn case_panel(&mut self, ui: &mut egui::Ui) {
         let p = self.palette();
         let small = |text: String| RichText::new(text).size(SIZE_SMALL).color(p.text_dim);
@@ -1723,7 +1818,13 @@ impl DentCraftApp {
                 self.apply_chart_edit(edit);
             }
         }
+    }
 
+    /// The right column of the case setup screen: material and scans with their roles.
+    fn setup_material_scans(&mut self, ui: &mut egui::Ui) {
+        let p = self.palette();
+        let small = |text: String| RichText::new(text).size(SIZE_SMALL).color(p.text_dim);
+        ui.spacing_mut().item_spacing.y = 0.0;
         browser::header(
             ui,
             Section::Material,
@@ -2536,16 +2637,6 @@ impl eframe::App for DentCraftApp {
             .frame(bar(Margin::symmetric(10, 0)).fill(p.panel_header))
             .exact_size(22.0)
             .show(ui, |ui| self.status_bar(ui, frame));
-        egui::Panel::left("case_panel")
-            .frame(bar(Margin::ZERO))
-            .default_size(320.0)
-            .min_size(300.0)
-            .max_size(460.0)
-            .show(ui, |ui| {
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| self.case_panel(ui));
-            });
         egui::Panel::right("workflow_panel")
             .frame(bar(Margin::ZERO))
             .default_size(300.0)
@@ -2555,6 +2646,7 @@ impl eframe::App for DentCraftApp {
             .frame(egui::Frame::NONE)
             .show(ui, |ui| self.central(ui));
 
+        self.case_setup_modal(&ctx);
         self.confirm_discard_modal(&ctx);
         self.confirm_close_modal(&ctx);
         self.recovery_modal(&ctx);

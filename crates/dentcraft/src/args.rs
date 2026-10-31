@@ -136,6 +136,8 @@ impl From<ThemeArg> for ThemeKind {
 pub enum OpenArg {
     /// The workspace list under the switcher at the left end of the toolbar.
     WorkspaceMenu,
+    /// The case setup screen: teeth chart, material and scans.
+    CaseSetup,
 }
 
 /// Parses a scan role as written on the command line.
@@ -308,6 +310,8 @@ mod tests {
     fn open_shows_the_workspace_menu() {
         let args = Args::try_parse_from(["dentcraft", "--open", "workspace-menu"]).unwrap();
         assert_eq!(args.open, Some(OpenArg::WorkspaceMenu));
+        let args = Args::try_parse_from(["dentcraft", "--open", "case-setup"]).unwrap();
+        assert_eq!(args.open, Some(OpenArg::CaseSetup));
         assert_eq!(Args::try_parse_from(["dentcraft"]).unwrap().open, None);
         assert!(Args::try_parse_from(["dentcraft", "--open", "settings"]).is_err());
     }

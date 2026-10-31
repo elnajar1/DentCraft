@@ -17,6 +17,7 @@ mod loader;
 mod margin_edit;
 mod margin_step;
 mod objects;
+mod objects_panel;
 mod orient_step;
 mod recovery;
 mod theme;
@@ -98,6 +99,7 @@ fn main() -> ExitCode {
         theme: args.theme.map(Into::into),
         hide: args.hide,
         workspace_menu_open: args.open == Some(OpenArg::WorkspaceMenu),
+        case_setup_open: args.open == Some(OpenArg::CaseSetup),
         screenshot: args.screenshot,
         measure: args.measure,
         orient: args.orient,

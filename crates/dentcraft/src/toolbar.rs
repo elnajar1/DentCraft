@@ -73,6 +73,8 @@ pub enum Command {
     Open,
     Save,
     Import,
+    /// Open the case setup screen: teeth, material and scans.
+    CaseSetup,
     Step(StepAction),
     View(ViewPreset),
     Fit,
@@ -118,17 +120,19 @@ pub enum Slot {
     Open,
     Save,
     Import,
+    CaseSetup,
     DesignMenu,
     ToolsMenu,
 }
 
 /// The toolbar's slots in order: width, and whether a divider comes before it.
-const SLOTS: [(Slot, f32, bool); 7] = [
+const SLOTS: [(Slot, f32, bool); 8] = [
     (Slot::Workspace, SWITCHER_WIDTH, false),
     (Slot::New, BUTTON, true),
     (Slot::Open, BUTTON, false),
     (Slot::Save, BUTTON, false),
     (Slot::Import, BUTTON, false),
+    (Slot::CaseSetup, BUTTON, true),
     (Slot::DesignMenu, MENU_BUTTON_WIDTH, true),
     (Slot::ToolsMenu, MENU_BUTTON_WIDTH, false),
 ];
@@ -247,6 +251,14 @@ impl ToolbarView<'_> {
                         .clicked()
                     {
                         command = Some(Command::Import);
+                    }
+                }
+                Slot::CaseSetup => {
+                    if tool_button(ui, rect, Icon::CaseSetup, true, false)
+                        .on_hover_text("Case setup: teeth and restorations, material and scans")
+                        .clicked()
+                    {
+                        command = Some(Command::CaseSetup);
                     }
                 }
                 Slot::DesignMenu => {
@@ -776,11 +788,11 @@ mod tests {
     }
 
     /// Viewport of the default 1600 × 1000 window and of the smallest window (960 × 600 less the
-    /// side panels at their minimum widths).
+    /// workflow panel at its minimum width).
     fn viewports() -> [Rect; 2] {
         [
-            Rect::from_min_size(pos2(320.0, 32.0), vec2(980.0, 946.0)),
-            Rect::from_min_size(pos2(300.0, 32.0), vec2(380.0, 546.0)),
+            Rect::from_min_size(pos2(0.0, 32.0), vec2(1300.0, 946.0)),
+            Rect::from_min_size(pos2(0.0, 32.0), vec2(680.0, 546.0)),
         ]
     }
 
@@ -910,6 +922,10 @@ mod tests {
         assert_eq!(click(slot_centre(Slot::Open)), Some(Command::Open));
         assert_eq!(click(slot_centre(Slot::Save)), Some(Command::Save));
         assert_eq!(click(slot_centre(Slot::Import)), Some(Command::Import));
+        assert_eq!(
+            click(slot_centre(Slot::CaseSetup)),
+            Some(Command::CaseSetup)
+        );
     }
 
     #[test]
