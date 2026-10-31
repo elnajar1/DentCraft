@@ -22,6 +22,7 @@ use crate::browser::{self, SECTIONS_KEY, Section, Sections};
 use crate::chart::{self, ChartEdit};
 use crate::contacts_step::{self, CONTACTS, ContactsStep};
 use crate::crash;
+use crate::design_objects::{self, DesignObjects, DesignPart, PartGeometry, PartKind};
 use crate::document::{self, Document};
 use crate::export_step::{self, ExportStep, PlanItem};
 use crate::history::History;
@@ -229,6 +230,10 @@ pub struct DentCraftApp {
     inner: InnerStep,
     /// The Anatomy step's jobs and crown.
     anatomy: AnatomyStep,
+    /// Visibility and meshes of the designed parts shown as objects.
+    design_objects: DesignObjects,
+    /// This frame's designed parts, listed in the Objects panel.
+    parts: Vec<DesignPart>,
     /// The Occlusion & contacts step's jobs, adapted crowns and distance map.
     contacts: ContactsStep,
     /// `--step inner` or `--step anatomy`: the start went through the Insertion axis step and
@@ -337,6 +342,8 @@ impl DentCraftApp {
                 inner
             },
             anatomy: AnatomyStep::new(Some(cc.egui_ctx.clone())),
+            design_objects: DesignObjects::default(),
+            parts: Vec::new(),
             contacts: ContactsStep::new(Some(cc.egui_ctx.clone())),
             pending_inner: None,
             export: ExportStep::new(Some(cc.egui_ctx.clone())),
@@ -424,6 +431,7 @@ impl DentCraftApp {
                 color: objects::default_color(role, &used),
                 visible: true,
                 opacity: 1.0,
+                auto_hidden: false,
                 state: ObjectState::Loading,
             });
             self.loader.spawn(id, path);
@@ -1544,7 +1552,72 @@ impl DentCraftApp {
             self.run(command);
         }
         let bottom = crate::viewport::gizmo_rect(rect).top();
-        objects_panel::show(ui, rect, bottom, &mut self.objects);
+        let parts: Vec<(PartKind, Fdi)> = self.parts.iter().map(|p| (p.kind, p.tooth)).collect();
+        let design = objects_panel::Design {
+            objects: &mut self.design_objects,
+            parts: &parts,
+        };
+        objects_panel::show(ui, rect, bottom, &mut self.objects, design);
+    }
+
+    /// Every designed part of every unit: its margin, inner surface and crown once there.
+    fn design_parts(&mut self) -> Vec<DesignPart> {
+        let mut parts = Vec::new();
+        for unit in &self.case.units {
+            let tooth = unit.tooth;
+            if let Some(m) = self
+                .case
+                .design
+                .teeth
+                .get(&tooth)
+                .and_then(|d| d.margin.as_ref())
+            {
+                parts.push(DesignPart {
+                    kind: PartKind::Margin,
+                    tooth,
+                    geometry: PartGeometry::Line(m.clone()),
+                });
+            }
+            if let Some(s) = self
+                .inner
+                .built(&self.case.design, &self.case.material, tooth)
+            {
+                parts.push(DesignPart {
+                    kind: PartKind::Inner,
+                    tooth,
+                    geometry: PartGeometry::Mesh(self.design_objects.inner_mesh(tooth, &s)),
+                });
+            }
+            let crown = self.anatomy.crown(&self.case, tooth).map(|base| {
+                self.contacts
+                    .adapted(&self.case, &self.objects, tooth, &base)
+                    .unwrap_or(base)
+            });
+            if let Some(c) = crown {
+                parts.push(DesignPart {
+                    kind: PartKind::Crown,
+                    tooth,
+                    geometry: PartGeometry::Mesh(self.design_objects.crown_mesh(tooth, &c)),
+                });
+            }
+        }
+        self.design_objects.prune(&parts);
+        parts
+    }
+
+    /// The parts the active tool draws itself, for its tooth.
+    fn tool_parts(&self) -> Vec<(PartKind, Fdi)> {
+        let Some(tooth) = self.tooth else {
+            return Vec::new();
+        };
+        let kinds: &[PartKind] = match self.tools.active_name() {
+            Some(MARGIN) => &[PartKind::Margin],
+            Some(INNER) => &[PartKind::Inner],
+            // The Anatomy and Occlusion steps hide the tooth's inner surface.
+            Some(ANATOMY) | Some(CONTACTS) => &[PartKind::Inner, PartKind::Crown],
+            _ => &[],
+        };
+        kinds.iter().map(|&k| (k, tooth)).collect()
     }
 
     /// Carries out a toolbar, view cluster or app bar command with the app's existing actions.
@@ -2057,14 +2130,30 @@ impl DentCraftApp {
             }
         }
         let options = self.palette().render_options(self.theme);
-        let out = self.viewport.show(
-            ui,
-            rect,
-            &self.objects,
-            bounds.as_ref(),
-            options,
-            &mut self.tools,
+        let hidden_arch = self
+            .design_objects
+            .auto_hide
+            .then(|| design_objects::auto_hidden_arch(&self.viewport.camera))
+            .flatten();
+        for obj in &mut self.objects {
+            obj.auto_hidden =
+                hidden_arch.is_some() && design_objects::role_arch(obj.role) == hidden_arch;
+        }
+        self.parts = self.design_parts();
+        let (parts, lines) = self.design_objects.draw(
+            &self.parts,
+            &self.palette(),
+            &self.tool_parts(),
+            hidden_arch,
         );
+        let scene = crate::viewport::Scene {
+            objects: &self.objects,
+            bounds: bounds.as_ref(),
+            options,
+            parts,
+            lines,
+        };
+        let out = self.viewport.show(ui, rect, scene, &mut self.tools);
         if out.interacted {
             self.auto_fit = false;
         }

@@ -145,6 +145,19 @@ pub struct ViewportOutput {
     pub interacted: bool,
 }
 
+/// What the viewport draws in one frame, besides the active tool's own drawing.
+pub struct Scene<'a> {
+    /// The scans, drawn and picked.
+    pub objects: &'a [SceneObject],
+    /// What a double click frames.
+    pub bounds: Option<&'a Aabb>,
+    pub options: RenderOptions,
+    /// Designed parts drawn with the scans: crowns and inner surfaces.
+    pub parts: Vec<(DrawItem, Arc<MeshData>)>,
+    /// Designed curves drawn over the scans: margins.
+    pub lines: Vec<Overlay>,
+}
+
 pub struct Viewport {
     pub camera: Camera,
     /// Preset the camera was last sent to; cleared once the user orbits.
@@ -200,11 +213,16 @@ impl Viewport {
         &mut self,
         ui: &mut Ui,
         rect: Rect,
-        objects: &[SceneObject],
-        bounds: Option<&Aabb>,
-        mut options: RenderOptions,
+        scene: Scene<'_>,
         tools: &mut Tools,
     ) -> ViewportOutput {
+        let Scene {
+            objects,
+            bounds,
+            mut options,
+            parts,
+            lines,
+        } = scene;
         let mut out = ViewportOutput::default();
         let response = ui.interact(
             rect,
@@ -345,13 +363,19 @@ impl Viewport {
                     })
                 })
                 .collect();
+            items.extend(parts.into_iter().map(|(mut item, data)| {
+                item.clip = options.clip.is_some();
+                (item, data)
+            }));
             items.extend(tools.meshes(&palette));
+            let mut overlays = lines;
+            overlays.extend(tools.overlays(&palette));
             ui.painter().add(egui_wgpu::Callback::new_paint_callback(
                 rect,
                 SceneCallback {
                     camera: self.camera.clone(),
                     items,
-                    overlays: tools.overlays(&palette),
+                    overlays,
                     options,
                     size_points: rect.size(),
                 },

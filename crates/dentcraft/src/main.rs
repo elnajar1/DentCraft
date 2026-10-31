@@ -8,6 +8,7 @@ mod browser;
 mod chart;
 mod contacts_step;
 mod crash;
+mod design_objects;
 mod document;
 mod export_step;
 mod history;

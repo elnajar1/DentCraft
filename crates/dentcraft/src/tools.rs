@@ -265,7 +265,7 @@ pub fn pick_handle(
 pub fn snap_to_surface(objects: &[SceneObject], p: DVec3) -> Option<DVec3> {
     objects
         .iter()
-        .filter(|o| o.visible)
+        .filter(|o| o.shown())
         .filter_map(|o| {
             let l = o.loaded()?;
             l.bvh.closest_point(&l.mesh, p)
@@ -397,6 +397,7 @@ mod tests {
             color: STONE,
             visible: true,
             opacity: 1.0,
+            auto_hidden: false,
             state: ObjectState::Ready(Box::new(Loaded {
                 bvh: Bvh::build(&mesh),
                 render: Arc::new(MeshData::from_mesh(&mesh)),

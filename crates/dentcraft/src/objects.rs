@@ -36,6 +36,9 @@ pub struct SceneObject {
     pub color: [u8; 3],
     pub visible: bool,
     pub opacity: f32,
+    /// Hidden for this frame by the opposite-jaw rule, not by the user: drawing and picking
+    /// leave it out, the Objects panel does not list it as hidden.
+    pub auto_hidden: bool,
     pub state: ObjectState,
 }
 
@@ -47,6 +50,11 @@ impl SceneObject {
         }
     }
 
+    /// Drawn and picked this frame: shown by the user and not hidden by the opposite-jaw rule.
+    pub fn shown(&self) -> bool {
+        self.visible && !self.auto_hidden
+    }
+
     pub fn triangle_count(&self) -> usize {
         self.loaded().map_or(0, |l| l.mesh.triangle_count())
     }
@@ -56,7 +64,7 @@ impl SceneObject {
             mesh: self.id,
             color: self.color.map(|c| c as f32 / 255.0),
             opacity: self.opacity,
-            visible: self.visible,
+            visible: self.shown(),
             vertex_colors: false,
             clip: false,
         }
@@ -122,7 +130,7 @@ pub fn pick(objects: &[SceneObject], origin: DVec3, dir: DVec3) -> Option<(usize
     objects
         .iter()
         .enumerate()
-        .filter(|(_, o)| o.visible && o.opacity > 0.05)
+        .filter(|(_, o)| o.shown() && o.opacity > 0.05)
         .filter_map(|(i, o)| {
             let l = o.loaded()?;
             l.bvh.raycast(&l.mesh, origin, dir).map(|hit| (i, hit))
@@ -217,6 +225,7 @@ mod tests {
             color: STONE,
             visible,
             opacity: 1.0,
+            auto_hidden: false,
             state: ObjectState::Ready(Box::new(loaded)),
         }
     }
@@ -232,6 +241,19 @@ mod tests {
         assert_eq!(index, 1);
         assert!((point.z - 6.0).abs() < 0.05, "hit at {point}");
         assert!(pick(&objects, DVec3::new(9.0, 0.0, 20.0), DVec3::NEG_Z).is_none());
+    }
+
+    #[test]
+    fn an_auto_hidden_object_is_neither_drawn_nor_picked() {
+        let mut objects = vec![
+            sphere_object(1, DVec3::new(0.0, 0.0, 0.0), true),
+            sphere_object(2, DVec3::new(0.0, 0.0, 5.0), true),
+        ];
+        objects[1].auto_hidden = true;
+        let (index, _) = pick(&objects, DVec3::new(0.0, 0.0, 20.0), DVec3::NEG_Z).unwrap();
+        assert_eq!(index, 0, "the ray goes through the hidden object");
+        assert!(!objects[1].draw_item().visible);
+        assert!(objects[1].visible, "the user's choice is kept");
     }
 
     #[test]
