@@ -75,6 +75,7 @@ pub enum Command {
     Import,
     /// Open the case setup screen: teeth, material and scans.
     CaseSetup,
+    ToggleExpert,
     Step(StepAction),
     View(ViewPreset),
     Fit,
@@ -121,19 +122,21 @@ pub enum Slot {
     Save,
     Import,
     CaseSetup,
+    Mode,
     DesignMenu,
     ToolsMenu,
 }
 
 /// The toolbar's slots in order: width, and whether a divider comes before it.
-const SLOTS: [(Slot, f32, bool); 8] = [
+const SLOTS: [(Slot, f32, bool); 9] = [
     (Slot::Workspace, SWITCHER_WIDTH, false),
     (Slot::New, BUTTON, true),
     (Slot::Open, BUTTON, false),
     (Slot::Save, BUTTON, false),
     (Slot::Import, BUTTON, false),
     (Slot::CaseSetup, BUTTON, true),
-    (Slot::DesignMenu, MENU_BUTTON_WIDTH, true),
+    (Slot::Mode, MENU_BUTTON_WIDTH, true),
+    (Slot::DesignMenu, MENU_BUTTON_WIDTH, false),
     (Slot::ToolsMenu, MENU_BUTTON_WIDTH, false),
 ];
 
@@ -194,6 +197,7 @@ pub struct ToolbarView<'a> {
     pub lower_visible: Option<bool>,
     /// Name of the active viewport tool.
     pub active_tool: Option<&'static str>,
+    pub expert: bool,
 }
 
 impl ToolbarView<'_> {
@@ -259,6 +263,15 @@ impl ToolbarView<'_> {
                         .clicked()
                     {
                         command = Some(Command::CaseSetup);
+                    }
+                }
+                Slot::Mode => {
+                    let label = if self.expert { "Wizard" } else { "Expert" };
+                    if menu_button(ui, rect, label)
+                        .on_hover_text("Switch Wizard / Expert mode")
+                        .clicked()
+                    {
+                        command = Some(Command::ToggleExpert);
                     }
                 }
                 Slot::DesignMenu => {
@@ -460,7 +473,7 @@ impl ToolbarView<'_> {
 
 /// Background of a floating panel: translucent theme fill, rounded, a light shadow. It takes the
 /// pointer inside `rect`, so a click between its buttons does not reach the viewport below.
-fn floating_panel(ui: &Ui, rect: Rect, id: Id) {
+pub(crate) fn floating_panel(ui: &Ui, rect: Rect, id: Id) {
     let p = widgets::palette(ui);
     ui.interact(rect, id, Sense::click_and_drag());
     let painter = ui.painter();
@@ -474,6 +487,158 @@ fn floating_panel(ui: &Ui, rect: Rect, id: Id) {
         Stroke::new(1.0, p.border),
         StrokeKind::Inside,
     );
+}
+
+/// The strip leaves the view cluster and orientation gizmo unobstructed.
+pub fn expert_rect(viewport: Rect) -> Rect {
+    Rect::from_min_max(
+        pos2(viewport.left() + 170.0, viewport.bottom() - 52.0),
+        pos2(
+            view_cluster_layout(viewport).0.left() - INSET,
+            viewport.bottom() - 8.0,
+        ),
+    )
+}
+
+fn step_icon(id: StepId) -> Icon {
+    match id {
+        StepId::Scans => Icon::Import,
+        StepId::Orient => Icon::Orient,
+        StepId::Margin => Icon::Margin,
+        StepId::InsertionAxis => Icon::Axis,
+        StepId::InnerSurface => Icon::Inner,
+        StepId::Anatomy | StepId::PonticBase | StepId::Sculpt => Icon::Anatomy,
+        StepId::Occlusion | StepId::Connectors => Icon::Contacts,
+        StepId::Thickness => Icon::Inner,
+        StepId::Finish => Icon::Export,
+    }
+}
+
+pub fn expert_strip(
+    ui: &mut Ui,
+    viewport: Rect,
+    session: &Session,
+    pinned: &mut bool,
+) -> Option<Command> {
+    let full = expert_rect(viewport);
+    let hovered = ui.input(|i| {
+        i.pointer.hover_pos().is_some_and(|p| {
+            Rect::from_min_max(full.min, pos2(full.right(), viewport.bottom())).contains(p)
+        })
+    });
+    let reveal = ui
+        .ctx()
+        .animate_bool(ui.scope_id().with("expert_reveal"), *pinned || hovered);
+    let panel = full.translate(vec2(0.0, (1.0 - reveal) * (full.height() - 7.0)));
+    let panel = panel.intersect(viewport);
+    floating_panel(ui, panel, ui.scope_id().with("expert_panel"));
+    let mut command = None;
+    ui.scope_builder(egui::UiBuilder::new().max_rect(panel.shrink(4.0)), |ui| {
+        ui.set_clip_rect(panel.shrink(2.0));
+        if reveal < 0.05 {
+            ui.painter().text(
+                panel.center(),
+                Align2::CENTER_CENTER,
+                "Expert",
+                FontId::proportional(SIZE_SMALL),
+                widgets::palette(ui).text_dim,
+            );
+            return;
+        }
+        ui.horizontal(|ui| {
+            if widgets::small_button(ui, "Pin", true, *pinned)
+                .on_hover_text("Keep the Expert strip open")
+                .clicked()
+            {
+                *pinned = !*pinned;
+            }
+            egui::ScrollArea::horizontal()
+                .id_salt("expert_steps")
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let next = session
+                            .steps()
+                            .iter()
+                            .enumerate()
+                            .find(|(i, _)| {
+                                !matches!(
+                                    session.status(*i),
+                                    dentcraft_workflow::StepStatus::Done
+                                        | dentcraft_workflow::StepStatus::Skipped
+                                )
+                            })
+                            .map(|(i, _)| i);
+                        for (index, step) in session.steps().iter().enumerate() {
+                            let (rect, _) =
+                                ui.allocate_exact_size(Vec2::splat(BUTTON), Sense::hover());
+                            // Include the index: some planned steps share an icon.
+                            ui.push_id(index, |ui| {
+                                if tool_button(
+                                    ui,
+                                    rect,
+                                    step_icon(step.id),
+                                    workflow_panel::reachable(session, index),
+                                    next == Some(index),
+                                )
+                                .on_hover_text(step.id.title())
+                                .clicked()
+                                {
+                                    command = Some(Command::Step(StepAction::GoTo(index)));
+                                }
+                            });
+                        }
+                        if widgets::small_button(ui, "Measure", true, false).clicked() {
+                            command = Some(Command::Measure);
+                        }
+                    });
+                });
+        });
+    });
+    command
+}
+
+pub fn context_menu(
+    ui: &mut Ui,
+    session: &Session,
+    expert: bool,
+    has_jaw_scan: bool,
+    has_units: bool,
+) -> Option<Command> {
+    ui.set_min_width(230.0);
+    let mut command =
+        workflow_panel::navigation(ui, session, has_jaw_scan, has_units).map(Command::Step);
+    ui.separator();
+    if ui.button("Fit view").clicked() {
+        command = Some(Command::Fit);
+    }
+    if ui
+        .add_enabled(has_units, egui::Button::new("Fit current tooth"))
+        .clicked()
+    {
+        command = Some(Command::FitTooth);
+    }
+    if expert {
+        ui.separator();
+        for (index, step) in session.steps().iter().enumerate() {
+            if ui
+                .add_enabled(
+                    workflow_panel::reachable(session, index),
+                    egui::Button::new(step.id.title()),
+                )
+                .clicked()
+            {
+                command = Some(Command::Step(StepAction::GoTo(index)));
+            }
+        }
+        ui.separator();
+        if ui.button("Measure").clicked() {
+            command = Some(Command::Measure);
+        }
+    }
+    if command.is_some() {
+        ui.close();
+    }
+    command
 }
 
 /// Square icon button at `rect`.
@@ -787,8 +952,7 @@ mod tests {
         assert_eq!(next_label(&session), "Finish");
     }
 
-    /// Viewport of the default 1600 × 1000 window and of the smallest window (960 × 600 less the
-    /// workflow panel at its minimum width).
+    /// Also exercise narrow viewports so the toolbar remains usable in embedded layouts.
     fn viewports() -> [Rect; 2] {
         [
             Rect::from_min_size(pos2(0.0, 32.0), vec2(1300.0, 946.0)),
@@ -890,6 +1054,7 @@ mod tests {
                     upper_visible: None,
                     lower_visible: None,
                     active_tool: None,
+                    expert: false,
                 }
                 .show(ui, viewport);
                 picked = picked.or(command);
@@ -926,6 +1091,103 @@ mod tests {
             click(slot_centre(Slot::CaseSetup)),
             Some(Command::CaseSetup)
         );
+        assert_eq!(click(slot_centre(Slot::Mode)), Some(Command::ToggleExpert));
+    }
+
+    #[test]
+    fn right_click_opens_the_context_menu_but_a_camera_drag_does_not() {
+        for drag in [false, true] {
+            let ctx = egui::Context::default();
+            let screen = Rect::from_min_size(Pos2::ZERO, vec2(960.0, 600.0));
+            let start = screen.center();
+            let end = start + if drag { vec2(50.0, 0.0) } else { Vec2::ZERO };
+            let session = Session::for_case(&Case::new("test"));
+            let mut opened = false;
+            for events in [
+                vec![egui::Event::PointerMoved(start)],
+                vec![egui::Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Secondary,
+                    pressed: true,
+                    modifiers: Modifiers::NONE,
+                }],
+                vec![egui::Event::PointerMoved(end)],
+                vec![egui::Event::PointerButton {
+                    pos: end,
+                    button: egui::PointerButton::Secondary,
+                    pressed: false,
+                    modifiers: Modifiers::NONE,
+                }],
+            ] {
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(screen),
+                        events,
+                        ..Default::default()
+                    },
+                    |ui| {
+                        let response = ui.interact(
+                            screen,
+                            ui.scope_id().with("viewport"),
+                            Sense::click_and_drag(),
+                        );
+                        opened |= response
+                            .context_menu(|ui| {
+                                context_menu(ui, &session, false, false, false);
+                            })
+                            .is_some();
+                    },
+                );
+                output.textures_delta.clear();
+            }
+            assert_eq!(opened, !drag);
+        }
+    }
+
+    #[test]
+    fn expert_pin_toggles_without_clicking_the_viewport() {
+        let ctx = egui::Context::default();
+        let viewport = Rect::from_min_size(Pos2::ZERO, vec2(960.0, 600.0));
+        let pos = expert_rect(viewport).left_center() + vec2(20.0, 0.0);
+        let session = Session::for_case(&Case::new("test"));
+        let mut pinned = true;
+        let mut scene_clicked = false;
+        for events in [
+            vec![egui::Event::PointerMoved(pos)],
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            }],
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::NONE,
+            }],
+        ] {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(viewport),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    scene_clicked |= ui
+                        .interact(
+                            viewport,
+                            ui.scope_id().with("viewport"),
+                            Sense::click_and_drag(),
+                        )
+                        .clicked();
+                    expert_strip(ui, viewport, &session, &mut pinned);
+                },
+            );
+            output.textures_delta.clear();
+        }
+        assert!(!pinned);
+        assert!(!scene_clicked);
     }
 
     #[test]

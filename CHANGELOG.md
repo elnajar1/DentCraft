@@ -47,6 +47,12 @@ must be checked by a qualified dental professional before clinical use.
   opposite jaw when the view looks at it from behind.
 - **Case setup**: the tooth chart, material and scan roles open in their own screen, for a new
   case and from the toolbar, instead of taking the left side of the window.
+- **Floating wizard**: the current step and its tooth chips float over the full-width viewport.
+  Parameters scroll while Back, Skip and Next stay at the bottom; the header shows step n of m.
+- **Expert navigation**: the toolbar toggles a bottom strip of step icons and Measure. Hover at
+  the bottom edge to reveal it, or pin it open. The next unfinished step is highlighted and
+  navigation preserves workflow dependencies. Right-click the scene for navigation and framing;
+  Expert mode adds the reachable steps and Measure. Right-drag keeps its camera behavior.
 
 ### Safety
 

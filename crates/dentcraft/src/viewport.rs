@@ -143,6 +143,8 @@ impl egui_wgpu::CallbackTrait for SceneCallback {
 pub struct ViewportOutput {
     /// The camera was moved by hand.
     pub interacted: bool,
+    /// Reuse the scene's hit target for context menus; a right drag is not a click.
+    pub response: Option<egui::Response>,
 }
 
 /// What the viewport draws in one frame, besides the active tool's own drawing.
@@ -229,6 +231,7 @@ impl Viewport {
             ui.scope_id().with("viewport"),
             Sense::click_and_drag(),
         );
+        out.response = Some(response.clone());
         self.camera.aspect = rect.width().max(1.0) / rect.height().max(1.0);
         let min = Vec2::new(rect.left(), rect.top());
         let size = Vec2::new(rect.width(), rect.height());

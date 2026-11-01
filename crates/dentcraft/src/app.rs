@@ -193,8 +193,10 @@ pub struct DentCraftApp {
     session: Session,
     /// Last refusal from the workflow session, shown under the step card.
     workflow_error: Option<String>,
-    /// Height of the workflow step card last frame.
-    workflow_card_height: f32,
+    /// Show the Expert navigation strip alongside the current step's parameters.
+    expert_mode: bool,
+    /// Keep the Expert strip visible when the pointer leaves the bottom edge.
+    expert_pinned: bool,
     doc: Document,
     /// Undo and redo of the case's design.
     history: History,
@@ -317,7 +319,8 @@ impl DentCraftApp {
             theme,
             session: Session::for_case(&case),
             workflow_error: None,
-            workflow_card_height: 260.0,
+            expert_mode: false,
+            expert_pinned: false,
             doc: Document::untitled(&case),
             history: History::default(),
             confirm_discard: None,
@@ -1551,6 +1554,7 @@ impl DentCraftApp {
             upper_visible: objects::role_visible(&self.objects, ScanRole::Upper),
             lower_visible: objects::role_visible(&self.objects, ScanRole::Lower),
             active_tool: self.tools.active_name(),
+            expert: self.expert_mode,
         }
         .show(ui, rect);
         if let Some(command) = command {
@@ -1635,6 +1639,7 @@ impl DentCraftApp {
             }
             Command::Import => self.pick_files(),
             Command::CaseSetup => self.case_setup = true,
+            Command::ToggleExpert => self.expert_mode = !self.expert_mode,
             Command::Step(action) => self.apply_step_action(action),
             Command::View(preset) => self.viewport.go_to(preset, self.bounds().as_ref()),
             Command::Fit => self.viewport.fit(self.bounds().as_ref()),
@@ -1974,7 +1979,7 @@ impl DentCraftApp {
         }
     }
 
-    fn workflow_panel(&mut self, ui: &mut egui::Ui) {
+    fn workflow_panel(&mut self, ui: &mut egui::Ui, viewport: egui::Rect) {
         let has_jaw_scan = self.has_jaw_scan();
         let occlusal = self.occlusal(self.tooth);
         let steps = self.session.steps();
@@ -1993,8 +1998,6 @@ impl DentCraftApp {
             case: &self.case,
             has_jaw_scan,
             error: self.workflow_error.as_deref(),
-            card_height: &mut self.workflow_card_height,
-            sections: &mut self.sections,
             tooth: self.tooth,
             margin: self.tooth.map(|t| self.margin.card(t)),
             orient: Some(self.orient.card(self.case.design.jaw_frame.is_some())),
@@ -2028,7 +2031,7 @@ impl DentCraftApp {
             }),
             export,
         }
-        .show(ui);
+        .show(ui, viewport);
         if let Some(action) = action {
             self.apply_step_action(action);
         }
@@ -2356,6 +2359,28 @@ impl DentCraftApp {
             );
         }
         self.toolbar(ui, rect);
+        self.workflow_panel(ui, rect);
+        if self.expert_mode
+            && let Some(command) =
+                toolbar::expert_strip(ui, rect, &self.session, &mut self.expert_pinned)
+        {
+            self.run(command);
+        }
+        if let Some(response) = out.response {
+            let mut command = None;
+            response.context_menu(|ui| {
+                command = toolbar::context_menu(
+                    ui,
+                    &self.session,
+                    self.expert_mode,
+                    self.has_jaw_scan(),
+                    !self.case.units.is_empty(),
+                );
+            });
+            if let Some(command) = command {
+                self.run(command);
+            }
+        }
         self.show_toasts(ui, rect);
     }
 
@@ -2731,11 +2756,6 @@ impl eframe::App for DentCraftApp {
             .frame(bar(Margin::symmetric(10, 0)).fill(p.panel_header))
             .exact_size(22.0)
             .show(ui, |ui| self.status_bar(ui, frame));
-        egui::Panel::right("workflow_panel")
-            .frame(bar(Margin::ZERO))
-            .default_size(300.0)
-            .min_size(280.0)
-            .show(ui, |ui| self.workflow_panel(ui));
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ui, |ui| self.central(ui));

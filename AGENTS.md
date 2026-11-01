@@ -91,15 +91,17 @@ never bundled; proprietary library formats (such as `.eoff`/`.xml` library files
 Done on main: real-scan margins, inner surface and crowns (full arch 17/24, plaster model 4/4,
 bridge case 1/2, canine demo); floating toolbar, view cluster, Objects panel with design parts and
 opposite-jaw auto-hide, Case setup modal; the user's tooth library with set-up import and
-parametric fallback. 0.2.1 is not published: it waits for the owner's approval.
+parametric fallback; floating current-step wizard with fixed navigation, Expert reveal/pin strip
+and a scene context menu that respects workflow prerequisites. 0.2.1 is not published: it waits
+for the owner's approval.
 
 Next, in order:
 
-1. **Layout slice 3**: replace the docked right `workflow_panel` (`App::ui` in `app.rs`,
-   `workflow_panel.rs`) with a floating wizard panel (current step only, Back/Next fixed at the
-   bottom, "step n of m"), an Expert strip that slides up from the bottom edge (step icons, next
-   step in the accent colour, a pin) and a right-click context menu. Follow the fixed-rect layout
-   and click blocking in `toolbar.rs`. See docs/layout.md, items 4 and 5.
+1. **Layout slice 3 follow-up**: the floating wizard, Expert strip and scene menu are in place.
+   Add viewport object selection (Ctrl for several) and actions scoped to that selection; the
+   current menu uses the active workflow tooth. Wizard parameter changes still use the existing
+   per-tooth behavior; add an explicit, undoable way to apply them to the step's teeth. Preserve
+   fixed-rect click blocking and workflow prerequisites. See docs/layout.md, items 4 and 5.
 2. **Tooth 35 with the library hangs** in `build_crown` (`crates/dentcraft-design/src/crown.rs`)
    past 180 s; 45 is its mirror and works. Find the non-terminating loop; add a bound.
 3. **Library teeth 13, 16, 33 fall back** to parametric ("folds or intersects"): make the fit

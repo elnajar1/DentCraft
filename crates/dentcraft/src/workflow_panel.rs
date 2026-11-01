@@ -1,15 +1,14 @@
-//! The guided workflow panel: progress, the planned steps and the active step's card.
+//! The floating current-step wizard, with scrolling parameters and fixed navigation.
 
 use dentcraft_case::{Case, Fdi};
 use dentcraft_workflow::{Session, StepId, StepStatus};
 use eframe::egui::{
-    self, Align, Align2, Color32, CornerRadius, CursorIcon, FontId, Layout, Margin, Rect, RichText,
-    Sense, Shape, Stroke, Ui, Vec2, vec2,
+    self, Align, CornerRadius, CursorIcon, FontId, Layout, Margin, Rect, RichText, Sense, Stroke,
+    Ui, Vec2, vec2,
 };
 
 use crate::anatomy_step::{AnatomyParam, NUDGE_MM};
 use crate::app::group_thousands;
-use crate::browser::{self, Section, Sections};
 use crate::chart::{ON_FILL, kind_color};
 use crate::contacts_step::{
     ContactParam, ContactsCard, MAP_MAX_MM, MAP_MIN_MM, NO_ANTAGONIST, THIN_WARNING, distance_color,
@@ -186,8 +185,7 @@ pub const MANUAL_HINT: &str = "Click 4\u{2013}8 points along the finish line aro
 pub const MARGIN_HINT: &str = "Click the top of the preparation";
 
 /// Call to action shown while the case has no restoration.
-pub const ADD_RESTORATION: &str =
-    "Add a restoration: click a tooth in the chart on the left, then choose the restoration type.";
+pub const ADD_RESTORATION: &str = "Add a restoration in Case setup from the toolbar.";
 
 /// Why the active step cannot be completed yet: the Scans step needs a jaw scan and a
 /// restoration to design.
@@ -208,9 +206,6 @@ pub struct WorkflowView<'a> {
     pub case: &'a Case,
     pub has_jaw_scan: bool,
     pub error: Option<&'a str>,
-    /// Height of the step section last frame, so the step list leaves room for it.
-    pub card_height: &'a mut f32,
-    pub sections: &'a mut Sections,
     /// Tooth the per-tooth step works on.
     pub tooth: Option<Fdi>,
     /// The Margin step's card, when that step is active.
@@ -229,91 +224,110 @@ pub struct WorkflowView<'a> {
     pub export: Option<ExportCard>,
 }
 
+/// Fixed rectangles keep scrolling content from moving navigation or leaking clicks.
+pub fn wizard_rect(viewport: Rect) -> Rect {
+    let top = viewport.top() + crate::toolbar::INSET + crate::toolbar::HEIGHT + 10.0;
+    Rect::from_min_max(
+        egui::pos2(viewport.right() - 320.0, top),
+        egui::pos2(viewport.right() - 10.0, viewport.bottom() - 64.0),
+    )
+}
+
 impl WorkflowView<'_> {
-    pub fn show(self, ui: &mut Ui) -> Option<StepAction> {
+    pub fn show(self, ui: &mut Ui, viewport: Rect) -> Option<StepAction> {
+        let panel = wizard_rect(viewport);
+        crate::toolbar::floating_panel(ui, panel, ui.scope_id().with("wizard_panel"));
         let p = widgets::palette(ui);
-        let session = self.session;
+        let content = panel.shrink(12.0);
         let mut action = None;
-        let (done, total) = session.progress();
-        ui.spacing_mut().item_spacing.y = 0.0;
-
-        browser::header(
-            ui,
-            Section::Workflow,
-            self.sections.open_mut(Section::Workflow),
-            |ui| {
-                ui.label(
-                    RichText::new(format!("{done} of {total} steps"))
-                        .size(SIZE_SMALL)
-                        .color(p.text_dim),
-                );
-            },
-        );
-        if self.sections.is_open(Section::Workflow) {
-            let step_open = self.sections.is_open(Section::Step);
-            let card_height = *self.card_height;
-            browser::body(ui, |ui| {
-                progress_bar(ui, done as f32 / total.max(1) as f32, &p);
-                ui.add_space(4.0);
-                // Leave room for the step section under the list.
-                let reserve = if step_open {
-                    card_height
-                } else {
-                    browser::HEADER_HEIGHT + 1.0
-                };
-                let list_height =
-                    (ui.available_height() - reserve - f32::from(browser::BODY_MARGIN.bottom))
-                        .max(80.0);
-                egui::ScrollArea::vertical()
-                    .max_height(list_height)
-                    .auto_shrink([false, true])
-                    .show(ui, |ui| {
-                        ui.spacing_mut().item_spacing.y = 2.0;
-                        for (index, step) in session.steps().iter().enumerate() {
-                            if let Some(a) = step_row(
-                                ui,
-                                index,
-                                step.id,
-                                &step.teeth,
-                                session.status(index),
-                                self.case,
-                                self.tooth,
-                                &p,
-                            ) {
-                                action = Some(a);
-                            }
-                        }
-                    });
-            });
-        }
-
-        let top = ui.cursor().top();
-        let current = session.current().map(|s| (session.current_index(), s));
-        browser::header(
-            ui,
-            Section::Step,
-            self.sections.open_mut(Section::Step),
-            |ui| {
-                let text = match current {
-                    Some((index, _)) => format!("{} of {total}", index + 1),
-                    None => "Done".to_owned(),
-                };
-                ui.label(RichText::new(text).size(SIZE_SMALL).color(p.text_dim));
-            },
-        );
-        if self.sections.is_open(Section::Step) {
-            browser::body(ui, |ui| match current {
-                Some((index, step)) => {
-                    if let Some(a) = active_card(ui, &self, index, step.id, &step.teeth, &p) {
-                        action = Some(a);
+        ui.scope_builder(egui::UiBuilder::new().max_rect(content), |ui| {
+            ui.set_clip_rect(content);
+            let (done, total) = self.session.progress();
+            let label = if self.session.is_finished() {
+                format!("{total} of {total} steps complete")
+            } else {
+                format!("Step {} of {total}", self.session.current_index() + 1)
+            };
+            ui.label(RichText::new(label).size(SIZE_SMALL).color(p.text_dim));
+            progress_bar(ui, done as f32 / total.max(1) as f32, &p);
+            ui.add_space(8.0);
+            let body_height = (content.bottom() - 42.0 - ui.cursor().top()).max(1.0);
+            egui::ScrollArea::vertical()
+                .id_salt("wizard_body")
+                .max_height(body_height)
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    if let Some(step) = self.session.current() {
+                        action = active_card(
+                            ui,
+                            &self,
+                            self.session.current_index(),
+                            step.id,
+                            &step.teeth,
+                            &p,
+                        );
+                    } else {
+                        finished_card(ui, total, &p);
                     }
-                }
-                None => finished_card(ui, total, &p),
-            });
-        }
-        *self.card_height = ui.cursor().top() - top;
+                });
+        });
+        let footer = Rect::from_min_max(
+            egui::pos2(content.left(), content.bottom() - 32.0),
+            content.max,
+        );
+        ui.scope_builder(egui::UiBuilder::new().max_rect(footer), |ui| {
+            ui.set_clip_rect(footer);
+            if let Some(a) = navigation(
+                ui,
+                self.session,
+                self.has_jaw_scan,
+                !self.case.units.is_empty(),
+            ) {
+                action = Some(a);
+            }
+        });
         action
     }
+}
+
+/// Shared by the wizard and context menu so both obey the same workflow gates.
+pub fn navigation(
+    ui: &mut Ui,
+    session: &Session,
+    has_jaw_scan: bool,
+    has_units: bool,
+) -> Option<StepAction> {
+    let mut action = None;
+    ui.horizontal(|ui| {
+        if small_button(ui, "Back", session.current_index() > 0, false).clicked() {
+            action = Some(StepAction::Back);
+        }
+        let step = session.current();
+        if step.is_some_and(|s| s.id.is_optional())
+            && small_button(ui, "Skip", true, false).clicked()
+        {
+            action = Some(StepAction::Skip);
+        }
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let why = step.and_then(|s| blocker(s.id, has_jaw_scan, has_units));
+            if small_button(
+                ui,
+                crate::toolbar::next_label(session),
+                step.is_some() && why.is_none(),
+                true,
+            )
+            .on_disabled_hover_text(why.unwrap_or("Every step is done"))
+            .clicked()
+            {
+                action = Some(StepAction::Next);
+            }
+        });
+    });
+    action
+}
+
+pub fn reachable(session: &Session, index: usize) -> bool {
+    session.status(index) == StepStatus::Active || session.clone().go_to(index).is_ok()
 }
 
 fn progress_bar(ui: &mut Ui, fraction: f32, p: &Palette) {
@@ -340,7 +354,14 @@ struct ChipMark {
 
 /// Whether the step has per-tooth tools, so its chips pick the tooth to work on.
 fn has_tooth_tools(id: StepId) -> bool {
-    matches!(id, StepId::Margin | StepId::InsertionAxis)
+    matches!(
+        id,
+        StepId::Margin
+            | StepId::InsertionAxis
+            | StepId::InnerSurface
+            | StepId::Anatomy
+            | StepId::Occlusion
+    )
 }
 
 fn chip_mark(
@@ -362,158 +383,12 @@ fn chip_mark(
     }
 }
 
-/// One step of the plan. Returns the user's click: a finished step to re-open it, or a tooth.
-#[allow(clippy::too_many_arguments)]
-fn step_row(
-    ui: &mut Ui,
-    index: usize,
-    id: StepId,
-    teeth: &[Fdi],
-    status: StepStatus,
-    case: &Case,
-    current: Option<Fdi>,
-    p: &Palette,
-) -> Option<StepAction> {
-    let reopenable = matches!(status, StepStatus::Done | StepStatus::Skipped);
-    let mut picked = None;
-    let mut chip = |ui: &mut Ui, tooth: Fdi| {
-        let mark = chip_mark(id, status, tooth, case, current);
-        if tooth_chip(ui, tooth, case, mark, p) {
-            picked = Some(StepAction::Tooth(index, tooth));
-        }
-    };
-    let background = ui.painter().add(Shape::Noop);
-    let inner = egui::Frame::new()
-        .inner_margin(Margin::symmetric(6, 4))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            let title = RichText::new(id.title());
-            let title = match status {
-                StepStatus::Active => title.color(p.text).strong(),
-                StepStatus::Done => title.color(p.text),
-                StepStatus::Skipped | StepStatus::Pending => title.color(p.text_dim),
-            };
-            // Chips sit beside the title when they fit, and on their own line otherwise.
-            let title_width = egui::WidgetText::from(title.clone())
-                .into_galley(
-                    ui,
-                    Some(egui::TextWrapMode::Extend),
-                    f32::INFINITY,
-                    egui::TextStyle::Body,
-                )
-                .size()
-                .x;
-            let chips_width: f32 = teeth
-                .iter()
-                .map(|t| chip_width(ui, *t, chip_mark(id, status, *t, case, current)) + 4.0)
-                .sum();
-            let inline = 20.0 + 8.0 + title_width + 12.0 + chips_width <= ui.available_width();
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
-                status_icon(ui, index, status, p);
-                ui.label(title);
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let tag = match status {
-                        StepStatus::Skipped => Some("skipped"),
-                        _ if id.is_optional() && teeth.is_empty() => Some("optional"),
-                        _ => None,
-                    };
-                    if let Some(tag) = tag {
-                        ui.label(RichText::new(tag).size(SIZE_SMALL - 1.0).color(p.text_dim));
-                    }
-                    if inline {
-                        ui.spacing_mut().item_spacing.x = 4.0;
-                        for &tooth in teeth.iter().rev() {
-                            chip(ui, tooth);
-                        }
-                    }
-                });
-            });
-            if !inline && !teeth.is_empty() {
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
-                    ui.add_space(26.0);
-                    for &tooth in teeth {
-                        chip(ui, tooth);
-                    }
-                });
-            }
-        });
-    if picked.is_some() {
-        return picked;
-    }
-    let rect = inner.response.rect;
-    let sense = if reopenable {
-        Sense::click()
-    } else {
-        Sense::hover()
-    };
-    let response = ui.interact(rect, ui.scope_id().with(("step", index)), sense);
-    let fill = if status == StepStatus::Active {
-        p.panel_header
-    } else if reopenable && response.hovered() {
-        p.hover
-    } else {
-        Color32::TRANSPARENT
-    };
-    ui.painter().set(
-        background,
-        Shape::rect_filled(rect, CornerRadius::same(8), fill),
-    );
-    let reopen = reopenable
-        && response
-            .on_hover_cursor(CursorIcon::PointingHand)
-            .on_hover_text("Re-open this step")
-            .clicked();
-    reopen.then_some(StepAction::GoTo(index))
-}
-
-fn status_icon(ui: &mut Ui, index: usize, status: StepStatus, p: &Palette) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::splat(20.0), Sense::hover());
-    let c = rect.center();
-    let painter = ui.painter();
-    match status {
-        StepStatus::Done => {
-            painter.circle_filled(c, 10.0, p.accent.gamma_multiply(0.22));
-            paint_icon(painter, Icon::Check, rect.shrink(5.0), p.accent);
-        }
-        StepStatus::Skipped => {
-            painter.circle_stroke(c, 9.5, Stroke::new(1.0, p.border));
-            painter.line_segment(
-                [c + vec2(-4.0, 0.0), c + vec2(4.0, 0.0)],
-                Stroke::new(1.6, p.text_dim),
-            );
-        }
-        StepStatus::Active => {
-            painter.circle_stroke(c, 9.0, Stroke::new(1.5, p.accent));
-            painter.circle_filled(c, 4.5, p.accent);
-        }
-        StepStatus::Pending => {
-            painter.circle_stroke(c, 9.5, Stroke::new(1.0, p.border));
-            painter.text(
-                c,
-                Align2::CENTER_CENTER,
-                (index + 1).to_string(),
-                FontId::proportional(SIZE_SMALL - 1.0),
-                p.text_dim,
-            );
-        }
-    }
-}
-
 fn chip_font() -> FontId {
     FontId::proportional(SIZE_SMALL - 1.0)
 }
 
 /// Room for the tick of a done chip.
 const CHIP_TICK: f32 = 10.0;
-
-fn chip_width(ui: &Ui, tooth: Fdi, mark: ChipMark) -> f32 {
-    let galley = ui
-        .painter()
-        .layout_no_wrap(tooth.to_string(), chip_font(), Color32::WHITE);
-    galley.size().x + 12.0 + if mark.done { CHIP_TICK } else { 0.0 }
-}
 
 /// A small chip with a tooth number, tinted with its restoration colour, ringed when it is the
 /// current tooth and ticked when its work is done. Returns true when a clickable chip was clicked.
@@ -568,7 +443,6 @@ fn active_card(
     p: &Palette,
 ) -> Option<StepAction> {
     let session = view.session;
-    let total = session.steps().len();
     let mut action = None;
     ui.horizontal(|ui| {
         ui.label(RichText::new(id.title()).heading().color(p.text));
@@ -595,8 +469,6 @@ fn active_card(
     }
     ui.add_space(4.0);
     let has_units = !view.case.units.is_empty();
-    let blocker = blocker(id, view.has_jaw_scan, has_units);
-    let ready = blocker.is_none();
     if !has_units {
         ui.label(RichText::new(ADD_RESTORATION).color(p.accent).strong());
         ui.add_space(4.0);
@@ -675,34 +547,6 @@ fn active_card(
                 .italics(),
         );
     }
-    ui.add_space(6.0);
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 6.0;
-        if small_button(ui, "Back", index > 0, false)
-            .on_hover_text("Re-open the previous step")
-            .clicked()
-        {
-            action = Some(StepAction::Back);
-        }
-        if id.is_optional()
-            && small_button(ui, "Skip", true, false)
-                .on_hover_text("Leave this step out")
-                .clicked()
-        {
-            action = Some(StepAction::Skip);
-        }
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let last = session.progress().0 + 1 == total;
-            let label = if last { "Finish" } else { "Next" };
-            let next = small_button(ui, label, ready, true);
-            if next
-                .on_disabled_hover_text(blocker.unwrap_or(NEEDS_JAW_SCAN))
-                .clicked()
-            {
-                action = Some(StepAction::Next);
-            }
-        });
-    });
     action
 }
 
@@ -1516,7 +1360,7 @@ fn finished_card(ui: &mut Ui, total: usize, p: &Palette) {
     });
     ui.label(
         RichText::new(format!(
-            "All {total} steps are done or skipped. Click a step to revisit it."
+            "All {total} steps are done or skipped. Use Expert mode to revisit a step."
         ))
         .color(p.text_dim),
     );
@@ -1525,6 +1369,117 @@ fn finished_card(ui: &mut Ui, total: usize, p: &Palette) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wizard_and_expert_fit_small_and_large_windows() {
+        for size in [vec2(960.0, 546.0), vec2(1600.0, 946.0)] {
+            let viewport = Rect::from_min_size(egui::pos2(0.0, 32.0), size);
+            let wizard = wizard_rect(viewport);
+            let expert = crate::toolbar::expert_rect(viewport);
+            let toolbar = crate::toolbar::toolbar_layout(viewport).0;
+            let views = crate::toolbar::view_cluster_layout(viewport).0;
+            for panel in [wizard, expert] {
+                assert!(viewport.contains_rect(panel));
+                assert!(!panel.intersects(toolbar));
+                assert!(!panel.intersects(views));
+                assert!(!panel.intersects(crate::viewport::gizmo_rect(viewport)));
+            }
+            assert!(!wizard.intersects(expert));
+        }
+    }
+
+    #[test]
+    fn expert_navigation_preserves_step_dependencies_after_going_back() {
+        let mut case = Case::new("test");
+        case.set_unit(
+            Fdi::new(16).unwrap(),
+            dentcraft_case::RestorationKind::Crown,
+        );
+        let mut session = Session::for_case(&case);
+        assert!(reachable(&session, 0));
+        assert!(!reachable(&session, 1));
+        session.complete().unwrap();
+        session.complete().unwrap();
+        session.back().unwrap();
+        assert!(reachable(&session, 0));
+        assert!(reachable(&session, 1));
+        assert!(!reachable(&session, 2));
+        session.complete().unwrap();
+        assert!(reachable(&session, 2));
+        assert!(!reachable(&session, 3));
+    }
+
+    #[test]
+    fn long_step_content_keeps_navigation_clickable_and_blocks_the_scene() {
+        let viewport = Rect::from_min_size(egui::pos2(0.0, 32.0), vec2(960.0, 546.0));
+        let panel = wizard_rect(viewport);
+        for (pos, expect_next, expect_scene) in [
+            (panel.right_bottom() - vec2(35.0, 29.0), true, false),
+            (panel.left_top() + vec2(3.0, 3.0), false, false),
+            (viewport.center() - vec2(100.0, 0.0), false, true),
+        ] {
+            let ctx = egui::Context::default();
+            let mut case = Case::new("test");
+            case.set_unit(
+                Fdi::new(16).unwrap(),
+                dentcraft_case::RestorationKind::Crown,
+            );
+            let session = Session::for_case(&case);
+            let error = "A long step message that must scroll. ".repeat(100);
+            let mut action = None;
+            let mut scene_clicked = false;
+            for events in [
+                vec![egui::Event::PointerMoved(pos)],
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            ] {
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(viewport),
+                        events,
+                        ..Default::default()
+                    },
+                    |ui| {
+                        scene_clicked |= ui
+                            .interact(
+                                viewport,
+                                ui.scope_id().with("scene"),
+                                Sense::click_and_drag(),
+                            )
+                            .clicked();
+                        action = action.or(WorkflowView {
+                            session: &session,
+                            case: &case,
+                            has_jaw_scan: true,
+                            error: Some(&error),
+                            tooth: None,
+                            margin: None,
+                            orient: None,
+                            axis: None,
+                            inner: None,
+                            anatomy: None,
+                            contacts: None,
+                            export: None,
+                        }
+                        .show(ui, viewport));
+                    },
+                );
+                output.textures_delta.clear();
+            }
+            assert_eq!(action == Some(StepAction::Next), expect_next);
+            assert_eq!(scene_clicked, expect_scene);
+        }
+    }
 
     #[test]
     fn only_the_scans_step_needs_a_jaw_scan() {

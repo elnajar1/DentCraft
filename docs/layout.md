@@ -40,7 +40,16 @@ and can drop into an expert mode for per-tooth control.
    material, scans and their roles. It opens for a new case, for a case with no units, and from
    the toolbar. The design screen does not keep the tooth chart on screen all the time.
 
-## Mouse (as exocad users expect)
+## Implementation status
+
+The floating current-step wizard, fixed footer, Expert reveal/pin strip and scene context menu
+are implemented. The strip and menu use the existing session's reachable steps; they do not
+bypass prerequisites. Tooth chips also select the working tooth in Inner surface, Anatomy and
+Occlusion. Object selection with Ctrl and actions scoped to that selection remain follow-up work;
+the current scene menu acts on the active workflow tooth. Wizard parameter edits still use the
+existing per-tooth behavior; applying a change to all teeth of a step is also follow-up work.
+
+## Mouse (target behavior)
 
 Right drag rotates about the rotation centre, wheel zooms at the pointer, both buttons drag to
 pan (arrow keys too), middle click sets the rotation centre and centres the view.
