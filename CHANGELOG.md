@@ -27,6 +27,17 @@ must be checked by a qualified dental professional before clinical use.
 - **Preparation region**: found on scans with holes, loose sheets, non-manifold edges and fused
   contacts; an implausible region (a loose flap, part of a neighbour) is rejected instead of used.
 
+### Tooth libraries
+
+- **Your own tooth library**: `--tooth-library <folder>` (or `DENTCRAFT_TOOTH_LIBRARY`) designs
+  crowns from a folder of STL teeth with a `library.json`; the Anatomy step names the library in
+  use. Teeth the library lacks use DentCraft's parametric tooth, and so does a library tooth the
+  fit cannot follow on a preparation, with a note saying so.
+- **Import a set-up**: `dentcraft-cli library from-setup <stl> <folder>` turns an STL of separate
+  library crowns set up in both arches into such a folder, numbering each tooth by its place in
+  the arch. Library crowns keep their own surface; spots the crown fit cannot follow are smoothed
+  locally (at most 0.3 mm on the test library).
+
 ### Interface
 
 - **Viewport-first layout**: the ribbon is gone. A floating toolbar at the top left holds the file
