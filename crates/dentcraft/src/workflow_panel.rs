@@ -27,6 +27,8 @@ pub const NEEDS_JAW_SCAN: &str = "Import an upper or lower jaw scan to continue.
 /// What the user asked the session to do.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum StepAction {
+    /// Copy current step parameters, with one undo, to its other or selected teeth.
+    ApplyParameters(crate::step_parameters::Scope),
     Next,
     Back,
     Skip,
@@ -538,6 +540,26 @@ fn active_card(
             NOT_YET_NOTE
         };
         note_box(ui, note, p);
+    }
+    let targets = crate::step_parameters::targets(view.case, session, view.tooth, None);
+    if !targets.is_empty() {
+        ui.add_space(6.0);
+        if small_button(
+            ui,
+            &format!("Apply to {} other teeth", targets.len()),
+            true,
+            false,
+        )
+        .on_hover_text(format!(
+                "Copy {} from the current tooth, then review changed teeth with Next. Undo reverts the whole group.",
+            crate::step_parameters::label(id).unwrap_or("settings")
+        ))
+        .clicked()
+        {
+            action = Some(StepAction::ApplyParameters(
+                crate::step_parameters::Scope::Step,
+            ));
+        }
     }
     if let Some(error) = view.error {
         ui.label(

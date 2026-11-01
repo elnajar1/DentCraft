@@ -92,25 +92,21 @@ Done on main: real-scan margins, inner surface and crowns (full arch 17/24, plas
 bridge case 1/2, canine demo); floating toolbar, view cluster, Objects panel with design parts and
 opposite-jaw auto-hide, Case setup modal; the user's tooth library with set-up import and
 parametric fallback; floating current-step wizard with fixed navigation, Expert reveal/pin strip
-and a scene context menu that respects workflow prerequisites. 0.2.1 is not published: it waits
-for the owner's approval.
+and a scene context menu that respects workflow prerequisites; Expert object multi-selection with
+scoped actions, and undoable copying of step settings to other/selected teeth while preserving
+placement. 0.2.1 is not published: it waits for the owner's approval.
 
 Next, in order:
 
-1. **Layout slice 3 follow-up**: the floating wizard, Expert strip and scene menu are in place.
-   Add viewport object selection (Ctrl for several) and actions scoped to that selection; the
-   current menu uses the active workflow tooth. Wizard parameter changes still use the existing
-   per-tooth behavior; add an explicit, undoable way to apply them to the step's teeth. Preserve
-   fixed-rect click blocking and workflow prerequisites. See docs/layout.md, items 4 and 5.
-2. **Tooth 35 with the library hangs** in `build_crown` (`crates/dentcraft-design/src/crown.rs`)
+1. **Tooth 35 with the library hangs** in `build_crown` (`crates/dentcraft-design/src/crown.rs`)
    past 180 s; 45 is its mirror and works. Find the non-terminating loop; add a bound.
-3. **Library teeth 13, 16, 33 fall back** to parametric ("folds or intersects"): make the fit
+2. **Library teeth 13, 16, 33 fall back** to parametric ("folds or intersects"): make the fit
    follow them (`anatomy_step.rs::fit`, `user_library.rs::repair_radial`).
-4. **Parametric failures on real cases**: 11/21, 11/24, 03/37 offset edge inversion in
+3. **Parametric failures on real cases**: 11/21, 11/24, 03/37 offset edge inversion in
    `offset_margin` (drop inverted offset edges, intersect the neighbours' offset lines, report the
    azimuth); 11/44 placed template not radially single-valued; 11/46 margin not star-shaped about
    the vertex centroid (try the area centroid); 11/26 and 01/16 margin detection.
-5. Roadmap 0.3: quality checks before export, then the design report (see ROADMAP.md).
+4. Roadmap 0.3: quality checks before export, then the design report (see ROADMAP.md).
 
 Commit each verified change on a branch with a clear message; merge to main only when the
 verification command is green, and leave publishing a release to the owner.

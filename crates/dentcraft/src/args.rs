@@ -150,6 +150,8 @@ impl From<ThemeArg> for ThemeKind {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum OpenArg {
+    /// Expert mode with the bottom strip pinned open.
+    ExpertStrip,
     /// The workspace list under the switcher at the left end of the toolbar.
     WorkspaceMenu,
     /// The case setup screen: teeth chart, material and scans.

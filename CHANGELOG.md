@@ -53,6 +53,15 @@ must be checked by a qualified dental professional before clinical use.
   the bottom edge to reveal it, or pin it open. The next unfinished step is highlighted and
   navigation preserves workflow dependencies. Right-click the scene for navigation and framing;
   Expert mode adds the reachable steps and Measure. Right-drag keeps its camera behavior.
+- **Object selection in Expert mode**: click a visible scan or design part; Ctrl-click adds or
+  removes it without drawing with the active tool. Selected objects have outlines and share Fit,
+  Hide and Clear actions in the strip and context menu. Editing a selected tooth still respects
+  workflow prerequisites. Background context menus preserve the selection.
+- **Apply settings to teeth**: copy the current tooth's inner-surface settings, anatomy shape or
+  contact targets to the other teeth in the step, or just the selected teeth. One Undo reverses
+  the whole operation. Each tooth keeps its margin, insertion axis, crown position and rotation.
+  Copying opens the first changed tooth so Next reviews affected teeth in workflow order.
+- `--open expert-strip` starts Expert mode with its strip pinned for repeatable layout checks.
 
 ### Safety
 

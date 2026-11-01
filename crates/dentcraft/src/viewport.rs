@@ -145,10 +145,12 @@ pub struct ViewportOutput {
     pub interacted: bool,
     /// Reuse the scene's hit target for context menus; a right drag is not a click.
     pub response: Option<egui::Response>,
+    pub selection: Option<crate::selection::Click>,
 }
 
 /// What the viewport draws in one frame, besides the active tool's own drawing.
 pub struct Scene<'a> {
+    pub select_objects: bool,
     /// The scans, drawn and picked.
     pub objects: &'a [SceneObject],
     /// What a double click frames.
@@ -219,6 +221,7 @@ impl Viewport {
         tools: &mut Tools,
     ) -> ViewportOutput {
         let Scene {
+            select_objects,
             objects,
             bounds,
             mut options,
@@ -236,13 +239,16 @@ impl Viewport {
         let min = Vec2::new(rect.left(), rect.top());
         let size = Vec2::new(rect.width(), rect.height());
         let px = |p: Pos2| Vec2::new(p.x, p.y);
+        let additive = select_objects && ui.input(|i| i.modifiers.ctrl);
+        let selecting = select_objects && (additive || !tools.picks_surface());
 
         // A primary drag that starts on a tool handle moves the handle instead of orbiting.
         let handles = tools.handles();
         let handle_at = |camera: &Camera, p: Pos2| {
             tools::pick_handle(camera, min, size, &handles, px(p), HANDLE_RADIUS)
         };
-        if response.drag_started_by(PointerButton::Primary)
+        if !additive
+            && response.drag_started_by(PointerButton::Primary)
             && let Some(origin) = ui.input(|i| i.pointer.press_origin())
             && let Some(handle) = handle_at(&self.camera, origin)
         {
@@ -326,6 +332,7 @@ impl Viewport {
                 ray: None,
             });
         } else if !handle_drag
+            && !selecting
             && response.clicked_by(PointerButton::Primary)
             && let Some(p) = response.interact_pointer_pos()
         {
@@ -333,6 +340,20 @@ impl Viewport {
             let hit = tools::surface_hit(objects, &self.camera, pixel, min, size);
             let ray = Some(ray_at(&self.camera, pixel, min, size));
             tools.click(&Pointer { pixel, hit, ray });
+        }
+
+        let context = response.clicked_by(PointerButton::Secondary);
+        if !handle_drag
+            && select_objects
+            && (context || (selecting && response.clicked_by(PointerButton::Primary)))
+            && let Some(pixel) = response.interact_pointer_pos()
+        {
+            out.selection = Some(crate::selection::Click {
+                pixel,
+                ray: ray_at(&self.camera, px(pixel), min, size),
+                additive,
+                context,
+            });
         }
 
         // Cursor: a hand over handles, a crosshair while a tool picks surfaces.
@@ -499,4 +520,127 @@ fn paint_axis_gizmo(ui: &Ui, rect: Rect, camera: &Camera) {
 fn ray_at(camera: &Camera, pixel: Vec2, min: Vec2, size: Vec2) -> (DVec3, DVec3) {
     let (origin, dir) = camera.pixel_ray(pixel, min, size);
     (origin.as_dvec3(), dir.as_dvec3())
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+    use std::{cell::Cell, rc::Rc};
+
+    struct DrawingTool(Rc<Cell<usize>>);
+    impl crate::tools::Tool for DrawingTool {
+        fn name(&self) -> &'static str {
+            "test drawing"
+        }
+        fn click(&mut self, _: &Pointer) {
+            self.0.set(self.0.get() + 1);
+        }
+    }
+
+    fn interaction(
+        expert: bool,
+        ctrl: bool,
+        button: PointerButton,
+        drag: bool,
+        overlay: bool,
+    ) -> (usize, usize) {
+        let ctx = egui::Context::default();
+        let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(960.0, 600.0));
+        let start = rect.center();
+        let end = start
+            + if drag {
+                egui::vec2(40.0, 0.0)
+            } else {
+                egui::Vec2::ZERO
+            };
+        let modifiers = egui::Modifiers {
+            ctrl,
+            ..Default::default()
+        };
+        let clicks = Rc::new(Cell::new(0));
+        let mut tools = Tools::default();
+        tools.activate(Box::new(DrawingTool(clicks.clone())));
+        let mut view = Viewport::new(false, ViewPreset::Occlusal);
+        let mut selections = 0;
+        for events in [
+            vec![
+                egui::Event::ModifiersChanged(modifiers),
+                egui::Event::PointerMoved(start),
+            ],
+            vec![egui::Event::PointerButton {
+                pos: start,
+                button,
+                pressed: true,
+                modifiers,
+            }],
+            vec![egui::Event::PointerMoved(end)],
+            vec![egui::Event::PointerButton {
+                pos: end,
+                button,
+                pressed: false,
+                modifiers,
+            }],
+        ] {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(rect),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    let out = view.show(
+                        ui,
+                        rect,
+                        Scene {
+                            select_objects: expert,
+                            objects: &[],
+                            bounds: None,
+                            options: RenderOptions::default(),
+                            parts: vec![],
+                            lines: vec![],
+                        },
+                        &mut tools,
+                    );
+                    selections += usize::from(out.selection.is_some());
+                    if overlay {
+                        crate::toolbar::floating_panel(
+                            ui,
+                            Rect::from_center_size(start, egui::vec2(120.0, 120.0)),
+                            ui.scope_id().with("test_overlay"),
+                        );
+                    }
+                },
+            );
+            output.textures_delta.clear();
+        }
+        (clicks.get(), selections)
+    }
+
+    #[test]
+    fn ctrl_selection_does_not_draw_and_normal_tool_clicks_still_work() {
+        assert_eq!(
+            interaction(true, false, PointerButton::Primary, false, false),
+            (1, 0)
+        );
+        assert_eq!(
+            interaction(true, true, PointerButton::Primary, false, false),
+            (0, 1)
+        );
+        assert_eq!(
+            interaction(false, true, PointerButton::Primary, false, false),
+            (1, 0)
+        );
+        assert_eq!(
+            interaction(true, true, PointerButton::Primary, false, true),
+            (0, 0)
+        );
+        assert_eq!(
+            interaction(true, false, PointerButton::Secondary, false, false),
+            (0, 1)
+        );
+        assert_eq!(
+            interaction(true, false, PointerButton::Secondary, true, false),
+            (0, 0)
+        );
+    }
 }

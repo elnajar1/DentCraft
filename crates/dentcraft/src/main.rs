@@ -21,6 +21,8 @@ mod objects;
 mod objects_panel;
 mod orient_step;
 mod recovery;
+mod selection;
+mod step_parameters;
 mod theme;
 mod toolbar;
 mod tools;
@@ -102,6 +104,7 @@ fn main() -> ExitCode {
         hide: args.hide,
         workspace_menu_open: args.open == Some(OpenArg::WorkspaceMenu),
         case_setup_open: args.open == Some(OpenArg::CaseSetup),
+        expert_open: args.open == Some(OpenArg::ExpertStrip),
         screenshot: args.screenshot,
         measure: args.measure,
         orient: args.orient,

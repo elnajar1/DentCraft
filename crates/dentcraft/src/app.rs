@@ -33,6 +33,8 @@ use crate::objects::{self, ObjectState, SceneObject};
 use crate::objects_panel;
 use crate::orient_step::{self, ORIENT, OrientStep};
 use crate::recovery::{self, Autosave};
+use crate::selection::{self, Object as SelectedObject, Selection};
+use crate::step_parameters;
 use crate::theme::{self, Palette, RADIUS_LG, SIZE_SMALL, ThemeKind};
 use crate::toolbar::{self, Command, ToolbarView, WorkspaceMenu};
 use crate::tools::{self, MEASURE, Measure, Tools};
@@ -62,6 +64,8 @@ pub struct StartOptions {
     pub workspace_menu_open: bool,
     /// Show the case setup screen even when the case has units.
     pub case_setup_open: bool,
+    /// Start in Expert mode with its strip pinned, for repeatable layout checks.
+    pub expert_open: bool,
     pub screenshot: Option<PathBuf>,
     /// Two points to measure between, snapped to the scans once they have loaded.
     pub measure: Option<[DVec3; 2]>,
@@ -197,6 +201,7 @@ pub struct DentCraftApp {
     expert_mode: bool,
     /// Keep the Expert strip visible when the pointer leaves the bottom edge.
     expert_pinned: bool,
+    selection: Selection,
     doc: Document,
     /// Undo and redo of the case's design.
     history: History,
@@ -319,8 +324,9 @@ impl DentCraftApp {
             theme,
             session: Session::for_case(&case),
             workflow_error: None,
-            expert_mode: false,
-            expert_pinned: false,
+            expert_mode: start.expert_open,
+            expert_pinned: start.expert_open,
+            selection: Selection::default(),
             doc: Document::untitled(&case),
             history: History::default(),
             confirm_discard: None,
@@ -665,6 +671,23 @@ impl DentCraftApp {
                     let dir = -self.viewport.camera.forward().as_dvec3();
                     self.axis
                         .set_from_view(&mut self.case.design, &mut self.history, tooth, dir);
+                }
+                return;
+            }
+            StepAction::ApplyParameters(scope) => {
+                self.inner.end_drag(&mut self.history);
+                self.anatomy.end_drag(&mut self.history);
+                self.contacts.end_drag(&mut self.history);
+                let selected = self.selection.teeth();
+                let selected = (scope == step_parameters::Scope::Selection).then_some(&selected);
+                if let Some(first_changed) = step_parameters::apply(
+                    &mut self.case,
+                    &mut self.history,
+                    &self.session,
+                    self.tooth,
+                    selected,
+                ) {
+                    self.enter_step(Some(first_changed));
                 }
                 return;
             }
@@ -1023,6 +1046,7 @@ impl DentCraftApp {
 
     /// Clears the scene and makes `case` the open case.
     fn reset(&mut self, case: Case) {
+        self.selection = Selection::default();
         self.objects.clear();
         self.viewport.clear_hover();
         self.tools.deactivate();
@@ -1632,6 +1656,33 @@ impl DentCraftApp {
     /// Carries out a toolbar, view cluster or app bar command with the app's existing actions.
     fn run(&mut self, command: Command) {
         match command {
+            Command::ClearSelection => self.selection = Selection::default(),
+            Command::FitSelection => {
+                let bounds =
+                    objects::union_bounds(self.selection.items.iter().filter_map(|item| {
+                        selection::bounds(*item, &self.objects, &self.parts, &self.design_objects)
+                    }));
+                self.viewport.fit(bounds.as_ref());
+            }
+            Command::HideSelection => {
+                let owned = self.tool_parts();
+                for item in &self.selection.items {
+                    match *item {
+                        SelectedObject::Scan(id) => {
+                            if let Some(object) = self.objects.iter_mut().find(|o| o.id.0 == id) {
+                                object.visible = false;
+                            }
+                        }
+                        SelectedObject::Part(kind, tooth) => {
+                            self.design_objects.set_shown(kind, tooth, &[], false);
+                            if owned.contains(&(kind, tooth)) {
+                                self.tools.deactivate();
+                            }
+                        }
+                    }
+                }
+                self.selection = Selection::default();
+            }
             Command::New => self.request_new(),
             Command::Open => self.request_open(),
             Command::Save => {
@@ -1639,7 +1690,12 @@ impl DentCraftApp {
             }
             Command::Import => self.pick_files(),
             Command::CaseSetup => self.case_setup = true,
-            Command::ToggleExpert => self.expert_mode = !self.expert_mode,
+            Command::ToggleExpert => {
+                self.expert_mode = !self.expert_mode;
+                if !self.expert_mode {
+                    self.selection = Selection::default();
+                }
+            }
             Command::Step(action) => self.apply_step_action(action),
             Command::View(preset) => self.viewport.go_to(preset, self.bounds().as_ref()),
             Command::Fit => self.viewport.fit(self.bounds().as_ref()),
@@ -2148,13 +2204,52 @@ impl DentCraftApp {
                 hidden_arch.is_some() && design_objects::role_arch(obj.role) == hidden_arch;
         }
         self.parts = self.design_parts();
-        let (parts, lines) = self.design_objects.draw(
+        let owned = self.tool_parts();
+        let tool_visible = self.tooth.and_then(|tooth| {
+            let kind = match self.tools.active_name() {
+                Some(MARGIN) => PartKind::Margin,
+                Some(INNER) => PartKind::Inner,
+                Some(ANATOMY) | Some(CONTACTS) => PartKind::Crown,
+                _ => return None,
+            };
+            Some((kind, tooth))
+        });
+        let visible_parts = selection::visible_parts(
+            &self.parts,
+            &self.design_objects,
+            &owned,
+            tool_visible,
+            hidden_arch,
+        );
+        let visible_ids: std::collections::BTreeSet<_> = visible_parts
+            .iter()
+            .map(|p| SelectedObject::Part(p.kind, p.tooth))
+            .chain(
+                self.objects
+                    .iter()
+                    .filter(|o| o.shown() && o.opacity > 0.05)
+                    .map(|o| SelectedObject::Scan(o.id.0)),
+            )
+            .collect();
+        self.selection.retain(|item| visible_ids.contains(&item));
+        let (parts, mut lines) = self.design_objects.draw(
             &self.parts,
             &self.palette(),
             &self.tool_parts(),
             hidden_arch,
         );
+        for item in &self.selection.items {
+            if let Some(bounds) =
+                selection::bounds(*item, &self.objects, &self.parts, &self.design_objects)
+            {
+                lines.extend(selection::outline(
+                    bounds,
+                    crate::tools::rgb(self.palette().accent),
+                ));
+            }
+        }
         let scene = crate::viewport::Scene {
+            select_objects: self.expert_mode,
             objects: &self.objects,
             bounds: bounds.as_ref(),
             options,
@@ -2162,6 +2257,21 @@ impl DentCraftApp {
             lines,
         };
         let out = self.viewport.show(ui, rect, scene, &mut self.tools);
+        if let Some(click) = out.selection {
+            let pick = selection::Pick {
+                objects: &self.objects,
+                parts: &visible_parts,
+                design: &self.design_objects,
+                camera: &self.viewport.camera,
+                viewport: rect,
+                pixel: click.pixel,
+                ray: click.ray,
+                clip: self.tools.clip_plane(&self.viewport.camera),
+            }
+            .hit();
+            self.selection.click(pick, click.additive, click.context);
+            ui.ctx().request_repaint();
+        }
         if out.interacted {
             self.auto_fit = false;
         }
@@ -2360,9 +2470,15 @@ impl DentCraftApp {
         }
         self.toolbar(ui, rect);
         self.workflow_panel(ui, rect);
+        let selection_actions = self.selection_actions();
         if self.expert_mode
-            && let Some(command) =
-                toolbar::expert_strip(ui, rect, &self.session, &mut self.expert_pinned)
+            && let Some(command) = toolbar::expert_strip(
+                ui,
+                rect,
+                &self.session,
+                &mut self.expert_pinned,
+                &selection_actions,
+            )
         {
             self.run(command);
         }
@@ -2375,6 +2491,7 @@ impl DentCraftApp {
                     self.expert_mode,
                     self.has_jaw_scan(),
                     !self.case.units.is_empty(),
+                    &selection_actions,
                 );
             });
             if let Some(command) = command {
@@ -2382,6 +2499,34 @@ impl DentCraftApp {
             }
         }
         self.show_toasts(ui, rect);
+    }
+
+    fn selection_actions(&self) -> selection::Actions {
+        let teeth = self.selection.teeth();
+        let apply_count =
+            step_parameters::targets(&self.case, &self.session, self.tooth, Some(&teeth)).len();
+        let edit = self.selection.active.and_then(|item| {
+            let SelectedObject::Part(kind, tooth) = item else {
+                return None;
+            };
+            let step = match kind {
+                PartKind::Margin => StepId::Margin,
+                PartKind::Inner => StepId::InnerSurface,
+                PartKind::Crown => StepId::Anatomy,
+            };
+            let index = self
+                .session
+                .steps()
+                .iter()
+                .position(|s| s.id == step && s.teeth.contains(&tooth))?;
+            workflow_panel::reachable(&self.session, index).then_some((index, tooth))
+        });
+        selection::Actions {
+            count: self.selection.items.len(),
+            apply_count,
+            edit,
+            source: self.tooth,
+        }
     }
 
     fn show_toasts(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {

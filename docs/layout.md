@@ -45,9 +45,23 @@ and can drop into an expert mode for per-tooth control.
 The floating current-step wizard, fixed footer, Expert reveal/pin strip and scene context menu
 are implemented. The strip and menu use the existing session's reachable steps; they do not
 bypass prerequisites. Tooth chips also select the working tooth in Inner surface, Anatomy and
-Occlusion. Object selection with Ctrl and actions scoped to that selection remain follow-up work;
-the current scene menu acts on the active workflow tooth. Wizard parameter edits still use the
-existing per-tooth behavior; applying a change to all teeth of a step is also follow-up work.
+Occlusion.
+
+In Expert mode, click a visible object to select it; Ctrl-click toggles membership in a group.
+While a tool draws on the scan, ordinary clicks keep drawing and Ctrl-click selects instead.
+Scans, margins and design meshes are selectable; hidden objects are excluded. Selected objects
+have bounding outlines, with Fit selected, Hide selected and Clear selection in the strip and
+context menu. Right-clicking the group or the background preserves it. Edit tooth opens the
+active selected part's step only when that step is reachable. Selection is transient and clears
+when opening another case or returning to Wizard mode.
+
+Sliders edit the working tooth. Apply to other teeth explicitly copies the current step's settings
+to the rest of its teeth; the Expert strip/menu can copy to just the selected teeth in that step.
+Inner-surface settings, anatomy shape and contact targets are supported, each as a single undoable
+edit. Copying anatomy shape keeps each tooth's own position and rotation; margins, insertion axes
+and other steps' parameters are preserved. A successful copy opens the first changed tooth so
+Next reviews/rebuilds affected teeth in workflow order; copying identical values does not move
+the working tooth or add undo history. `--open expert-strip` starts with the strip pinned.
 
 ## Mouse (target behavior)
 

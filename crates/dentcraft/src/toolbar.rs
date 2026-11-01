@@ -76,6 +76,9 @@ pub enum Command {
     /// Open the case setup screen: teeth, material and scans.
     CaseSetup,
     ToggleExpert,
+    FitSelection,
+    HideSelection,
+    ClearSelection,
     Step(StepAction),
     View(ViewPreset),
     Fit,
@@ -268,7 +271,7 @@ impl ToolbarView<'_> {
                 Slot::Mode => {
                     let label = if self.expert { "Wizard" } else { "Expert" };
                     if menu_button(ui, rect, label)
-                        .on_hover_text("Switch Wizard / Expert mode")
+                        .on_hover_text("Switch Wizard / Expert mode. In Expert mode, click objects to select; Ctrl-click adds or removes objects without drawing with the active tool.")
                         .clicked()
                     {
                         command = Some(Command::ToggleExpert);
@@ -519,6 +522,7 @@ pub fn expert_strip(
     viewport: Rect,
     session: &Session,
     pinned: &mut bool,
+    selection: &crate::selection::Actions,
 ) -> Option<Command> {
     let full = expert_rect(viewport);
     let hovered = ui.input(|i| {
@@ -556,6 +560,9 @@ pub fn expert_strip(
                 .id_salt("expert_steps")
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
+                        if let Some(action) = selection_commands(ui, selection) {
+                            command = Some(action);
+                        }
                         let next = session
                             .steps()
                             .iter()
@@ -603,6 +610,7 @@ pub fn context_menu(
     expert: bool,
     has_jaw_scan: bool,
     has_units: bool,
+    selection: &crate::selection::Actions,
 ) -> Option<Command> {
     ui.set_min_width(230.0);
     let mut command =
@@ -618,6 +626,9 @@ pub fn context_menu(
         command = Some(Command::FitTooth);
     }
     if expert {
+        if let Some(action) = selection_commands(ui, selection) {
+            command = Some(action);
+        }
         ui.separator();
         for (index, step) in session.steps().iter().enumerate() {
             if ui
@@ -637,6 +648,37 @@ pub fn context_menu(
     }
     if command.is_some() {
         ui.close();
+    }
+    command
+}
+
+/// The same selected-object actions in the strip and scene menu. No destructive geometry edit.
+fn selection_commands(ui: &mut Ui, selection: &crate::selection::Actions) -> Option<Command> {
+    if selection.count == 0 {
+        return None;
+    }
+    let mut command = None;
+    ui.label(format!("{} selected", selection.count));
+    for (label, action) in [
+        ("Fit selected", Command::FitSelection),
+        ("Hide selected", Command::HideSelection),
+        ("Clear selection", Command::ClearSelection),
+    ] {
+        if widgets::small_button(ui, label, true, false).clicked() {
+            command = Some(action);
+        }
+    }
+    if let Some((index, tooth)) = selection.edit
+        && widgets::small_button(ui, &format!("Edit tooth {tooth}"), true, false).clicked()
+    {
+        command = Some(Command::Step(StepAction::Tooth(index, tooth)));
+    }
+    if selection.apply_count > 0
+        && let Some(source) = selection.source
+        && widgets::small_button(ui, &format!("Copy settings from {source} to {} selected teeth", selection.apply_count), true, false)
+            .on_hover_text("Copy this step's settings, then review changed teeth with Next. Anatomy keeps each tooth's placement. Undo reverts the whole group.")
+            .clicked() {
+        command = Some(Command::Step(StepAction::ApplyParameters(crate::step_parameters::Scope::Selection)));
     }
     command
 }
@@ -1133,7 +1175,14 @@ mod tests {
                         );
                         opened |= response
                             .context_menu(|ui| {
-                                context_menu(ui, &session, false, false, false);
+                                context_menu(
+                                    ui,
+                                    &session,
+                                    false,
+                                    false,
+                                    false,
+                                    &crate::selection::Actions::default(),
+                                );
                             })
                             .is_some();
                     },
@@ -1181,7 +1230,13 @@ mod tests {
                             Sense::click_and_drag(),
                         )
                         .clicked();
-                    expert_strip(ui, viewport, &session, &mut pinned);
+                    expert_strip(
+                        ui,
+                        viewport,
+                        &session,
+                        &mut pinned,
+                        &crate::selection::Actions::default(),
+                    );
                 },
             );
             output.textures_delta.clear();

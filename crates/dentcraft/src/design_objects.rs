@@ -4,10 +4,10 @@
 //! that part is left out here. Also the rule that hides the opposite jaw seen from behind.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use dentcraft_case::{Arch, Fdi, ScanRole};
-use dentcraft_mesh::TriMesh;
+use dentcraft_mesh::{Bvh, TriMesh};
 use dentcraft_render::{Camera, DrawItem, MeshData, MeshId, Overlay};
 use glam::{DVec3, Vec3};
 
@@ -89,6 +89,8 @@ struct Group {
 struct Cached<T> {
     source: Arc<T>,
     mesh: Arc<MeshData>,
+    /// Built on the first object-selection click, reused until the source changes.
+    picking: OnceLock<Bvh>,
 }
 
 struct MeshCache<T>(BTreeMap<Fdi, Cached<T>>);
@@ -115,6 +117,7 @@ impl<T> MeshCache<T> {
                     Cached {
                         source: source.clone(),
                         mesh: data.clone(),
+                        picking: OnceLock::new(),
                     },
                 );
                 data
@@ -149,6 +152,30 @@ impl Default for DesignObjects {
 }
 
 impl DesignObjects {
+    /// Original f64 geometry; picking never reconstructs geometry from render vertices.
+    pub fn source_mesh(&self, kind: PartKind, tooth: Fdi) -> Option<&TriMesh> {
+        match kind {
+            PartKind::Inner => self.inner.0.get(&tooth).map(|c| &c.source.mesh),
+            PartKind::Crown => self.crowns.0.get(&tooth).map(|c| &c.source.mesh),
+            PartKind::Margin => None,
+        }
+    }
+
+    pub fn picking_mesh(&self, kind: PartKind, tooth: Fdi) -> Option<(&TriMesh, &Bvh)> {
+        let (mesh, cache) = match kind {
+            PartKind::Inner => {
+                let c = self.inner.0.get(&tooth)?;
+                (&c.source.mesh, &c.picking)
+            }
+            PartKind::Crown => {
+                let c = self.crowns.0.get(&tooth)?;
+                (&c.source.mesh, &c.picking)
+            }
+            PartKind::Margin => return None,
+        };
+        Some((mesh, cache.get_or_init(|| Bvh::build(mesh))))
+    }
+
     /// The mesh of `tooth`'s inner surface.
     pub fn inner_mesh(
         &mut self,
@@ -300,6 +327,36 @@ pub fn auto_hidden_arch(camera: &Camera) -> Option<Arch> {
 mod tests {
     use super::*;
     use glam::Quat;
+
+    #[test]
+    fn picking_uses_the_current_f64_source_and_drops_stale_geometry() {
+        let tooth = Fdi::new(16).unwrap();
+        let surface = |z| {
+            Arc::new(dentcraft_design::InnerSurface {
+                mesh: TriMesh::new(
+                    vec![
+                        DVec3::new(-1.0, -1.0, z),
+                        DVec3::new(1.0, -1.0, z),
+                        DVec3::new(0.0, 1.0, z),
+                    ],
+                    vec![[0, 1, 2]],
+                ),
+                boundary: vec![0, 1, 2],
+                target_gaps: vec![0.0; 3],
+                axis: DVec3::Z,
+            })
+        };
+        let mut objects = DesignObjects::default();
+        for z in [1.0000000001, 0.0000000001] {
+            let source = surface(z);
+            objects.inner_mesh(tooth, &source);
+            let (mesh, bvh) = objects.picking_mesh(PartKind::Inner, tooth).unwrap();
+            let hit = bvh.raycast(mesh, 3.0 * DVec3::Z, -DVec3::Z).unwrap();
+            assert!((hit.point.z - z).abs() < 1e-14);
+        }
+        objects.prune(&[]);
+        assert!(objects.picking_mesh(PartKind::Inner, tooth).is_none());
+    }
 
     fn fdi(code: u8) -> Fdi {
         Fdi::new(code).unwrap()
