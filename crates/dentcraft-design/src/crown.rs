@@ -150,7 +150,7 @@ fn frame(axis: DVec3, hint: DVec3) -> Result<(DVec3, DVec3, DVec3), DesignError>
 
 /// Fits the two projected cervical extents to margin extents plus 0.3 mm per
 /// side. Axial scale fits cap height to inner height plus 1 mm. For caps with
-/// cervical overhang, it also fits the upward-facing anatomy over the prep
+/// cervical overhang, it also fits the visible upward-facing anatomy over the prep
 /// occlusal footprint (inner normals within 60 degrees of the insertion axis), so
 /// lower fossae do not enter the prep when tall cusps are present. The default
 /// mesial direction is projected world +X (world +Y near a parallel axis).
@@ -226,10 +226,23 @@ pub fn auto_placement(
                 // subsequent local thickness correction. Dome templates have
                 // no cervical overhang and retain their apex-height fit.
                 let bvh = Bvh::build(&inner.mesh);
+                let template_bvh = Bvh::build(template);
+                let ray_offset = th.max(1.0) * 1e-7;
                 let normals = template.vertex_normals();
                 for (p, n) in template.positions.iter().zip(normals) {
                     let q = *p - center;
                     if n.z <= 0.0 || q.z <= 1e-8 {
+                        continue;
+                    }
+                    // A cervical groove can face upward while lying underneath
+                    // a wider cusp. Dividing by that groove's tiny height would
+                    // stretch the whole tooth to fit a hidden shoulder over the
+                    // prep. Only the occlusal envelope controls axial sizing;
+                    // build_crown handles the lower walls locally.
+                    if template_bvh
+                        .raycast(template, *p + DVec3::Z * ray_offset, DVec3::Z)
+                        .is_some()
+                    {
                         continue;
                     }
                     let probe = origin
@@ -1222,6 +1235,74 @@ mod tests {
         include!("../tests/support/crown.rs");
     }
     use verification::verify;
+
+    #[test]
+    fn covered_cervical_shoulders_do_not_stretch_the_occlusal_table() {
+        // Independent ring cap: a low cervical groove lies underneath a wider
+        // occlusal table. Its upward-facing shoulder must not size the entire cap.
+        let segments = 64;
+        let rings = [
+            (3.0, 0.0),
+            (2.0, 0.1),
+            (1.8, 0.2),
+            (1.7, 0.3),
+            (4.0, 1.5),
+            (3.0, 4.5),
+        ];
+        let mut positions = Vec::new();
+        for (radius, height) in rings {
+            for i in 0..segments {
+                let angle = TAU * i as f64 / segments as f64;
+                positions.push(DVec3::new(
+                    radius * angle.cos(),
+                    radius * angle.sin(),
+                    height,
+                ));
+            }
+        }
+        let mut triangles = Vec::new();
+        for row in 0..rings.len() - 1 {
+            for i in 0..segments {
+                let a = (row * segments + i) as u32;
+                let b = (row * segments + (i + 1) % segments) as u32;
+                let c = a + segments as u32;
+                let d = b + segments as u32;
+                triangles.extend([[a, b, c], [b, d, c]]);
+            }
+        }
+        let apex = positions.len() as u32;
+        positions.push(DVec3::Z * 5.0);
+        for i in 0..segments {
+            let row = (rings.len() - 1) * segments;
+            triangles.push([(row + i) as u32, (row + (i + 1) % segments) as u32, apex]);
+        }
+        let template = TriMesh::new(positions, triangles);
+        let cervical: Vec<u32> = (0..segments as u32).collect();
+        for tilt in [0.0, 0.43] {
+            let rotation = DQuat::from_axis_angle(DVec3::new(0.3, -0.8, 0.5).normalize(), tilt);
+            let mut die = prepared_stump(&StumpParams::default()).unwrap();
+            for p in &mut die.mesh.positions {
+                *p = rotation * *p;
+            }
+            for p in &mut die.margin {
+                *p = rotation * *p;
+            }
+            die.axis = rotation * die.axis;
+            let inner = intaglio(&die, 0.1);
+            let placement = auto_placement(
+                &inner,
+                &template,
+                &cervical,
+                die.axis,
+                Some(rotation * DVec3::X),
+            );
+            let height = 5.0 * placement.scale.z;
+            assert!(
+                height.is_finite() && height < 10.0,
+                "occlusal table stretched to {height} mm"
+            );
+        }
+    }
 
     /// Real-scan regression: the mitred ledge offset also shifts margin points
     /// along the outline. When the margin vertex with the smallest polar angle
