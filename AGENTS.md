@@ -94,7 +94,8 @@ opposite-jaw auto-hide, Case setup modal; the user's tooth library with set-up i
 parametric fallback; floating current-step wizard with fixed navigation, Expert reveal/pin strip
 and a scene context menu that respects workflow prerequisites; Expert object multi-selection with
 scoped actions, and undoable copying of step settings to other/selected teeth while preserving
-placement. 0.2.1 is not published: it waits for the owner's approval.
+placement; library dimensions preserved with rigid seating and local cervical adaptation.
+The owner approved publishing 0.2.1 on 2026-11-04. Future releases still require owner approval.
 
 Next, in order:
 

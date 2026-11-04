@@ -3,7 +3,16 @@
 DentCraft is in early development. It is not a cleared or certified medical device: every design
 must be checked by a qualified dental professional before clinical use.
 
-## Unreleased
+## 0.2.1 — 2026-11-04
+
+**Your anatomy. Your workflow. An open foundation.**
+
+A focused update to crown design: preserve the scale of imported anatomy, work in a
+viewport-first workspace, and review explicit feedback when a fit needs adjustment.
+
+Windows desktop and command-line binaries are available. This is an early-development
+prerelease; single crowns remain the supported end-to-end restoration. Occlusion and
+contacts require review, and some library shapes or scan margins still need manual correction.
 
 ### Real scans
 
