@@ -35,8 +35,8 @@
 //! boundary must turn once round the occlusal axis, the cervical loop starts at the boundary
 //! vertex straight facial of the loop's centre (the centre of its outline seen from occlusal),
 //! and the crown is moved so that this centre is on the axis at the height of that mid-facial
-//! vertex. It is then scaled per axis to the served tooth's textbook dimensions times the
-//! [`CrownParams`] factors, its landmarks (cusp tips included) come from its own surface, and it
+//! vertex. It retains file millimetres, scaled only by explicit [`CrownParams`] factors.
+//! Its landmarks (cusp tips included) come from its own surface, and it
 //! is mirrored for quadrants 2 and 4. The crown keeps the file's own cervical line: it is not
 //! cut at `cervical` or to the textbook CEJ curvature.
 //!
@@ -44,7 +44,7 @@
 //! a centre inside the crown find its outer surface, so roots, pulp chambers, canals, defects
 //! and the file's own winding never reach the template. The result has the parametric crown's
 //! layout (160 columns from the mid-facial cervix, rows by arc length, a pole fan), is smoothed,
-//! scaled to the served tooth's textbook dimensions times the [`CrownParams`] width, depth and
+//! kept in file millimetres with only the explicit [`CrownParams`] width, depth and
 //! height factors, and mirrored for quadrants 2 and 4. `wear` and `cusp_height` do not apply to
 //! library crowns.
 
@@ -373,7 +373,6 @@ fn build_open(
     fdi: Fdi,
     p: &CrownParams,
 ) -> Result<(CrownTemplate, RadialRepair), String> {
-    let dim = dimensions(fdi);
     let at = |crown: &TriMesh, v: u32| crown.positions[v as usize];
     let (clo, chi) = cervical
         .iter()
@@ -415,11 +414,7 @@ fn build_open(
     if size.x < 1e-6 || size.y < 1e-6 || height < 1e-6 {
         return Err("the crown has no extent".into());
     }
-    let scale = DVec3::new(
-        dim.mesiodistal * p.mesiodistal / size.x,
-        dim.buccolingual * p.buccolingual / size.y,
-        dim.crown_length * p.height / height,
-    );
+    let scale = DVec3::new(p.mesiodistal, p.buccolingual, p.height);
     for q in &mut crown.positions {
         *q *= scale;
     }
@@ -614,7 +609,7 @@ fn build(
     let mut crown = TriMesh::new(positions, triangles);
     crown.taubin_smooth(SMOOTHING, 0.5, -0.53, None, false);
 
-    // Origin at the centre of the cervical outline; scale to the textbook tooth and params.
+    // Centre the cervical outline, retaining file millimetres unless the user scales it.
     let (clo, chi) = cervical
         .iter()
         .map(|&v| crown.positions[v as usize])
@@ -628,11 +623,7 @@ fn build(
     if size.x < 1e-6 || size.y < 1e-6 || height < 1e-6 {
         return Err("the crown has no extent".into());
     }
-    let scale = DVec3::new(
-        dim.mesiodistal * p.mesiodistal / size.x,
-        dim.buccolingual * p.buccolingual / size.y,
-        dim.crown_length * p.height / height,
-    );
+    let scale = DVec3::new(p.mesiodistal, p.buccolingual, p.height);
     for q in &mut crown.positions {
         *q = (*q - shift) * scale;
     }

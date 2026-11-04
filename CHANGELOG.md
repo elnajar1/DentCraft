@@ -29,6 +29,10 @@ must be checked by a qualified dental professional before clinical use.
 
 ### Tooth libraries
 
+- **Preserve library dimensions**: imported teeth retain file millimetres and the Anatomy step
+  places them without automatic per-axis resizing. A buried cervical skirt is trimmed before
+  fitting the margin; upper anatomy is retained except where material thickness requires a local
+  correction. Bounded axial relief reports any extra lift, so occlusion can be checked explicitly.
 - **Your own tooth library**: `--tooth-library <folder>` (or `DENTCRAFT_TOOTH_LIBRARY`) designs
   crowns from a folder of STL teeth with a `library.json`; the Anatomy step names the library in
   use. Teeth the library lacks use DentCraft's parametric tooth, and so does a library tooth the

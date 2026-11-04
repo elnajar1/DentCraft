@@ -327,18 +327,19 @@ struct Outcome {
     crown: Arc<Crown>,
     /// The tooth's mesial direction as placed, perpendicular to the crown's occlusal axis.
     mesial: DVec3,
-    /// Why the crown is not the library's tooth although the library serves it.
+    /// A placement adjustment or a fallback from the user's library.
     note: Option<String>,
 }
 
 fn run(key: Key, stamp: Stamp, source: &LibrarySource) -> Result<Outcome, String> {
     let params = shape_params(&key.anatomy);
     let template = template_for(source, key.tooth, &params)?;
-    let (built, mesial, note) = match fit(&key, &template) {
+    let (built, mesial, note) = match fit(&key, &template, source.serves(key.tooth)) {
         // A library tooth whose shape the fit cannot follow on this preparation: design the
         // crown from DentCraft's own tooth rather than none, and say so.
         Err(e) if source.serves(key.tooth) => {
-            let (built, mesial) = fit(&key, &crown(key.tooth, &params)).map_err(describe)?;
+            let (built, mesial, _) =
+                fit(&key, &crown(key.tooth, &params), false).map_err(describe)?;
             let note = format!(
                 "The library's tooth {} could not be fitted here ({}), so this crown uses \
                  DentCraft's parametric tooth.",
@@ -347,10 +348,7 @@ fn run(key: Key, stamp: Stamp, source: &LibrarySource) -> Result<Outcome, String
             );
             (built, mesial, Some(note))
         }
-        fitted => {
-            let (built, mesial) = fitted.map_err(describe)?;
-            (built, mesial, None)
-        }
+        fitted => fitted.map_err(describe)?,
     };
     Ok(Outcome {
         mesh: Arc::new(MeshData::from_mesh(&built.mesh)),
@@ -364,24 +362,72 @@ fn run(key: Key, stamp: Stamp, source: &LibrarySource) -> Result<Outcome, String
 
 /// Places `template` on the key's inner surface and builds the crown, with the tooth's mesial
 /// direction as placed.
-fn fit(key: &Key, template: &CrownTemplate) -> Result<(Crown, DVec3), DesignError> {
+fn fit(
+    key: &Key,
+    template: &CrownTemplate,
+    preserve_dimensions: bool,
+) -> Result<(Crown, DVec3, Option<String>), DesignError> {
     let inner = &*key.surface;
     let hint = key
         .forward
         .and_then(|f| template_x_hint(key.tooth, inner.axis, f));
-    let placement = auto_placement(inner, &template.mesh, &template.cervical, inner.axis, hint);
+    let base = auto_placement(inner, &template.mesh, &template.cervical, inner.axis, hint);
+    let placement = if preserve_dimensions {
+        dentcraft_design::original_size_placement(
+            inner,
+            &template.mesh,
+            &template.cervical,
+            inner.axis,
+            hint,
+            key.min_occlusal,
+        )
+    } else {
+        base
+    };
+    let relief = if preserve_dimensions {
+        base.origin - placement.origin
+    } else {
+        DVec3::ZERO
+    };
     let placement = adjust(placement, key.tooth, &key.anatomy);
     let z = placement.occlusal.normalize_or_zero();
     let mesial = ((placement.mesial - z * placement.mesial.dot(z)) * template_sign(key.tooth))
         .normalize_or_zero();
-    let built = build_crown(
+    let params = BuildParams::new(key.min_occlusal, key.min_wall);
+    let mut built = build_crown(
         inner,
         &template.mesh,
         &template.cervical,
         placement,
-        &BuildParams::new(key.min_occlusal, key.min_wall),
-    )?;
-    Ok((built, mesial))
+        &params,
+    );
+    let mut lift = 0.0;
+    // A deep rigid seating may fold the cervical band. Relax only its axial
+    // translation, in four bounded attempts; never resize the library anatomy.
+    if preserve_dimensions && relief.dot(inner.axis) > 0.0 {
+        for fraction in [0.25, 0.5, 0.75, 1.0] {
+            if !matches!(
+                built,
+                Err(DesignError::CrownIntersection | DesignError::CrownThickness { .. })
+            ) {
+                break;
+            }
+            let mut candidate = placement;
+            candidate.origin += relief * fraction;
+            lift = relief.length() * fraction;
+            built = build_crown(
+                inner,
+                &template.mesh,
+                &template.cervical,
+                candidate,
+                &params,
+            );
+        }
+    }
+    let note = (lift > 0.01).then(|| format!(
+        "Library dimensions retained. Raised {lift:.2} mm to avoid a cervical fold; check occlusion."
+    ));
+    Ok((built?, mesial, note))
 }
 
 /// The viewport tool of the Anatomy step: draws the crown.

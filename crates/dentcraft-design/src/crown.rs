@@ -265,6 +265,73 @@ pub fn auto_placement(
     result
 }
 
+/// Rigidly places a library cap without changing its dimensions. Visible
+/// occlusal samples set the axial translation over the preparation; the later
+/// build adapts the cervical band and certifies true 3D material thickness.
+pub fn original_size_placement(
+    inner: &InnerSurface,
+    template: &TriMesh,
+    cervical: &[u32],
+    axis: DVec3,
+    mesial_hint: Option<DVec3>,
+    clearance: f64,
+) -> CrownPlacement {
+    let mut placement = auto_placement(inner, template, cervical, axis, mesial_hint);
+    if !placement.scale.is_finite() || !clearance.is_finite() || clearance <= 0.0 {
+        placement.scale = DVec3::NAN;
+        return placement;
+    }
+    placement.scale = DVec3::ONE;
+    let Ok((x, y, z)) = frame(axis, placement.mesial) else {
+        return placement;
+    };
+    let Some(center) = centroid(template, cervical) else {
+        return placement;
+    };
+    let h = inner
+        .mesh
+        .positions
+        .iter()
+        .map(|p| (*p - placement.origin).dot(z))
+        .fold(0.0, f64::max);
+    let top = template
+        .positions
+        .iter()
+        .map(|p| p.z - center.z)
+        .fold(0.0, f64::max);
+    let inner_bvh = Bvh::build(&inner.mesh);
+    let template_bvh = Bvh::build(template);
+    let offset = top.max(1.0) * 1e-7;
+    let mut translation = f64::NEG_INFINITY;
+    for (p, n) in template.positions.iter().zip(template.vertex_normals()) {
+        let q = *p - center;
+        if n.z <= 0.0
+            || q.z <= 1e-8
+            || template_bvh
+                .raycast(template, *p + DVec3::Z * offset, DVec3::Z)
+                .is_some()
+        {
+            continue;
+        }
+        let probe = placement.origin + x * q.x + y * q.y + z * (h + clearance);
+        if let Some(hit) = inner_bvh.raycast(&inner.mesh, probe, -z) {
+            let normal = inner
+                .mesh
+                .triangle_cross(hit.triangle as usize)
+                .normalize_or_zero();
+            if normal.dot(z) < -0.5 {
+                translation =
+                    translation.max((hit.point - placement.origin).dot(z) + clearance - q.z);
+            }
+        }
+    }
+    if !translation.is_finite() {
+        translation = h + clearance - top;
+    }
+    placement.origin += z * translation;
+    placement
+}
+
 pub(crate) fn validate_surface(
     mesh: &TriMesh,
     boundary: &[u32],
@@ -588,6 +655,92 @@ fn refine_cervical(
     boundary.sort_by(|a, b| a.0.total_cmp(&b.0));
 }
 
+/// Clip a buried cervical skirt against an axial plane. Shared edges produce
+/// shared cut vertices; every retained source vertex keeps its exact position.
+/// The result must remain one connected disk with one boundary.
+fn trim_cervical_skirt(
+    mesh: &TriMesh,
+    axis: DVec3,
+    level: f64,
+) -> Result<(TriMesh, Vec<u32>), DesignError> {
+    use std::collections::HashMap;
+    if !axis.is_finite() || (axis.length_squared() - 1.0).abs() > 1e-9 || !level.is_finite() {
+        return Err(DesignError::InvalidCrownSurface);
+    }
+    let mut positions = Vec::new();
+    let mut triangles = Vec::new();
+    let mut vertices = HashMap::new();
+    let mut edges = HashMap::new();
+    for tri in &mesh.triangles {
+        let mut polygon = Vec::with_capacity(4);
+        for k in 0..3 {
+            let a = tri[k];
+            let b = tri[(k + 1) % 3];
+            let (Some(&pa), Some(&pb)) = (
+                mesh.positions.get(a as usize),
+                mesh.positions.get(b as usize),
+            ) else {
+                return Err(DesignError::InvalidCrownSurface);
+            };
+            let distance = |p: DVec3| {
+                let d = p.dot(axis) - level;
+                if d.abs() < 1e-10 { 0.0 } else { d }
+            };
+            let (da, db) = (distance(pa), distance(pb));
+            if !pa.is_finite() || !pb.is_finite() {
+                return Err(DesignError::InvalidCrownSurface);
+            }
+            if da >= 0.0 {
+                let v = *vertices.entry(a).or_insert_with(|| {
+                    let v = positions.len() as u32;
+                    positions.push(pa);
+                    v
+                });
+                polygon.push(v);
+            }
+            // Strict signs avoid duplicate cut points at vertices on the plane.
+            if (da < 0.0 && db > 0.0) || (da > 0.0 && db < 0.0) {
+                let v = *edges.entry((a.min(b), a.max(b))).or_insert_with(|| {
+                    let v = positions.len() as u32;
+                    positions.push(pa.lerp(pb, da / (da - db)));
+                    v
+                });
+                polygon.push(v);
+            }
+        }
+        for k in 1..polygon.len().saturating_sub(1) {
+            triangles.push([polygon[0], polygon[k], polygon[k + 1]]);
+        }
+    }
+    let mut clipped = TriMesh::new(positions, triangles);
+    // A tangent source vertex can have no surviving incident face.
+    let mut used = vec![false; clipped.positions.len()];
+    for tri in &clipped.triangles {
+        for &v in tri {
+            used[v as usize] = true;
+        }
+    }
+    let mut remap = vec![0; used.len()];
+    let mut compact = Vec::new();
+    for (i, p) in clipped.positions.iter().enumerate() {
+        if used[i] {
+            remap[i] = compact.len() as u32;
+            compact.push(*p);
+        }
+    }
+    for tri in &mut clipped.triangles {
+        *tri = tri.map(|v| remap[v as usize]);
+    }
+    clipped.positions = compact;
+    let loops = clipped.boundary_loops();
+    if loops.len() != 1 {
+        return Err(DesignError::InvalidCrownSurface);
+    }
+    let boundary = loops.into_iter().next().unwrap();
+    validate_surface(&clipped, &boundary)?;
+    Ok((clipped, boundary))
+}
+
 /// Place, shape, thicken and close a cap. Minimum clearance is checked to 1 µm
 /// on a barycentric grid at <= 0.1 mm spacing, plus vertices, edge midpoints
 /// and centroids, using exact BVH distances.
@@ -625,8 +778,13 @@ pub fn build_crown(
     let (x, y, z) = frame(placement.occlusal, placement.mesial)?;
     let axis = unit_axis(inner.axis).map_err(|_| DesignError::InvalidCrownSurface)?;
     let (px, py, pz) = frame(axis, x).or_else(|_| frame(axis, y))?;
+    let margin_center = centroid(&inner.mesh, &inner.boundary).unwrap();
+    // Keep the radial certificate below both the preparation and the seated
+    // template. Raising its pole to the margin can turn a valid anatomical
+    // shoulder's radial Jacobian negative without any surface intersection.
+    // An axial shift leaves all projected margin angles and offsets unchanged.
     let polar = Polar {
-        origin: centroid(&inner.mesh, &inner.boundary).unwrap(),
+        origin: margin_center - pz * (margin_center - placement.origin).dot(pz).max(0.0),
         x: px,
         y: py,
         z: pz,
@@ -648,12 +806,39 @@ pub fn build_crown(
         let q = (*p - center) * placement.scale;
         *p = placement.origin + x * q.x + y * q.y + z * q.z;
     }
-    let mut outer_angles = polar.ordered(&outer, cervical)?;
+    // A seated library cap may extend below the entire preparation margin.
+    // Remove that buried skirt instead of folding it upward into the crown.
+    let cut = margin
+        .iter()
+        .map(|p| p.dot(pz))
+        .fold(f64::INFINITY, f64::min);
+    let outer_cervical = if cervical
+        .iter()
+        .all(|&v| outer.positions[v as usize].dot(pz) < cut - 1e-6)
+    {
+        let (trimmed, boundary) = trim_cervical_skirt(&outer, pz, cut)?;
+        outer = trimmed;
+        boundary
+    } else {
+        cervical.to_vec()
+    };
+    let outer_center = centroid(&outer, &outer_cervical).unwrap();
+    let mut outer_angles = polar.ordered(&outer, &outer_cervical)?;
     refine_cervical(&mut outer, &mut outer_angles, &offset_angles, polar);
     let mut reference: Vec<_> = (0..outer.triangles.len())
         .map(|i| outer.triangle_cross(i))
         .collect();
-    check_faces(&outer, &reference, polar)?;
+    // Before adapting the cervix, certify the template about its own cervical
+    // centre. A rigid seating can put that centre below the preparation margin;
+    // testing it about the margin would misclassify valid shoulders as folds.
+    check_faces(
+        &outer,
+        &reference,
+        Polar {
+            origin: placement.origin,
+            ..polar
+        },
+    )?;
     let mut displacements = vec![DVec3::ZERO; outer.positions.len()];
     let mut locked = vec![false; outer.positions.len()];
     for &(angle, v) in &outer_angles {
@@ -674,7 +859,7 @@ pub fn build_crown(
     let height = outer
         .positions
         .iter()
-        .map(|p| (*p - placement.origin).dot(pz))
+        .map(|p| (*p - outer_center).dot(pz))
         .fold(0.0, f64::max);
     if height <= 0.0 {
         return Err(DesignError::InvalidCrownSurface);
@@ -1237,7 +1422,83 @@ mod tests {
     use verification::verify;
 
     #[test]
-    fn covered_cervical_shoulders_do_not_stretch_the_occlusal_table() {
+    fn original_size_caps_translate_without_stretching() {
+        for tilt in [0.0, 0.37] {
+            let rotation = DQuat::from_axis_angle(DVec3::new(0.3, -0.8, 0.5).normalize(), tilt);
+            let stump = StumpParams::default();
+            let mut die = prepared_stump(&stump).unwrap();
+            for p in &mut die.mesh.positions {
+                if tilt != 0.0
+                    && p.z > stump.margin_height + 0.5
+                    && p.z < stump.margin_height + stump.height - 0.5
+                {
+                    let radial = DVec3::new(p.x, p.y, 0.0).normalize_or_zero();
+                    *p += radial * (0.006 * (p.x * 73.0 + p.y * 41.0 + p.z * 57.0).sin());
+                }
+                *p = rotation * *p;
+            }
+            for p in &mut die.margin {
+                *p = rotation * *p;
+            }
+            die.axis = rotation * die.axis;
+            let inner = intaglio(&die, 0.1);
+            let (template, cervical) = shouldered_cap(4.0);
+            let params = CrownParams::default();
+            let placement = original_size_placement(
+                &inner,
+                &template,
+                &cervical,
+                die.axis,
+                Some(rotation * DVec3::X),
+                params.min_occlusal,
+            );
+            assert_eq!(placement.scale, DVec3::ONE);
+            assert!(
+                placement.origin.dot(die.axis)
+                    < centroid(&inner.mesh, &inner.boundary)
+                        .unwrap()
+                        .dot(die.axis)
+            );
+            let built = build_crown(&inner, &template, &cervical, placement, &params).unwrap();
+            verify(&built, &inner, &die, &params);
+            let apex = *built
+                .mesh
+                .positions
+                .iter()
+                .max_by(|a, b| a.dot(die.axis).total_cmp(&b.dot(die.axis)))
+                .unwrap();
+            let top = inner
+                .mesh
+                .positions
+                .iter()
+                .map(|p| p.dot(die.axis))
+                .fold(f64::NEG_INFINITY, f64::max);
+            assert!(apex.dot(die.axis) - top >= params.min_occlusal - 0.001);
+            let expected_apex = placement.origin + die.axis * 9.0;
+            assert!(
+                apex.distance(expected_apex) < 0.05,
+                "cusp moved after rigid placement: {} mm",
+                apex.distance(expected_apex)
+            );
+            for clearance in [0.0, -1.0, f64::NAN] {
+                assert!(
+                    !original_size_placement(
+                        &inner, &template, &cervical, die.axis, None, clearance
+                    )
+                    .scale
+                    .is_finite()
+                );
+            }
+            let empty = TriMesh::new(vec![], vec![]);
+            assert!(
+                !original_size_placement(&inner, &empty, &[], die.axis, None, 1.0)
+                    .scale
+                    .is_finite()
+            );
+        }
+    }
+
+    fn shouldered_cap(extra_height: f64) -> (TriMesh, Vec<u32>) {
         // Independent ring cap: a low cervical groove lies underneath a wider
         // occlusal table. Its upward-facing shoulder must not size the entire cap.
         let segments = 64;
@@ -1246,11 +1507,30 @@ mod tests {
             (2.0, 0.1),
             (1.8, 0.2),
             (1.7, 0.3),
-            (4.0, 1.5),
-            (3.0, 4.5),
+            (4.0, 1.5 + extra_height),
+            (3.0, 4.5 + extra_height),
         ];
+        // Resolve the long walls so local thickness corrections need not move
+        // a cusp through a single triangle spanning the whole axial surface.
+        let mut dense_rings = Vec::new();
+        for pair in rings.windows(2) {
+            let steps = ((pair[1].1 - pair[0].1) / 0.25).ceil().max(1.0) as usize;
+            for i in 0..steps {
+                let t = i as f64 / steps as f64;
+                dense_rings.push((
+                    pair[0].0 + (pair[1].0 - pair[0].0) * t,
+                    pair[0].1 + (pair[1].1 - pair[0].1) * t,
+                ));
+            }
+        }
+        dense_rings.push(*rings.last().unwrap());
+        for i in 1..12 {
+            let t = i as f64 / 12.0;
+            dense_rings.push((3.0 * (1.0 - t), 4.5 + extra_height + 0.5 * t));
+        }
+        let rings = dense_rings;
         let mut positions = Vec::new();
-        for (radius, height) in rings {
+        for &(radius, height) in &rings {
             for i in 0..segments {
                 let angle = TAU * i as f64 / segments as f64;
                 positions.push(DVec3::new(
@@ -1271,13 +1551,80 @@ mod tests {
             }
         }
         let apex = positions.len() as u32;
-        positions.push(DVec3::Z * 5.0);
+        positions.push(DVec3::Z * (5.0 + extra_height));
         for i in 0..segments {
             let row = (rings.len() - 1) * segments;
             triangles.push([(row + i) as u32, (row + (i + 1) % segments) as u32, apex]);
         }
         let template = TriMesh::new(positions, triangles);
         let cervical: Vec<u32> = (0..segments as u32).collect();
+        (template, cervical)
+    }
+
+    #[test]
+    fn cervical_clipping_preserves_upper_vertices_and_a_single_open_boundary() {
+        let (source, _) = shouldered_cap(4.0);
+        for tilt in [0.0, 0.37] {
+            let rotation = DQuat::from_axis_angle(DVec3::new(0.3, -0.8, 0.5).normalize(), tilt);
+            let mut mesh = source.clone();
+            mesh.positions.iter_mut().for_each(|p| *p = rotation * *p);
+            let axis = rotation * DVec3::Z;
+            for level in [0.1, 0.15, 1.0, 4.0] {
+                let (clipped, boundary) = trim_cervical_skirt(&mesh, axis, level).unwrap();
+                validate_surface(&clipped, &boundary).unwrap();
+                assert!(
+                    boundary
+                        .iter()
+                        .all(|&v| (clipped.positions[v as usize].dot(axis) - level).abs() < 1e-10)
+                );
+                assert!(
+                    clipped
+                        .positions
+                        .iter()
+                        .all(|p| p.dot(axis) >= level - 1e-10)
+                );
+                for p in &mesh.positions {
+                    if p.dot(axis) > level + 1e-10 {
+                        assert!(clipped.positions.contains(p));
+                    }
+                }
+            }
+        }
+        assert!(trim_cervical_skirt(&source, DVec3::Z, 20.0).is_err());
+        assert!(trim_cervical_skirt(&TriMesh::default(), DVec3::Z, 1.0).is_err());
+        assert!(trim_cervical_skirt(&source, DVec3::ZERO, 1.0).is_err());
+        let zero_area = TriMesh::new(vec![DVec3::Z, DVec3::Z, DVec3::Z], vec![[0, 1, 2]]);
+        assert!(trim_cervical_skirt(&zero_area, DVec3::Z, 0.0).is_err());
+    }
+
+    #[test]
+    fn unadapted_shoulders_are_certified_about_their_own_cervix() {
+        let (mut mesh, cervical) = shouldered_cap(0.0);
+        for p in &mut mesh.positions {
+            *p -= DVec3::Z * 2.0;
+        }
+        let reference: Vec<_> = (0..mesh.triangles.len())
+            .map(|i| mesh.triangle_cross(i))
+            .collect();
+        let margin_frame = Polar {
+            origin: DVec3::ZERO,
+            x: DVec3::X,
+            y: DVec3::Y,
+            z: DVec3::Z,
+        };
+        assert!(check_faces(&mesh, &reference, margin_frame).is_err());
+        let template_frame = Polar {
+            origin: centroid(&mesh, &cervical).unwrap(),
+            ..margin_frame
+        };
+        assert!(check_faces(&mesh, &reference, template_frame).is_ok());
+        mesh.flip_orientation();
+        assert!(check_faces(&mesh, &reference, template_frame).is_err());
+    }
+
+    #[test]
+    fn covered_cervical_shoulders_do_not_stretch_the_occlusal_table() {
+        let (template, cervical) = shouldered_cap(0.0);
         for tilt in [0.0, 0.43] {
             let rotation = DQuat::from_axis_angle(DVec3::new(0.3, -0.8, 0.5).normalize(), tilt);
             let mut die = prepared_stump(&StumpParams::default()).unwrap();

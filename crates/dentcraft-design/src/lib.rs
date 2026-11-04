@@ -22,7 +22,10 @@ pub use axis::{
 };
 pub use contacts::{AdaptParams, AdaptReport, adapt_to_neighbours, signed_distance_map};
 pub use crown::contacts;
-pub use crown::{Crown, CrownParams, CrownPlacement, CrownReport, auto_placement, build_crown};
+pub use crown::{
+    Crown, CrownParams, CrownPlacement, CrownReport, auto_placement, build_crown,
+    original_size_placement,
+};
 pub use error::DesignError;
 pub use inner::{InnerSurface, InnerSurfaceParams, inner_surface};
 pub use synthetic::{PreparedStump, StumpParams, prepared_stump};

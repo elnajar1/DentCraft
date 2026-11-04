@@ -163,8 +163,10 @@ fn a_library_tooth_becomes_a_sound_canonical_crown() {
     // The CEJ rises mesially and distally (textbook 3.5 / 2.5 mm for 11).
     assert!(hi.z > 2.0 && lo.z > -1.5, "cut from {} to {}", lo.z, hi.z);
     let b = mesh.bounds().unwrap();
-    assert!((b.size().x - 8.5).abs() < 1e-9 && (b.size().y - 7.0).abs() < 1e-9);
-    assert!((b.max.z - 10.5).abs() < 1e-9);
+    let source_bounds = revolved(&tooth_profile(false), 1.0, 0.8).bounds().unwrap();
+    assert!((b.size().x - source_bounds.size().x).abs() < 0.2);
+    assert!((b.size().y - source_bounds.size().y).abs() < 0.2);
+    assert!((b.max.z - 9.0).abs() < 0.2);
     // The fuller mesial half of the top ends up on +X for a quadrant 1 tooth.
     let upper: Vec<f64> = mesh
         .positions
@@ -203,7 +205,7 @@ fn the_other_side_is_a_mirror_wound_outward() {
 }
 
 #[test]
-fn one_tooth_scales_to_each_type_it_serves_and_to_the_params() {
+fn library_dimensions_change_only_with_explicit_scale_parameters() {
     let dir = library("scale", false, false, &[11, 41]);
     let lib = ToothLibrary::load(&dir).unwrap();
     std::fs::remove_dir_all(&dir).unwrap();
@@ -212,7 +214,8 @@ fn one_tooth_scales_to_each_type_it_serves_and_to_the_params() {
         (b.size().x, b.size().y, b.max.z)
     };
     let (x, y, z) = size(41, CrownParams::default());
-    assert!((x - 5.0).abs() < 1e-9 && (y - 6.0).abs() < 1e-9 && (z - 9.0).abs() < 1e-9);
+    let baseline = (x, y, z);
+    assert!(x > 8.0 && y > 6.0 && z > 8.5, "file dimensions retained");
     let p = CrownParams {
         mesiodistal: 1.2,
         buccolingual: 0.9,
@@ -220,7 +223,9 @@ fn one_tooth_scales_to_each_type_it_serves_and_to_the_params() {
         ..CrownParams::default()
     };
     let (x, y, z) = size(31, p);
-    assert!((x - 6.0).abs() < 1e-9 && (y - 5.4).abs() < 1e-9 && (z - 9.9).abs() < 1e-9);
+    assert!((x - baseline.0 * 1.2).abs() < 1e-6);
+    assert!((y - baseline.1 * 0.9).abs() < 1e-6);
+    assert!((z - baseline.2 * 1.1).abs() < 1e-6);
 }
 
 #[test]
@@ -301,7 +306,8 @@ fn an_open_library_crown_keeps_its_own_surface_and_cervical_line() {
         assert!(cervical_follows_the_winding(&t), "{code}");
         let first = mesh.positions[t.cervical[0] as usize];
         assert!(first.z.abs() < 1e-9 && first.y > 2.0, "{first:?}");
-        // Its own CEJ wave (1.6 mm in 7.8 mm of height, scaled to 8.5 mm) survives.
+        // File dimensions and the 1.6 mm CEJ wave survive without textbook scaling.
+        assert!((mesh.bounds().unwrap().size() - source.bounds().unwrap().size()).length() < 2e-6);
         let zs: Vec<f64> = t
             .cervical
             .iter()
@@ -309,7 +315,7 @@ fn an_open_library_crown_keeps_its_own_surface_and_cervical_line() {
             .collect();
         let wave = zs.iter().copied().fold(f64::MIN, f64::max)
             - zs.iter().copied().fold(f64::MAX, f64::min);
-        assert!((wave - 1.6 * 8.5 / 7.8).abs() < 0.15, "{code}: wave {wave}");
+        assert!((wave - 1.6).abs() < 2e-6, "{code}: wave {wave}");
         assert_eq!(t.landmarks.cusps.len(), 2);
     }
 }
