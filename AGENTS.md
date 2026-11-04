@@ -19,15 +19,32 @@ compatible with MIT OR Apache-2.0 (with attribution), and feedback from dental t
 Dental workflow vocabulary (margin line, insertion axis, cement gap, connector, minimum thickness)
 is common professional knowledge and is fine to use.
 
+The screenshot exception below permits presentation of authorized cases rendered in DentCraft.
+It does not permit copying proprietary software code, UI artwork or documentation into the project,
+or redistributing the underlying case files or tooth libraries.
+
 ## Data
 
 Never commit patient scans or case files. Test fixtures are generated in code or are scans made
 for the project and released under the repository licence.
 
-Real cases, the user's tooth libraries and every run output live under `scratch/`, which is
-gitignored. Nothing from there goes into a commit, a public screenshot or the README. Tooth
-libraries are read from a folder the user chooses (`--tooth-library` or `DENTCRAFT_TOOTH_LIBRARY`),
-never bundled; proprietary library formats (such as `.eoff`/`.xml` library files) are not read.
+Real cases, the user's tooth libraries and private run outputs live under `scratch/`, which is
+gitignored. Raw scans, case files and libraries stay local and are not committed or bundled.
+
+**Public screenshots:** real-case and demo-case screenshots rendered in DentCraft may be used in
+the README, GitHub releases and project presentations when the owner authorizes their publication.
+Being generated from files under `scratch/` is not, by itself, a reason to reject a screenshot.
+Before publishing, remove patient identifiers and private paths, and establish that the source
+case and any displayed library permit this use (through their licence or the owner's confirmation
+of permission). A bundled third-party demo is not automatically cleared for republication.
+Record the image's source and publication permission in `docs/assets/README.md`; copy only the
+approved image into `docs/assets/`. Describe real, demo and synthetic cases accurately.
+An explicit publication request counts as owner authorization for the identified images; do not
+ask for the same authorization again. Clarify only missing privacy or source-permission information.
+
+Tooth libraries are read from a folder the user chooses (`--tooth-library` or
+`DENTCRAFT_TOOTH_LIBRARY`), never bundled; proprietary library formats (such as `.eoff`/`.xml`
+library files) are not read.
 
 ## Engineering
 

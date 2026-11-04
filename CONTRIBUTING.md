@@ -21,6 +21,12 @@ Read [AGENTS.md](AGENTS.md). Two rules matter most:
    standards and technician feedback.
 2. **No patient data** in the repository, issues or pull requests.
 
+Owner-authorized screenshots of real or demo cases rendered in DentCraft are allowed under the
+public-screenshot exception in [AGENTS.md](AGENTS.md). They must be free of patient identifiers
+and private paths, have permission for publication of the displayed case and library, and record
+their provenance in `docs/assets/README.md`. Raw case files and libraries remain local. This
+exception does not permit copying proprietary software or its UI artwork.
+
 ## Development
 
 ```sh
