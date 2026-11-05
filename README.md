@@ -38,7 +38,7 @@ include tilted, noisy preparations and true 3D distances inside triangles.
 
 ## Screenshots
 
-### Crown fitting on a scanned demo case
+### Follow tooth 36 from the scan to the contact map
 
 <p align="center">
   <img src="docs/assets/demo-case-36.png" alt="Crown 36 fitted in DentCraft on a scanned demo case using a user-supplied tooth library" width="100%" />
@@ -49,6 +49,25 @@ retained, with local cervical adaptation. The interface reports the additional *
 needed for this fit; occlusion still requires review. This is a development example, not a
 clinically approved restoration. Published with owner-confirmed permission for the displayed
 case and library; [image provenance](docs/assets/README.md).
+
+Start at the blue line in the first frame. It follows the preparation through the next three
+views, making it possible to compare the insertion path, the inside of the restoration and the
+seated library tooth on the same scanned die. Open any image for the full workspace.
+
+| Trace the finish line | Choose the insertion path |
+|---|---|
+| [![Editable blue margin on the scanned lower molar](docs/assets/demo-011-margin.png)](docs/assets/demo-011-margin.png) | [![Insertion arrow over the prepared molar in facial view](docs/assets/demo-011-axis.png)](docs/assets/demo-011-axis.png) |
+| The editable margin measures **32.11 mm** around the preparation. | The selected axis is **13.6°** from occlusal. The panel reports **0.00 mm²** of undercut at this angle. |
+| **Inspect the fitting surface** | **Seat the library molar** |
+| [![Section through the orange inner surface and preparation margin](docs/assets/demo-011-inner.png)](docs/assets/demo-011-inner.png) | [![Facial view of the seated crown with its placement settings](docs/assets/demo-011-anatomy.png)](docs/assets/demo-011-anatomy.png) |
+| The section exposes the fitting surface. The cement gap is set to **0.030 mm** and the seal width to **0.80 mm**. | Width, depth and height are each set to **100%**. The placement panel records the **1.15 mm** lift. |
+
+**Review the contacts.** The development build lets you inspect the opposing jaw, either
+neighbour, or all three together. This frame shows the combined map on the original crown.
+DentCraft rejected the attempted contact adjustment when the surface folded or intersected.
+The warning and the distance map stay visible together for inspection.
+
+[![Combined contact map of crown 36 with the surface-intersection warning visible](docs/assets/demo-011-contacts.png)](docs/assets/demo-011-contacts.png)
 
 ### The workspace on generated geometry
 

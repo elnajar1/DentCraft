@@ -9,9 +9,23 @@ about the additional 1.15 mm lift and the need to check occlusion.
 
 The owner explicitly requested publication and confirmed permission to publish the displayed
 case and library in this project's chat on 2026-11-04. Visual review found no patient name or
-private filesystem path. The image has not been retouched. Only this PNG is published; the
+private filesystem path. The image has not been retouched. Only rendered screenshots are published; the
 source scans, case file and tooth library remain local and are not redistributed. Publication
 does not imply endorsement by the source software vendor.
+
+### Scanned workflow sequence, 2026-11-05
+
+The owner requested additional screenshots on GitHub from the same authorized case and
+library. Five full-window PNGs were captured in DentCraft at development commit `2aa8b90`
+and visually checked for patient identifiers and private paths before publication.
+
+| Image | View |
+|---|---|
+| `demo-011-margin.png` | Occlusal view of the editable preparation margin |
+| `demo-011-axis.png` | Facial view of the selected insertion axis |
+| `demo-011-inner.png` | Section through the inner surface with the cement gap settings |
+| `demo-011-anatomy.png` | Library crown placement and the additional lift reported by DentCraft |
+| `demo-011-contacts.png` | Combined distance map on the original crown after the solver rejected a deformation |
 
 ## Synthetic workflow gallery
 
