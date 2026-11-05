@@ -20,7 +20,9 @@ pub use axis::{
     best_insertion_axis_with_margin, best_insertion_axis_with_margin_and_params,
     best_insertion_axis_with_params, undercut_map, undercut_map_with_params,
 };
-pub use contacts::{AdaptParams, AdaptReport, adapt_to_neighbours, signed_distance_map};
+pub use contacts::{
+    AdaptParams, AdaptReport, CONTACT_TOLERANCE_MM, adapt_to_neighbours, signed_distance_map,
+};
 pub use crown::contacts;
 pub use crown::{
     Crown, CrownParams, CrownPlacement, CrownReport, auto_placement, build_crown,

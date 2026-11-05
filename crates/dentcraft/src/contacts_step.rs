@@ -153,6 +153,13 @@ pub enum ContactParam {
 }
 
 impl ContactParam {
+    pub fn needs_review(self, measured: f64, target: f64) -> bool {
+        let tolerance = dentcraft_design::CONTACT_TOLERANCE_MM;
+        match self {
+            Self::Proximal => (measured - target).abs() > tolerance,
+            Self::Occlusal => measured < target - tolerance,
+        }
+    }
     pub const ALL: [Self; 2] = [Self::Proximal, Self::Occlusal];
 
     pub fn name(self) -> &'static str {
@@ -1157,6 +1164,15 @@ mod tests {
         let a = AdaptParams::default();
         assert_eq!(c.proximal_contact, a.proximal_contact);
         assert_eq!(c.occlusal_clearance, a.occlusal_clearance);
+    }
+
+    #[test]
+    fn residual_review_distinguishes_proximal_contact_from_occlusal_clearance() {
+        assert!(ContactParam::Proximal.needs_review(-11.710, -0.02));
+        assert!(ContactParam::Proximal.needs_review(0.05, -0.02));
+        assert!(!ContactParam::Proximal.needs_review(-0.0205, -0.02));
+        assert!(!ContactParam::Occlusal.needs_review(0.05, 0.0));
+        assert!(ContactParam::Occlusal.needs_review(-0.015, 0.0));
     }
 
     #[test]

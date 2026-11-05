@@ -16,6 +16,9 @@ use super::{
 };
 use crate::{DesignError, InnerSurface, geometry::unit_axis};
 
+/// Residual distance accepted by the contact solver, in millimetres.
+pub const CONTACT_TOLERANCE_MM: f64 = 0.001;
+
 /// Contact distances and bounded deformation controls, all in mm.
 #[derive(Clone, Copy, Debug)]
 pub struct AdaptParams {
@@ -617,9 +620,9 @@ pub fn adapt_to_neighbours(
         scan.as_ref().is_none_or(|s| {
             measured.is_some_and(|d| {
                 if s.grow {
-                    (d - s.target).abs() <= 0.001
+                    (d - s.target).abs() <= CONTACT_TOLERANCE_MM
                 } else {
-                    d >= s.target - 0.001
+                    d >= s.target - CONTACT_TOLERANCE_MM
                 }
             })
         })

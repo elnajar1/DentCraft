@@ -1109,26 +1109,33 @@ fn contacts_section(
                 let mm = |v: Option<f64>, none: &str| {
                     v.map_or_else(
                         || none.to_owned(),
-                        |v| format!("{} mm", widgets::fmt_mm(v, 2)),
+                        |v| format!("{} mm", widgets::fmt_mm(v, 3)),
                     )
                 };
                 let rows = [
-                    ("Mesial contact", mm(report.mesial, "no neighbour")),
-                    ("Distal contact", mm(report.distal, "no neighbour")),
+                    ("Mesial contact", mm(report.mesial, "no neighbour"), report.mesial.is_some_and(|v| ContactParam::Proximal.needs_review(v, card.values[0]))),
+                    ("Distal contact", mm(report.distal, "no neighbour"), report.distal.is_some_and(|v| ContactParam::Proximal.needs_review(v, card.values[0]))),
                     (
                         "Min occlusal distance",
                         mm(report.occlusal, "no antagonist"),
+                        report.occlusal.is_some_and(|v| ContactParam::Occlusal.needs_review(v, card.values[1])),
                     ),
                     (
                         "Moved area",
                         format!("{} mm\u{b2}", widgets::fmt_mm(report.moved_area, 1)),
+                        false,
                     ),
                 ];
-                for (name, text) in rows {
+                for (name, text, review) in rows {
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(name).size(SIZE_SMALL).color(p.text_dim));
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            ui.label(RichText::new(text).color(p.text).strong());
+                            if review {
+                                ui.label(RichText::new(format!("Review · {text}")).color(p.danger).strong())
+                                    .on_hover_text("The measured distance is outside the selected target. Inspect this surface in the distance map.");
+                            } else {
+                                ui.label(RichText::new(text).color(p.text).strong());
+                            }
                         });
                     });
                 }
