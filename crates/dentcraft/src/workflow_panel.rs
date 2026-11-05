@@ -76,6 +76,7 @@ pub enum StepAction {
     EndContactDrag,
     /// Adapt the current tooth's crown to its neighbours and antagonist.
     AdaptContacts,
+    MapReference(crate::contacts_step::MapReference),
     /// Simplify the crowns before writing them (or not).
     SetSimplify(bool),
     /// Pick a folder and write every ready crown into it as STL.
@@ -1134,7 +1135,25 @@ fn contacts_section(
                 if !report.thickness_ok {
                     ui.label(RichText::new(THIN_WARNING).size(SIZE_SMALL).color(p.danger));
                 }
-                distance_legend(ui, p);
+            }
+            egui::ComboBox::from_label("Map reference")
+                .selected_text(card.reference.label())
+                .show_ui(ui, |ui| {
+                    for reference in crate::contacts_step::MapReference::OPTIONS {
+                        if ui
+                            .selectable_label(reference == card.reference, reference.label())
+                            .clicked()
+                        {
+                            action = Some(StepAction::MapReference(reference));
+                        }
+                    }
+                });
+            match card.map_available {
+                Some(true) => distance_legend(ui, p),
+                Some(false) => {
+                    ui.weak("No reference surface near this crown");
+                }
+                None => {}
             }
             if let Some(error) = &card.error {
                 ui.label(RichText::new(error).size(SIZE_SMALL).color(p.danger));

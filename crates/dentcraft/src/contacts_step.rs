@@ -62,6 +62,8 @@ pub fn report_line(report: &ContactReport) -> String {
 /// What the step's card shows.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ContactsCard {
+    pub reference: MapReference,
+    pub map_available: Option<bool>,
     pub tooth: Fdi,
     /// The Anatomy step has a current crown for the tooth.
     pub has_crown: bool,
@@ -119,6 +121,29 @@ pub const NO_ANTAGONIST: &str = "No opposing-jaw scan: occlusion is skipped";
 const MESH: MeshId = MeshId(u64::MAX - 3);
 /// First edit group of this step's drags, clear of the other steps' groups.
 const FIRST_GROUP: u64 = 1 << 41;
+
+/// Reference surface for the viewport distance map.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MapReference {
+    #[default]
+    All,
+    Antagonist,
+    Mesial,
+    Distal,
+}
+
+impl MapReference {
+    pub const OPTIONS: [Self; 4] = [Self::All, Self::Antagonist, Self::Mesial, Self::Distal];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::All => "All surfaces",
+            Self::Antagonist => "Antagonist",
+            Self::Mesial => "Mesial",
+            Self::Distal => "Distal",
+        }
+    }
+}
 
 /// One parameter of the step.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -381,6 +406,7 @@ impl PartialEq for Stamp {
 /// The crown the view shows and the scans its colours were measured against.
 #[derive(Clone)]
 struct Shown {
+    reference: MapReference,
     tooth: Fdi,
     crown: Arc<Crown>,
     jaw: MeshId,
@@ -390,6 +416,7 @@ struct Shown {
 impl PartialEq for Shown {
     fn eq(&self, o: &Self) -> bool {
         self.tooth == o.tooth
+            && self.reference == o.reference
             && Arc::ptr_eq(&self.crown, &o.crown)
             && self.jaw == o.jaw
             && self.antagonist == o.antagonist
@@ -415,6 +442,7 @@ struct Job {
 }
 
 struct Outcome {
+    map_available: bool,
     shown: Shown,
     mesh: Arc<MeshData>,
     adapted: Option<Adapted>,
@@ -477,7 +505,17 @@ fn run(job: Job) -> Result<Outcome, String> {
     let mesh = &shown.crown.mesh;
     let all: Vec<u32> = (0..mesh.positions.len() as u32).collect();
     let mut nearest = vec![f64::NAN; all.len()];
-    for other in [&mesial, &distal, &antagonist].into_iter().flatten() {
+    let mut map_available = false;
+    for (reference, other) in [
+        (MapReference::Mesial, mesial.as_ref()),
+        (MapReference::Distal, distal.as_ref()),
+        (MapReference::Antagonist, antagonist.as_ref()),
+    ] {
+        if shown.reference != MapReference::All && shown.reference != reference {
+            continue;
+        }
+        let Some(other) = other else { continue };
+        map_available = true;
         let bvh = Bvh::build(other);
         for (n, d) in nearest
             .iter_mut()
@@ -488,9 +526,19 @@ fn run(job: Job) -> Result<Outcome, String> {
             }
         }
     }
-    let colors: Vec<[f32; 4]> = nearest.into_iter().map(distance_color).collect();
+    let colors: Vec<[f32; 4]> = nearest
+        .into_iter()
+        .map(|d| {
+            if d.is_finite() {
+                distance_color(d)
+            } else {
+                [0.65, 0.65, 0.65, 1.0]
+            }
+        })
+        .collect();
     let mesh = MeshData::with_colors(mesh, &colors).map_err(|e| e.to_string())?;
     Ok(Outcome {
+        map_available,
         shown,
         mesh: Arc::new(mesh),
         adapted,
@@ -545,6 +593,8 @@ pub struct StepFrame<'a> {
 
 /// The app side of the step: worker jobs, the adapted crowns and the shown distance map.
 pub struct ContactsStep {
+    pub reference: MapReference,
+    map_available: bool,
     mesh: Rc<RefCell<Option<Arc<MeshData>>>>,
     wanted: Option<Shown>,
     shown: Option<Shown>,
@@ -583,6 +633,8 @@ impl ContactsStep {
         let (tx, rx) = channel();
         Self {
             mesh: Rc::default(),
+            reference: MapReference::All,
+            map_available: false,
             wanted: None,
             shown: None,
             failed: None,
@@ -683,6 +735,12 @@ impl ContactsStep {
             None => None,
         });
         ContactsCard {
+            reference: self.reference,
+            map_available: self
+                .shown
+                .as_ref()
+                .filter(|s| s.tooth == tooth && s.reference == self.reference)
+                .map(|_| self.map_available),
             tooth,
             has_crown: base.is_some(),
             values: ContactParam::ALL.map(|p| p.get(&contacts)),
@@ -740,6 +798,7 @@ impl ContactsStep {
             self.running = None;
             match message {
                 Ok(o) => {
+                    self.map_available = o.map_available;
                     if let Some(a) = o.adapted {
                         self.error = self.error.take().filter(|(t, _)| *t != o.shown.tooth);
                         self.adapted.insert(o.shown.tooth, a);
@@ -782,12 +841,13 @@ impl ContactsStep {
             .filter(|a| a.stamp == stamp)
             .map_or(base.clone(), |a| a.crown.clone());
         let wanted = Shown {
+            reference: self.reference,
             tooth,
             crown,
             jaw: jaw_id,
             antagonist: stamp.antagonist,
         };
-        if self.shown.as_ref().is_some_and(|s| s.tooth != tooth) {
+        if self.shown.as_ref().is_some_and(|s| s != &wanted) {
             self.shown = None;
             *self.mesh.borrow_mut() = None;
         }

@@ -767,6 +767,10 @@ impl DentCraftApp {
                 self.contacts.end_drag(&mut self.history);
                 return;
             }
+            StepAction::MapReference(reference) => {
+                self.contacts.reference = reference;
+                return;
+            }
             StepAction::AdaptContacts => {
                 self.contacts.request_adapt();
                 return;
