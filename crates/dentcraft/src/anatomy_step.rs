@@ -221,6 +221,23 @@ fn prune(design: &mut Design, tooth: Fdi) {
     }
 }
 
+/// Selects a model while keeping the restoration's preparation and placement.
+pub fn set_library_tooth(design: &mut Design, history: &mut History, tooth: Fdi, model: Fdi) {
+    if model.quadrant() != tooth.quadrant() {
+        return;
+    }
+    let before = design.clone();
+    design.teeth.entry(tooth).or_default().anatomy.library_tooth =
+        (model != tooth).then_some(model);
+    prune(design, tooth);
+    history.record(
+        &format!("Choose model {model} for tooth {tooth}"),
+        before,
+        design,
+        None,
+    );
+}
+
 /// Sets `param` of `tooth` to `value` (shown units, rounded and clamped) and records the edit.
 /// Edits in the same open `group` (a drag) merge.
 pub fn set_param(
@@ -332,18 +349,21 @@ struct Outcome {
 }
 
 fn run(key: Key, stamp: Stamp, source: &LibrarySource) -> Result<Outcome, String> {
+    let model = key.anatomy.library_tooth.unwrap_or(key.tooth);
+    if model.quadrant() != key.tooth.quadrant() {
+        return Err("Choose a library model from the restoration's quadrant".to_owned());
+    }
     let params = shape_params(&key.anatomy);
-    let template = template_for(source, key.tooth, &params)?;
-    let (built, mesial, note) = match fit(&key, &template, source.serves(key.tooth)) {
+    let template = template_for(source, model, &params)?;
+    let (built, mesial, note) = match fit(&key, &template, source.serves(model)) {
         // A library tooth whose shape the fit cannot follow on this preparation: design the
         // crown from DentCraft's own tooth rather than none, and say so.
-        Err(e) if source.serves(key.tooth) => {
-            let (built, mesial, _) =
-                fit(&key, &crown(key.tooth, &params), false).map_err(describe)?;
+        Err(e) if source.serves(model) => {
+            let (built, mesial, _) = fit(&key, &crown(model, &params), false).map_err(describe)?;
             let note = format!(
                 "The library's tooth {} could not be fitted here ({}), so this crown uses \
                  DentCraft's parametric tooth.",
-                key.tooth,
+                model,
                 describe(e).trim_end_matches('.').to_lowercase()
             );
             (built, mesial, Some(note))
@@ -649,6 +669,11 @@ impl AnatomyStep {
             None
         };
         AnatomyCard {
+            model: anatomy.library_tooth.unwrap_or(tooth),
+            models: (1..=8)
+                .filter_map(|position| Fdi::new(tooth.quadrant() * 10 + position).ok())
+                .map(|model| (model, self.library.serves(model)))
+                .collect(),
             tooth,
             pontic: case
                 .units
@@ -799,6 +824,34 @@ mod tests {
     }
 
     #[test]
+    fn choosing_a_model_is_undoable_and_preserves_the_preparation() {
+        let tooth = t(36);
+        let mut design = Design::default();
+        let stored = design.teeth.entry(tooth).or_default();
+        stored.margin = Some(vec![DVec3::X, DVec3::Y, DVec3::Z]);
+        stored.insertion_axis = Some(DVec3::Z);
+        stored.anatomy.offset = [0.2, -0.1, 0.3];
+        let before = design.clone();
+        let mut history = History::default();
+        set_library_tooth(&mut design, &mut history, tooth, t(37));
+        assert_eq!(design.teeth[&tooth].anatomy.library_tooth, Some(t(37)));
+        assert_eq!(design.teeth[&tooth].margin, before.teeth[&tooth].margin);
+        assert_eq!(
+            design.teeth[&tooth].insertion_axis,
+            before.teeth[&tooth].insertion_axis
+        );
+        assert_eq!(
+            design.teeth[&tooth].anatomy.offset,
+            before.teeth[&tooth].anatomy.offset
+        );
+        let chosen = design.clone();
+        set_library_tooth(&mut design, &mut history, tooth, t(27));
+        assert_eq!(design, chosen);
+        history.undo(&mut design);
+        assert_eq!(design, before);
+    }
+
+    #[test]
     fn a_built_crown_is_offered_only_while_the_case_matches_it() {
         let mut case = Case::new("x");
         let tooth = t(36);
@@ -833,6 +886,20 @@ mod tests {
             .contacts
             .proximal_contact = -0.05;
         assert!(step.crown(&case, tooth).is_some());
+        case.design
+            .teeth
+            .get_mut(&tooth)
+            .unwrap()
+            .anatomy
+            .library_tooth = Some(t(37));
+        assert!(step.crown(&case, tooth).is_none(), "model changed");
+        case.design
+            .teeth
+            .get_mut(&tooth)
+            .unwrap()
+            .anatomy
+            .library_tooth = None;
+        assert!(step.crown(&case, tooth).is_some());
         case.material.min_wall_thickness += 0.1;
         assert!(step.crown(&case, tooth).is_none(), "material changed");
     }
@@ -845,6 +912,7 @@ mod tests {
         );
         let a = AnatomyDesign {
             mesiodistal: 1.05,
+            library_tooth: None,
             buccolingual: 0.9,
             height: 1.1,
             wear: 0.3,

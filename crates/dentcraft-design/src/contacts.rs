@@ -5,6 +5,7 @@
 //! surface distance, not a winding-number solid classification. Open scan edges
 //! and inconsistent winding consequently cannot define a global inside/outside.
 //! Supply consistently outward-oriented scans covering the contact region.
+//! Queries landing on an open boundary return NaN and do not drive adjustment.
 
 use dentcraft_mesh::{Bvh, TriMesh};
 use glam::DVec3;
@@ -45,11 +46,11 @@ impl Default for AdaptParams {
 
 #[derive(Clone, Copy, Debug)]
 pub struct AdaptReport {
-    /// Minimum sampled outer-surface distance; None when no mesial scan is given.
+    /// Minimum sampled outer-surface distance; None without measurable mesial coverage.
     pub mesial_contact: Option<f64>,
-    /// Minimum sampled outer-surface distance; None when no distal scan is given.
+    /// Minimum sampled outer-surface distance; None without measurable distal coverage.
     pub distal_contact: Option<f64>,
-    /// Minimum sampled outer-surface distance; None when no antagonist is given.
+    /// Minimum sampled outer-surface distance; None without measurable antagonist coverage.
     pub min_occlusal_distance: Option<f64>,
     /// Original area (mm²) of outer triangles incident to moved vertices.
     pub moved_area: f64,
@@ -59,10 +60,59 @@ pub struct AdaptReport {
     pub thickness_ok: bool,
 }
 
-fn distance(point: DVec3, other: &TriMesh, bvh: &Bvh) -> (f64, DVec3) {
+/// Boundary support is cached with each reference surface. A cut edge cannot
+/// determine the sign of a point beyond the measured surface.
+struct Boundary {
+    vertices: Vec<bool>,
+    edges: Vec<[bool; 3]>,
+}
+
+impl Boundary {
+    fn new(mesh: &TriMesh) -> Self {
+        let mut vertices = vec![false; mesh.positions.len()];
+        let mut edges = vec![[false; 3]; mesh.triangles.len()];
+        for ([a, b], faces) in mesh.edge_map() {
+            if faces.len() != 1 {
+                continue;
+            }
+            vertices[a as usize] = true;
+            vertices[b as usize] = true;
+            let face = faces[0] as usize;
+            let tri = mesh.triangles[face];
+            for k in 0..3 {
+                edges[face][k] |= (tri[k] == a && tri[(k + 1) % 3] == b)
+                    || (tri[k] == b && tri[(k + 1) % 3] == a);
+            }
+        }
+        Self { vertices, edges }
+    }
+
+    fn contains(&self, mesh: &TriMesh, face: usize, point: DVec3) -> bool {
+        let tri = mesh.triangles[face];
+        for k in 0..3 {
+            let a = mesh.positions[tri[k] as usize];
+            if self.vertices[tri[k] as usize] && point.distance_squared(a) < 1e-16 {
+                return true;
+            }
+            if self.edges[face][k] {
+                let ab = mesh.positions[tri[(k + 1) % 3] as usize] - a;
+                let t = ((point - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0);
+                if point.distance_squared(a + ab * t) < 1e-16 {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+}
+
+fn distance(point: DVec3, other: &TriMesh, bvh: &Bvh, boundary: &Boundary) -> (f64, DVec3) {
     let Some(hit) = bvh.closest_point(other, point) else {
         return (f64::NAN, DVec3::ZERO);
     };
+    if boundary.contains(other, hit.triangle as usize, hit.point) {
+        return (f64::NAN, DVec3::ZERO);
+    }
     let normal = other
         .triangle_cross(hit.triangle as usize)
         .normalize_or_zero();
@@ -79,7 +129,8 @@ fn distance(point: DVec3, other: &TriMesh, bvh: &Bvh) -> (f64, DVec3) {
 /// Distances in the order of `vertices`. Uses closest-face normal signs (see
 /// module documentation). `other_bvh` must have been built on unmodified `other`.
 /// This infallible API returns NaN for an invalid index/nonfinite query or an
-/// empty/invalid other mesh; an empty vertex selection returns an empty vector.
+/// empty/invalid other mesh, or a closest point on an open scan boundary.
+/// An empty vertex selection returns an empty vector.
 pub fn signed_distance_map(
     crown: &TriMesh,
     vertices: &[u32],
@@ -89,12 +140,13 @@ pub fn signed_distance_map(
     if validate_mesh(other).is_err() {
         return vec![f64::NAN; vertices.len()];
     }
+    let boundary = Boundary::new(other);
     vertices
         .par_iter()
         .map(|&v| {
             crown.positions.get(v as usize).map_or(f64::NAN, |&p| {
                 if p.is_finite() {
-                    distance(p, other, other_bvh).0
+                    distance(p, other, other_bvh, &boundary).0
                 } else {
                     f64::NAN
                 }
@@ -293,6 +345,7 @@ struct ScanFace {
 }
 
 struct Scan<'a> {
+    boundary: Boundary,
     mesh: &'a TriMesh,
     bvh: Bvh,
     target: f64,
@@ -316,7 +369,7 @@ impl Scan<'_> {
             .zip(&outer.positions)
             .for_each(|(cached, &p)| {
                 if cached.0 != p {
-                    *cached = (p, distance(p, self.mesh, &self.bvh));
+                    *cached = (p, distance(p, self.mesh, &self.bvh, &self.boundary));
                 }
             });
         let queries: Vec<_> = self.vertices.iter().map(|v| v.1).collect();
@@ -339,7 +392,10 @@ impl Scan<'_> {
                 let mut minimum = f64::INFINITY;
                 for w in face_samples(p) {
                     let point = p[0] * w[0] + p[1] * w[1] + p[2] * w[2];
-                    let (d, gradient) = distance(point, self.mesh, &self.bvh);
+                    let (d, gradient) = distance(point, self.mesh, &self.bvh, &self.boundary);
+                    if !d.is_finite() {
+                        continue;
+                    }
                     minimum = minimum.min(d);
                     let missing = self.target - d;
                     if missing <= 0.0001 {
@@ -399,7 +455,7 @@ impl Scan<'_> {
             && let Some((v, q)) = queries
                 .iter()
                 .enumerate()
-                .filter(|(v, _)| !locked[*v])
+                .filter(|(v, q)| !locked[*v] && q.0.is_finite())
                 .min_by(|a, b| a.1.0.total_cmp(&b.1.0))
             && q.0 - self.target <= adapt.max_move
         {
@@ -523,6 +579,7 @@ pub fn adapt_to_neighbours(
         .enumerate()
         .map(|(i, mesh)| {
             mesh.map(|mesh| Scan {
+                boundary: Boundary::new(mesh),
                 mesh,
                 bvh: Bvh::build(mesh),
                 target: if i == 2 {
@@ -614,7 +671,12 @@ pub fn adapt_to_neighbours(
     check_crossings(&outer, &inner.mesh, &thickness.bvh, &edges, &inner_edges)?;
     let distances: Vec<_> = scans
         .iter_mut()
-        .map(|s| s.as_mut().map(|s| s.inspect(&outer, &locked).minimum))
+        .map(|s| {
+            s.as_mut().and_then(|s| {
+                let d = s.inspect(&outer, &locked).minimum;
+                d.is_finite().then_some(d)
+            })
+        })
         .collect();
     if scans.iter().zip(&distances).all(|(scan, measured)| {
         scan.as_ref().is_none_or(|s| {

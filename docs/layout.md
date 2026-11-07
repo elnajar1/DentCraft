@@ -5,7 +5,32 @@ tooth placement pages). Copy the structure only: no exocad icons, skins, screens
 Every colour, font, radius and icon comes from DentCraft's SolidCraft-derived theme (`theme.rs`,
 `icon_svg.rs`).
 
-## Principle
+## Workflow milestone agreed on 2026-11-06
+
+Prioritize the familiar DentalCAD single-crown interaction sequence while using DentCraft's
+own theme and implementation. Complete and verify that sequence before adding distinctive
+features or expanding restoration types.
+
+The Anatomy panel now selects a model tooth from the restoration's quadrant and identifies
+its source as the user's library or parametric anatomy. The main scene previews the fitted
+result. The choice is saved per restoration and is undoable. Switching models preserves the
+margin, insertion axis and placement settings. Copying shape settings keeps each target's
+model selection.
+
+Next, add a dedicated library preview and direct move/rotate controls. Follow with contact
+review, a return to placement, and an explicit export check.
+
+Use Craft Anything in clean-room mode to keep the investigation brief and comparison evidence
+under the local, ignored scratch directory. Compare interaction outcomes and task completion.
+The acceptance criterion is a technician completing the same task in DentCraft's visual style.
+
+Public references consulted for this milestone:
+
+- [DentalCAD overview](https://wiki.exocad.com/wiki/index.php/CAD_Module)
+- [Library tooth selection](https://wiki.exocad.com/wiki/index.php/Choose_Library_Tooth)
+- [Tooth placement](https://wiki.exocad.com/wiki/index.php/Tooth_placement)
+
+## Workspace
 
 The 3D viewport fills the window. Controls float over it in a few compact panels, so the scan
 is always the largest thing on screen. A technician works through a guided sequence (the wizard)

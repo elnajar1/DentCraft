@@ -27,6 +27,15 @@ and visually checked for patient identifiers and private paths before publicatio
 | `demo-011-anatomy.png` | Library crown placement and the additional lift reported by DentCraft |
 | `demo-011-contacts.png` | Combined distance map on the original crown after the solver rejected a deformation |
 
+### Model selection, 2026-11-06
+
+`demo-011-model-choice.png` shows the same authorized scanned demo 011 and owner-selected
+tooth library. Restoration 36 uses library model 37. The Anatomy panel records 0.78 mm of
+additional lift and asks for occlusion review. The owner's request to continue development
+and publish the workflow gallery covers this additional view of the same source case and
+library. Visual review found no patient identifiers or private filesystem paths. The PNG
+is the unretouched application capture.
+
 ## Synthetic workflow gallery
 
 The six synthetic application screenshots were refreshed for **DentCraft 0.2.1** on 2026-11-04.

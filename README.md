@@ -69,6 +69,15 @@ The warning and the distance map stay visible together for inspection.
 
 [![Combined contact map of crown 36 with the surface-intersection warning visible](docs/assets/demo-011-contacts.png)](docs/assets/demo-011-contacts.png)
 
+### Choose the model for a restoration
+
+The Anatomy panel now offers model teeth from the restoration's quadrant. Each option identifies
+the user's library or parametric source. The choice is saved with the case and supports undo.
+In this scanned demo, restoration **36** uses **model 37**. The scene shows the fitted result
+and records **0.78 mm** of additional lift for review.
+
+[![Anatomy model selector showing model 37 fitted on restoration 36](docs/assets/demo-011-model-choice.png)](docs/assets/demo-011-model-choice.png)
+
 ### The workspace on generated geometry
 
 <p align="center">

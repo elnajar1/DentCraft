@@ -53,9 +53,9 @@ pub fn report_line(report: &ContactReport) -> String {
         |v: Option<f64>, none: &str| v.map_or_else(|| none.to_owned(), |v| format!("{v:.3} mm"));
     format!(
         "mesial contact {}, distal contact {}, occlusal {}",
-        mm(report.mesial, "none (no neighbour)"),
-        mm(report.distal, "none (no neighbour)"),
-        mm(report.occlusal, "none (no antagonist)")
+        mm(report.mesial, "unmeasured"),
+        mm(report.distal, "unmeasured"),
+        mm(report.occlusal, "unmeasured")
     )
 }
 
@@ -114,7 +114,8 @@ pub const BESIDE_CROWN_MM: f64 = 1.0;
 pub const MAP_MIN_MM: f64 = -0.1;
 pub const MAP_MAX_MM: f64 = 0.3;
 /// Shown when the adaptation stopped at the material's minimum thickness.
-pub const THIN_WARNING: &str = "Occlusion needs a thinner crown than the material allows \u{2014} reduce the antagonist contact or adjust the prep";
+pub const THIN_WARNING: &str =
+    "Minimum thickness limits contact adjustment. Review the marked distances and crown placement.";
 /// Shown when there is no opposing-jaw scan.
 pub const NO_ANTAGONIST: &str = "No opposing-jaw scan: occlusion is skipped";
 /// Renderer id of the crown mesh, clear of the other steps' ids.
@@ -522,12 +523,12 @@ fn run(job: Job) -> Result<Outcome, String> {
             continue;
         }
         let Some(other) = other else { continue };
-        map_available = true;
         let bvh = Bvh::build(other);
         for (n, d) in nearest
             .iter_mut()
             .zip(signed_distance_map(mesh, &all, other, &bvh))
         {
+            map_available |= d.is_finite();
             if n.is_nan() || d < *n {
                 *n = d;
             }

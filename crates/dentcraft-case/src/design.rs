@@ -89,6 +89,9 @@ impl ContactDesign {
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AnatomyDesign {
+    /// Optional library model in the restoration's quadrant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub library_tooth: Option<Fdi>,
     pub mesiodistal: f64,
     pub buccolingual: f64,
     pub height: f64,
@@ -101,6 +104,7 @@ pub struct AnatomyDesign {
 impl Default for AnatomyDesign {
     fn default() -> Self {
         Self {
+            library_tooth: None,
             mesiodistal: 1.0,
             buccolingual: 1.0,
             height: 1.0,
@@ -193,6 +197,7 @@ mod tests {
     fn anatomy_round_trips_and_missing_fields_keep_their_defaults() {
         let tooth = ToothDesign {
             anatomy: AnatomyDesign {
+                library_tooth: Some(Fdi::new(37).unwrap()),
                 mesiodistal: 1.05,
                 wear: 0.3,
                 rotation_deg: -5.0,

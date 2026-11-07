@@ -3,6 +3,20 @@
 DentCraft is in early development. It is not a cleared or certified medical device: every design
 must be checked by a qualified dental professional before clinical use.
 
+## Unreleased
+
+- Choose a model tooth in the Anatomy panel, with the source shown for each available model
+  in the restoration's quadrant. The fitted crown updates in the scene. The selection is
+  saved per tooth, supports undo, and preserves preparation and placement settings.
+
+- Contact distance maps support selecting the antagonist, either neighbour, or all references.
+  Measurements outside the selected targets are marked for review.
+- Closest points on open scan boundaries are treated as unmeasured. They no longer drive
+  crown adjustment using the sign of a triangle at a cut edge. Gray map regions identify
+  unsupported measurements, and the panel distinguishes unmeasured distances from zero clearance.
+- Regression tests cover tilted, noisy cut surfaces, interior and boundary edges, and a crown
+  outside the reference scan's coverage.
+
 ## 0.2.1 — 2026-11-04
 
 **Your anatomy. Your workflow. An open foundation.**

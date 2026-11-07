@@ -750,6 +750,18 @@ impl DentCraftApp {
                 }
                 return;
             }
+            StepAction::ChooseLibraryTooth(model) => {
+                if let Some(tooth) = self.tooth {
+                    self.anatomy.end_drag(&mut self.history);
+                    anatomy_step::set_library_tooth(
+                        &mut self.case.design,
+                        &mut self.history,
+                        tooth,
+                        model,
+                    );
+                }
+                return;
+            }
             StepAction::SetContact(param, value, dragging) => {
                 if let Some(tooth) = self.tooth {
                     self.contacts.set_param(

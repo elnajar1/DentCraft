@@ -79,7 +79,9 @@ pub fn apply(
             StepId::Anatomy => {
                 let rotation = target.anatomy.rotation_deg;
                 let offset = target.anatomy.offset;
+                let library_tooth = target.anatomy.library_tooth;
                 target.anatomy = source.anatomy;
+                target.anatomy.library_tooth = library_tooth;
                 target.anatomy.rotation_deg = rotation;
                 target.anatomy.offset = offset;
             }
@@ -130,12 +132,14 @@ mod tests {
             source.anatomy.height = 1.2;
             source.anatomy.offset = [2.0, 3.0, 4.0];
             source.anatomy.rotation_deg = 30.0;
+            source.anatomy.library_tooth = Some(Fdi::new(17).unwrap());
             source.contacts.occlusal_clearance = 0.1;
             let target = case.design.teeth.entry(b).or_default();
             target.margin = Some(vec![DVec3::X, DVec3::Y, DVec3::Z]);
             target.insertion_axis = Some(DVec3::Z);
             target.anatomy.offset = [-1.0, 0.0, 0.0];
             target.anatomy.rotation_deg = -15.0;
+            target.anatomy.library_tooth = Some(Fdi::new(27).unwrap());
             let before = case.design.clone();
             let mut history = History::default();
             apply(&mut case, &mut history, &session, Some(a), None);
@@ -144,6 +148,7 @@ mod tests {
             assert_eq!(target.insertion_axis, Some(DVec3::Z));
             assert_eq!(target.anatomy.offset, [-1.0, 0.0, 0.0]);
             assert_eq!(target.anatomy.rotation_deg, -15.0);
+            assert_eq!(target.anatomy.library_tooth, Some(Fdi::new(27).unwrap()));
             match step {
                 StepId::InnerSurface => {
                     assert_eq!(target.inner_surface.cement_gap, Some(0.08));

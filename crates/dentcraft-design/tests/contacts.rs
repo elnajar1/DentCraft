@@ -91,6 +91,67 @@ fn distance_map_sphere_plane_and_invalid_queries() {
 }
 
 #[test]
+fn open_scan_edges_do_not_report_distant_points_as_penetration() {
+    let rotation = DQuat::from_axis_angle(DVec3::new(0.3, -0.7, 0.5).normalize(), 0.81);
+    let mut other = TriMesh::new(
+        vec![
+            DVec3::new(-1.0, -1.0, 0.0),
+            DVec3::new(1.0, -1.0, 0.002),
+            DVec3::new(1.0, 1.0, -0.003),
+            DVec3::new(-1.0, 1.0, 0.001),
+        ],
+        vec![[0, 1, 2], [0, 2, 3]],
+    );
+    for p in &mut other.positions {
+        *p = rotation * *p + DVec3::new(12.0, -8.0, 3.0);
+    }
+    let tri = other.triangle(0);
+    let normal = other.triangle_cross(0).normalize();
+    let centroid = (tri[0] + tri[1] + tri[2]) / 3.0;
+    let shared_midpoint = (tri[0] + tri[2]) / 2.0;
+    let open_midpoint = (tri[0] + tri[1]) / 2.0;
+    let crown = TriMesh::new(
+        vec![
+            centroid + normal * 0.2,
+            centroid - normal * 0.02,
+            shared_midpoint,
+            open_midpoint + rotation * DVec3::new(0.0, -10.0, -0.02),
+            tri[1] + rotation * DVec3::new(10.0, -10.0, -0.02),
+        ],
+        vec![],
+    );
+    let map = signed_distance_map(&crown, &[0, 1, 2, 3, 4], &other, &Bvh::build(&other));
+    assert!((map[0] - 0.2).abs() < 1e-8);
+    assert!((map[1] + 0.02).abs() < 1e-8);
+    assert!(
+        map[2].abs() < 1e-8,
+        "shared interior edge remains measurable"
+    );
+    assert!(map[3].is_nan(), "cut edge does not define penetration");
+    assert!(map[4].is_nan(), "cut vertex does not define penetration");
+}
+
+#[test]
+fn an_uncovered_reference_keeps_the_crown_and_reports_no_measurement() {
+    let (_, inner, mut crown, params) = scene();
+    let before = crown.mesh.positions.clone();
+    let cut_scan = plane(DVec3::new(30.0, 30.0, 20.0), DVec3::Z, 1.0);
+    let report = adapt_to_neighbours(
+        &mut crown,
+        &inner,
+        &params,
+        &AdaptParams::default(),
+        Some(&cut_scan),
+        None,
+        None,
+    )
+    .unwrap();
+    assert_eq!(crown.mesh.positions, before);
+    assert_eq!(report.mesial_contact, None);
+    assert_eq!(report.moved_area, 0.0);
+}
+
+#[test]
 fn scene_contacts_and_grid_thickness() {
     let (die, inner, mut crown, params) = scene();
     let before = crown.mesh.positions.clone();

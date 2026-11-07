@@ -70,6 +70,7 @@ pub enum StepAction {
     NudgeAnatomy(usize, f64),
     /// Put the current tooth's crown back to the library shape and automatic placement.
     ResetAnatomy,
+    ChooseLibraryTooth(Fdi),
     /// Set a contact target of the current tooth in millimetres; `true` while it is dragged.
     SetContact(ContactParam, f64, bool),
     /// A drag of a contact slider ended.
@@ -88,6 +89,8 @@ pub enum StepAction {
 /// What the Anatomy step's card shows.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AnatomyCard {
+    pub model: Fdi,
+    pub models: Vec<(Fdi, bool)>,
     pub tooth: Fdi,
     pub pontic: bool,
     pub has_margin: bool,
@@ -894,6 +897,23 @@ fn anatomy_section(
             if let Some(error) = &card.library_error {
                 ui.label(RichText::new(error).size(SIZE_SMALL).color(p.danger));
             }
+            egui::ComboBox::from_id_salt("anatomy-library-model")
+                .selected_text(format!("Model {}", card.model))
+                .show_ui(ui, |ui| {
+                    for &(model, from_library) in &card.models {
+                        let source = if from_library {
+                            "Library"
+                        } else {
+                            "Parametric"
+                        };
+                        if ui
+                            .selectable_label(model == card.model, format!("{model} · {source}"))
+                            .clicked()
+                        {
+                            action = Some(StepAction::ChooseLibraryTooth(model));
+                        }
+                    }
+                });
             if let Some(note) = &card.library_note {
                 ui.label(RichText::new(note).size(SIZE_SMALL).color(p.accent));
             }
@@ -1113,11 +1133,11 @@ fn contacts_section(
                     )
                 };
                 let rows = [
-                    ("Mesial contact", mm(report.mesial, "no neighbour"), report.mesial.is_some_and(|v| ContactParam::Proximal.needs_review(v, card.values[0]))),
-                    ("Distal contact", mm(report.distal, "no neighbour"), report.distal.is_some_and(|v| ContactParam::Proximal.needs_review(v, card.values[0]))),
+                    ("Mesial contact", mm(report.mesial, "unmeasured"), report.mesial.is_some_and(|v| ContactParam::Proximal.needs_review(v, card.values[0]))),
+                    ("Distal contact", mm(report.distal, "unmeasured"), report.distal.is_some_and(|v| ContactParam::Proximal.needs_review(v, card.values[0]))),
                     (
                         "Min occlusal distance",
-                        mm(report.occlusal, "no antagonist"),
+                        mm(report.occlusal, "unmeasured"),
                         report.occlusal.is_some_and(|v| ContactParam::Occlusal.needs_review(v, card.values[1])),
                     ),
                     (
@@ -1156,9 +1176,12 @@ fn contacts_section(
                     }
                 });
             match card.map_available {
-                Some(true) => distance_legend(ui, p),
+                Some(true) => {
+                    distance_legend(ui, p);
+                    ui.weak("Gray areas are outside measurable scan coverage");
+                }
                 Some(false) => {
-                    ui.weak("No reference surface near this crown");
+                    ui.weak("No measurable reference surface near this crown");
                 }
                 None => {}
             }
