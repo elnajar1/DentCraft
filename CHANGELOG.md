@@ -5,6 +5,8 @@ must be checked by a qualified dental professional before clinical use.
 
 ## Unreleased
 
+- Hold Shift while nudging a crown to move it in 0.01 mm increments; the displayed offsets and
+  undo labels retain that precision.
 - Reset a crown's position and rotation without losing the selected tooth model or shape edits;
   the placement reset can be undone.
 - Choose a model tooth in the Anatomy panel, with the source shown for each available model

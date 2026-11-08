@@ -7,7 +7,7 @@ use eframe::egui::{
     Ui, Vec2, vec2,
 };
 
-use crate::anatomy_step::{AnatomyParam, NUDGE_MM};
+use crate::anatomy_step::{AnatomyParam, FINE_NUDGE_MM, NUDGE_MM};
 use crate::app::group_thousands;
 use crate::chart::{ON_FILL, kind_color};
 use crate::contacts_step::{
@@ -972,6 +972,16 @@ fn anatomy_section(
                 ("Facial", "Lingual", "Facial"),
                 ("Occlusal", "Cervical", "Occlusal"),
             ];
+            let nudge = if ui.input(|i| i.modifiers.shift) {
+                FINE_NUDGE_MM
+            } else {
+                NUDGE_MM
+            };
+            ui.label(
+                RichText::new("Move: 0.1 mm · Shift: 0.01 mm")
+                    .size(SIZE_SMALL)
+                    .color(p.text_dim),
+            );
             for (axis, ((name, minus, plus), &value)) in axes.iter().zip(&card.offset).enumerate() {
                 ui.horizontal(|ui| {
                     ui.label(
@@ -981,21 +991,21 @@ fn anatomy_section(
                     );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if small_button(ui, "+", true, false)
-                            .on_hover_text(format!("{plus} {NUDGE_MM:.1} mm"))
+                            .on_hover_text(format!("{plus} {nudge:.2} mm"))
                             .clicked()
                         {
-                            action = Some(StepAction::NudgeAnatomy(axis, NUDGE_MM));
+                            action = Some(StepAction::NudgeAnatomy(axis, nudge));
                         }
                         ui.label(
-                            RichText::new(format!("{} mm", widgets::fmt_signed(value, 1)))
+                            RichText::new(format!("{} mm", widgets::fmt_signed(value, 2)))
                                 .size(SIZE_SMALL)
                                 .color(p.text),
                         );
                         if small_button(ui, "\u{2212}", true, false)
-                            .on_hover_text(format!("{minus} {NUDGE_MM:.1} mm"))
+                            .on_hover_text(format!("{minus} {nudge:.2} mm"))
                             .clicked()
                         {
-                            action = Some(StepAction::NudgeAnatomy(axis, -NUDGE_MM));
+                            action = Some(StepAction::NudgeAnatomy(axis, -nudge));
                         }
                     });
                 });

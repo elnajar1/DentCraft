@@ -37,6 +37,8 @@ pub const ANATOMY: &str = "Anatomy";
 pub const RESET_LABEL: &str = "Reset crown anatomy";
 /// Distance one offset nudge moves the crown, in millimetres.
 pub const NUDGE_MM: f64 = 0.1;
+/// Fine placement step, in millimetres, while Shift is held.
+pub const FINE_NUDGE_MM: f64 = 0.01;
 /// Renderer id of the crown mesh, clear of the scans' and the inner surface's ids.
 const MESH: MeshId = MeshId(u64::MAX - 2);
 /// First edit group of this step's drags, clear of the other steps' groups.
@@ -264,7 +266,12 @@ pub fn nudge_label(axis: usize, delta: f64) -> String {
         ["occlusally", "cervically"],
     ];
     let name = names[axis.min(2)][usize::from(delta < 0.0)];
-    format!("Move crown {name} {:.1} mm", delta.abs())
+    let distance = if delta.abs() < NUDGE_MM {
+        format!("{:.2}", delta.abs())
+    } else {
+        format!("{:.1}", delta.abs())
+    };
+    format!("Move crown {name} {distance} mm")
 }
 
 /// Moves the crown of `tooth` by `delta` mm along offset axis `axis` and records the edit.
@@ -832,6 +839,21 @@ mod tests {
 
     fn close(a: DVec3, b: DVec3) -> bool {
         a.distance(b) < 1e-9
+    }
+
+    #[test]
+    fn fine_placement_steps_are_precise_and_undoable() {
+        let tooth = t(36);
+        let mut design = Design::default();
+        let mut history = History::default();
+        nudge(&mut design, &mut history, tooth, 0, FINE_NUDGE_MM);
+        nudge(&mut design, &mut history, tooth, 0, FINE_NUDGE_MM);
+        assert_eq!(design.teeth[&tooth].anatomy.offset[0], 0.02);
+        assert_eq!(history.undo_label(), Some("Move crown mesially 0.01 mm"));
+        history.undo(&mut design);
+        assert_eq!(design.teeth[&tooth].anatomy.offset[0], 0.01);
+        history.undo(&mut design);
+        assert_eq!(design, Design::default());
     }
 
     #[test]
