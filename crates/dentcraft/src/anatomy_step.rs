@@ -21,14 +21,14 @@ use dentcraft_design::{
     Crown, CrownParams as BuildParams, CrownPlacement, CrownReport, DesignError, InnerSurface,
     auto_placement, build_crown,
 };
-use dentcraft_render::{DrawItem, MeshData, MeshId};
+use dentcraft_render::{DrawItem, MeshData, MeshId, Overlay};
 use eframe::egui;
 use glam::DVec3;
 
 use crate::history::{EditGroup, History};
 use crate::inner_step::describe;
 use crate::theme::Palette;
-use crate::tools::{Tool, rgb};
+use crate::tools::{Pointer, Tool, WorldLabel, rgb};
 use crate::workflow_panel::AnatomyCard;
 
 /// Name of the anatomy tool.
@@ -471,6 +471,43 @@ fn fit(
 /// The viewport tool of the Anatomy step: draws the crown.
 pub struct AnatomyTool {
     mesh: Rc<RefCell<Option<Arc<MeshData>>>>,
+    placement: Rc<RefCell<PlacementHandles>>,
+}
+
+const HANDLE_LENGTH: f64 = 5.0;
+
+#[derive(Clone)]
+struct HandleFrame {
+    tooth: Fdi,
+    stamp: Stamp,
+    center: DVec3,
+    axes: [DVec3; 3],
+}
+
+#[derive(Default)]
+struct PlacementHandles {
+    frame: Option<HandleFrame>,
+    drag: Option<(usize, f64, f64)>, // axis, start coordinate, current displacement
+    completed: Option<(HandleFrame, usize, f64)>,
+}
+
+/// Closest coordinate on an axis to a forward pointer ray. Nearly parallel
+/// rays are rejected instead of creating an uncontrolled displacement.
+fn axis_ray_coordinate(point: DVec3, axis: DVec3, origin: DVec3, direction: DVec3) -> Option<f64> {
+    if !point.is_finite() || !origin.is_finite() {
+        return None;
+    }
+    let axis = axis.try_normalize()?;
+    let direction = direction.try_normalize()?;
+    let dot = axis.dot(direction);
+    let denominator = 1.0 - dot * dot;
+    if denominator < 0.01 {
+        return None;
+    }
+    let delta = origin - point;
+    let along = (delta.dot(axis) - delta.dot(direction) * dot) / denominator;
+    let ray_t = (point + axis * along - origin).dot(direction);
+    (along.is_finite() && ray_t >= 0.0).then_some(along)
 }
 
 impl Tool for AnatomyTool {
@@ -480,6 +517,100 @@ impl Tool for AnatomyTool {
 
     fn picks_surface(&self) -> bool {
         false
+    }
+
+    fn handles(&self) -> Vec<DVec3> {
+        let state = self.placement.borrow();
+        let Some(frame) = &state.frame else {
+            return Vec::new();
+        };
+        let shift = state
+            .drag
+            .map_or(DVec3::ZERO, |(axis, _, d)| frame.axes[axis] * d);
+        frame
+            .axes
+            .iter()
+            .map(|axis| frame.center + shift + *axis * HANDLE_LENGTH)
+            .collect()
+    }
+
+    fn drag_start(&mut self, handle: usize, pointer: &Pointer) {
+        let mut state = self.placement.borrow_mut();
+        let Some(frame) = state.frame.as_ref() else {
+            return;
+        };
+        let (Some(axis), Some((origin, direction))) = (frame.axes.get(handle), pointer.ray) else {
+            return;
+        };
+        if let Some(start) = axis_ray_coordinate(frame.center, *axis, origin, direction) {
+            state.drag = Some((handle, start, 0.0));
+        }
+    }
+
+    fn drag(&mut self, handle: usize, pointer: &Pointer) {
+        let mut state = self.placement.borrow_mut();
+        let (Some(frame), Some((active, start, _)), Some((origin, direction))) =
+            (&state.frame, state.drag, pointer.ray)
+        else {
+            return;
+        };
+        if active != handle {
+            return;
+        }
+        if let Some(position) =
+            axis_ray_coordinate(frame.center, frame.axes[handle], origin, direction)
+        {
+            // Reject unreasonably large accidental gestures; all calculations remain in mm.
+            state.drag = Some((active, start, (position - start).clamp(-5.0, 5.0)));
+        }
+    }
+
+    fn drag_end(&mut self, _handle: usize, _pointer: &Pointer) {
+        let mut state = self.placement.borrow_mut();
+        if let (Some(frame), Some((axis, _, distance))) = (state.frame.clone(), state.drag.take())
+            && distance.abs() >= 0.005
+        {
+            state.completed = Some((frame, axis, distance));
+        }
+    }
+
+    fn overlays(&self, palette: &Palette) -> Vec<Overlay> {
+        let state = self.placement.borrow();
+        let Some(frame) = &state.frame else {
+            return Vec::new();
+        };
+        let shift = state
+            .drag
+            .map_or(DVec3::ZERO, |(axis, _, d)| frame.axes[axis] * d);
+        let center = frame.center + shift;
+        let mut overlays = Vec::new();
+        for axis in frame.axes {
+            let end = center + axis * HANDLE_LENGTH;
+            overlays.push(Overlay::Polyline {
+                points: vec![center.as_vec3(), end.as_vec3()],
+                closed: false,
+                color: rgb(palette.accent),
+                width_px: 2.0,
+            });
+            overlays.push(Overlay::Points {
+                points: vec![end.as_vec3()],
+                color: rgb(palette.accent),
+                radius_px: 6.0,
+                outline: Some([1.0; 3]),
+            });
+        }
+        overlays
+    }
+
+    fn labels(&self) -> Vec<WorldLabel> {
+        self.handles()
+            .into_iter()
+            .zip(["M", "F", "O"])
+            .map(|(anchor, name)| WorldLabel {
+                anchor,
+                text: name.to_owned(),
+            })
+            .collect()
     }
 
     fn meshes(&self, palette: &Palette) -> Vec<(DrawItem, Arc<MeshData>)> {
@@ -580,6 +711,7 @@ fn template_for(
 /// The app side of the Anatomy step: worker jobs, the shown crown and its report.
 pub struct AnatomyStep {
     mesh: Rc<RefCell<Option<Arc<MeshData>>>>,
+    placement: Rc<RefCell<PlacementHandles>>,
     wanted: Option<Key>,
     shown: Option<Key>,
     /// The last job for this key failed: do not retry it.
@@ -609,6 +741,7 @@ impl AnatomyStep {
         let (tx, rx) = channel();
         Self {
             mesh: Rc::default(),
+            placement: Rc::default(),
             wanted: None,
             shown: None,
             failed: None,
@@ -654,7 +787,42 @@ impl AnatomyStep {
     pub fn tool(&self) -> Box<dyn Tool> {
         Box::new(AnatomyTool {
             mesh: self.mesh.clone(),
+            placement: self.placement.clone(),
         })
+    }
+
+    /// Apply a completed gesture only to the same unchanged crown it began on.
+    pub fn apply_placement_drag(
+        &mut self,
+        case: &mut Case,
+        history: &mut History,
+        tooth: Option<Fdi>,
+    ) {
+        if tooth.is_none() {
+            let mut state = self.placement.borrow_mut();
+            state.drag = None;
+            state.completed = None;
+            return;
+        }
+        let completed = self.placement.borrow_mut().completed.take();
+        let Some((frame, axis, distance)) = completed else {
+            return;
+        };
+        if tooth != Some(frame.tooth) || Stamp::of(case, frame.tooth) != frame.stamp {
+            return;
+        }
+        self.end_drag(history);
+        let before = case.design.clone();
+        let offset = &mut case
+            .design
+            .teeth
+            .entry(frame.tooth)
+            .or_default()
+            .anatomy
+            .offset[axis];
+        *offset = ((*offset + distance) * 100.0).round() / 100.0;
+        prune(&mut case.design, frame.tooth);
+        history.record("Move crown with handle", before, &case.design, None);
     }
 
     /// A job is running or the shown crown is out of date.
@@ -762,8 +930,31 @@ impl AnatomyStep {
                     };
                     // Kept even when no longer wanted: the stamp tells the export if it is current.
                     self.built
-                        .insert(o.key.tooth, (o.stamp, o.crown.clone(), o.mesial));
+                        .insert(o.key.tooth, (o.stamp.clone(), o.crown.clone(), o.mesial));
                     if Some(&o.key) == self.wanted.as_ref() {
+                        let points = &o.crown.mesh.positions;
+                        let center = if points.is_empty() {
+                            None
+                        } else {
+                            Some(points.iter().copied().sum::<DVec3>() / points.len() as f64)
+                        };
+                        let z = o.key.surface.axis.normalize_or_zero();
+                        let mesial = o.mesial.normalize_or_zero();
+                        let facial = z
+                            .cross(mesial * template_sign(o.key.tooth))
+                            .normalize_or_zero();
+                        self.placement.borrow_mut().frame = center.and_then(|center| {
+                            (center.is_finite()
+                                && z.length_squared() > 0.9
+                                && mesial.length_squared() > 0.9
+                                && facial.length_squared() > 0.9)
+                                .then(|| HandleFrame {
+                                    tooth: o.key.tooth,
+                                    stamp: o.stamp.clone(),
+                                    center,
+                                    axes: [mesial, facial, z],
+                                })
+                        });
                         self.new_crown |= self.framed.insert(o.key.tooth);
                         self.error = None;
                         *self.mesh.borrow_mut() = Some(o.mesh);
@@ -802,6 +993,10 @@ impl AnatomyStep {
         if wanted != self.wanted {
             self.error = None;
             self.wanted = wanted;
+            let mut handles = self.placement.borrow_mut();
+            if handles.drag.is_none() {
+                handles.frame = None;
+            }
         }
         let Some(key) = self.wanted.clone() else {
             return;
@@ -839,6 +1034,51 @@ mod tests {
 
     fn close(a: DVec3, b: DVec3) -> bool {
         a.distance(b) < 1e-9
+    }
+
+    #[test]
+    fn handle_projection_rejects_parallel_degenerate_and_backward_rays() {
+        assert_eq!(
+            axis_ray_coordinate(DVec3::ZERO, DVec3::X, DVec3::new(2.0, 0.0, 10.0), -DVec3::Z),
+            Some(2.0)
+        );
+        assert!(axis_ray_coordinate(DVec3::ZERO, DVec3::X, DVec3::Z, DVec3::X).is_none());
+        assert!(axis_ray_coordinate(DVec3::ZERO, DVec3::ZERO, DVec3::Z, -DVec3::Z).is_none());
+        assert!(axis_ray_coordinate(DVec3::ZERO, DVec3::X, DVec3::Z, DVec3::Z).is_none());
+    }
+
+    #[test]
+    fn handle_drag_is_one_undo_and_rejects_stale_crowns() {
+        let tooth = t(36);
+        let mut case = Case::new("test");
+        let mut history = History::default();
+        let mut step = AnatomyStep::new(None, LibrarySource::default());
+        let frame = HandleFrame {
+            tooth,
+            stamp: Stamp::of(&case, tooth),
+            center: DVec3::ZERO,
+            axes: [DVec3::X, DVec3::Y, DVec3::Z],
+        };
+        step.placement.borrow_mut().frame = Some(frame.clone());
+        let mut tool = step.tool();
+        let pointer = |x| Pointer {
+            pixel: glam::Vec2::ZERO,
+            hit: None,
+            ray: Some((DVec3::new(x, 0.0, 10.0), -DVec3::Z)),
+        };
+        tool.drag_start(0, &pointer(5.0));
+        tool.drag(0, &pointer(5.2));
+        tool.drag(0, &pointer(5.4));
+        tool.drag_end(0, &pointer(5.4));
+        step.apply_placement_drag(&mut case, &mut history, Some(tooth));
+        assert_eq!(case.design.teeth[&tooth].anatomy.offset[0], 0.4);
+        history.undo(&mut case.design);
+        assert_eq!(case.design, Design::default());
+        case.design.teeth.entry(tooth).or_default().anatomy.height = 1.1;
+        let unchanged = case.design.clone();
+        step.placement.borrow_mut().completed = Some((frame, 0, 1.0));
+        step.apply_placement_drag(&mut case, &mut history, Some(tooth));
+        assert_eq!(case.design, unchanged);
     }
 
     #[test]

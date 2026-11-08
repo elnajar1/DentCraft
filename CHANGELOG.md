@@ -5,6 +5,8 @@ must be checked by a qualified dental professional before clinical use.
 
 ## Unreleased
 
+- Move the crown along its mesial, facial and occlusal axes using viewport handles. The crown
+  rebuilds on release, each gesture is undoable, and nearly parallel viewing rays are ignored.
 - Hold Shift while nudging a crown to move it in 0.01 mm increments; the displayed offsets and
   undo labels retain that precision.
 - Reset a crown's position and rotation without losing the selected tooth model or shape edits;

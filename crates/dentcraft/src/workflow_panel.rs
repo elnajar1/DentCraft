@@ -972,6 +972,11 @@ fn anatomy_section(
                 ("Facial", "Lingual", "Facial"),
                 ("Occlusal", "Cervical", "Occlusal"),
             ];
+            ui.label(
+                RichText::new("Drag M / F / O handles to move the crown; it rebuilds on release.")
+                    .size(SIZE_SMALL)
+                    .color(p.text_dim),
+            );
             let nudge = if ui.input(|i| i.modifiers.shift) {
                 FINE_NUDGE_MM
             } else {

@@ -2350,6 +2350,13 @@ impl DentCraftApp {
             .current()
             .filter(|s| matches!(s.id, StepId::Anatomy | StepId::Occlusion))
             .and(self.tooth);
+        let anatomy_tooth = self
+            .session
+            .current()
+            .filter(|s| s.id == StepId::Anatomy)
+            .and(tooth);
+        self.anatomy
+            .apply_placement_drag(&mut self.case, &mut self.history, anatomy_tooth);
         self.anatomy.update(anatomy_step::StepFrame {
             case: &self.case,
             tooth,
