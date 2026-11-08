@@ -374,6 +374,7 @@ pub(crate) fn validate_surface(
         .collect();
     edges.sort_unstable_by_key(|e| key(e.0, e.1));
     let mut parent: Vec<u32> = (0..mesh.triangles.len() as u32).collect();
+    let mut rank = vec![0_u8; parent.len()];
     fn root(parent: &mut [u32], mut i: u32) -> u32 {
         while parent[i as usize] != i {
             let next = parent[i as usize];
@@ -400,7 +401,7 @@ pub(crate) fn validate_surface(
                 }
                 let a = root(&mut parent, e.2);
                 let b = root(&mut parent, other.2);
-                parent[b as usize] = a;
+                union_roots(&mut parent, &mut rank, a, b);
             }
             _ => return Err(invalid),
         }
@@ -430,6 +431,23 @@ pub(crate) fn validate_surface(
         return Err(invalid);
     }
     Ok(open)
+}
+
+/// Union by rank keeps connectivity validation near-linear even when the
+/// sorted edge order repeatedly joins a large component to a single face.
+fn union_roots(parent: &mut [u32], rank: &mut [u8], a: u32, b: u32) {
+    if a == b {
+        return;
+    }
+    let (a, b) = if rank[a as usize] < rank[b as usize] {
+        (b, a)
+    } else {
+        (a, b)
+    };
+    parent[b as usize] = a;
+    if rank[a as usize] == rank[b as usize] {
+        rank[a as usize] += 1;
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1420,6 +1438,33 @@ mod tests {
         include!("../tests/support/crown.rs");
     }
     use verification::verify;
+
+    #[test]
+    fn connectivity_union_resists_adversarial_face_order() {
+        let mut parent: Vec<u32> = (0..10_000).collect();
+        let mut rank = vec![0; parent.len()];
+        let mut component_root = 0;
+        for face in 1..parent.len() as u32 {
+            // Always put the new singleton first: unranked union makes a
+            // linear chain for this valid ordering of adjacent faces.
+            union_roots(&mut parent, &mut rank, face, component_root);
+            component_root = if parent[face as usize] == face {
+                face
+            } else {
+                parent[face as usize]
+            };
+        }
+        for face in 0..parent.len() {
+            let mut current = face;
+            let mut depth = 0;
+            while parent[current] as usize != current {
+                current = parent[current] as usize;
+                depth += 1;
+                assert!(depth <= 1, "unexpectedly deep connectivity tree");
+            }
+            assert_eq!(current, component_root as usize);
+        }
+    }
 
     #[test]
     fn original_size_caps_translate_without_stretching() {
