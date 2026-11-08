@@ -750,6 +750,13 @@ impl DentCraftApp {
                 }
                 return;
             }
+            StepAction::ResetAnatomyPlacement => {
+                if let Some(tooth) = self.tooth {
+                    self.anatomy.end_drag(&mut self.history);
+                    anatomy_step::reset_placement(&mut self.case.design, &mut self.history, tooth);
+                }
+                return;
+            }
             StepAction::ChooseLibraryTooth(model) => {
                 if let Some(tooth) = self.tooth {
                     self.anatomy.end_drag(&mut self.history);

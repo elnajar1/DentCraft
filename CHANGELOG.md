@@ -5,6 +5,8 @@ must be checked by a qualified dental professional before clinical use.
 
 ## Unreleased
 
+- Reset a crown's position and rotation without losing the selected tooth model or shape edits;
+  the placement reset can be undone.
 - Choose a model tooth in the Anatomy panel, with the source shown for each available model
   in the restoration's quadrant. The fitted crown updates in the scene. The selection is
   saved per tooth, supports undo, and preserves preparation and placement settings.

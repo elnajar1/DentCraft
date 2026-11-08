@@ -68,6 +68,8 @@ pub enum StepAction {
     /// Move the current tooth's crown along offset axis `usize` (mesial, facial, occlusal) by
     /// the millimetres given.
     NudgeAnatomy(usize, f64),
+    /// Reset position and rotation while retaining the selected model and shape.
+    ResetAnatomyPlacement,
     /// Put the current tooth's crown back to the library shape and automatic placement.
     ResetAnatomy,
     ChooseLibraryTooth(Fdi),
@@ -997,6 +999,17 @@ fn anatomy_section(
                         }
                     });
                 });
+            }
+            if small_button(
+                ui,
+                "Reset placement",
+                card.offset.iter().any(|&offset| offset != 0.0) || card.values[5] != 0.0,
+                false,
+            )
+            .on_hover_text("Restore automatic position and rotation; keep the model and shape")
+            .clicked()
+            {
+                action = Some(StepAction::ResetAnatomyPlacement);
             }
             if let Some((thickness, area)) = card.report {
                 let rows = [

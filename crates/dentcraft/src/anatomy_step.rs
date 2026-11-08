@@ -276,6 +276,17 @@ pub fn nudge(design: &mut Design, history: &mut History, tooth: Fdi, axis: usize
     history.record(&nudge_label(axis, delta), before, design, None);
 }
 
+/// Restores automatic placement without changing the chosen model or its shape.
+pub fn reset_placement(design: &mut Design, history: &mut History, tooth: Fdi) {
+    let before = design.clone();
+    if let Some(t) = design.teeth.get_mut(&tooth) {
+        t.anatomy.offset = [0.0; 3];
+        t.anatomy.rotation_deg = 0.0;
+    }
+    prune(design, tooth);
+    history.record("Reset crown placement", before, design, None);
+}
+
 /// Puts the crown of `tooth` back to the library shape and the automatic placement.
 pub fn reset(design: &mut Design, history: &mut History, tooth: Fdi) {
     let before = design.clone();
@@ -821,6 +832,29 @@ mod tests {
 
     fn close(a: DVec3, b: DVec3) -> bool {
         a.distance(b) < 1e-9
+    }
+
+    #[test]
+    fn reset_placement_preserves_model_shape_and_is_undoable() {
+        let tooth = t(36);
+        let mut design = Design::default();
+        let stored = design.teeth.entry(tooth).or_default();
+        stored.margin = Some(vec![DVec3::X, DVec3::Y, DVec3::Z]);
+        stored.anatomy.library_tooth = Some(t(37));
+        stored.anatomy.mesiodistal = 1.1;
+        stored.anatomy.rotation_deg = 12.0;
+        stored.anatomy.offset = [0.2, -0.1, 0.3];
+        let before = design.clone();
+        let mut history = History::default();
+        reset_placement(&mut design, &mut history, tooth);
+        let result = &design.teeth[&tooth];
+        assert_eq!(result.anatomy.offset, [0.0; 3]);
+        assert_eq!(result.anatomy.rotation_deg, 0.0);
+        assert_eq!(result.anatomy.library_tooth, Some(t(37)));
+        assert_eq!(result.anatomy.mesiodistal, 1.1);
+        assert_eq!(result.margin, before.teeth[&tooth].margin);
+        history.undo(&mut design);
+        assert_eq!(design, before);
     }
 
     #[test]
