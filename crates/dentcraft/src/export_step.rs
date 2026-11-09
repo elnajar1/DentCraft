@@ -227,6 +227,8 @@ pub struct ExportRow {
     pub crown: Option<(usize, f64)>,
     /// Outcome of the last export of this tooth: triangles and bytes written, or the error.
     pub result: Option<Result<ExportedInfo, String>>,
+    /// This tooth's current crown or restoration kind differs from the last export attempt.
+    pub changed_since_export: bool,
     /// Index of the Anatomy step when it works on this tooth.
     pub anatomy_step: Option<usize>,
 }
@@ -247,6 +249,7 @@ pub struct ExportStep {
     rx: Option<Receiver<Message>>,
     progress: Option<String>,
     results: BTreeMap<Fdi, Result<Written, String>>,
+    exported: BTreeMap<Fdi, (RestorationKind, Arc<Crown>)>,
     summary: Option<Summary>,
     /// Where the running export writes.
     dir: Option<PathBuf>,
@@ -260,6 +263,7 @@ impl ExportStep {
             rx: None,
             progress: None,
             results: BTreeMap::new(),
+            exported: BTreeMap::new(),
             summary: None,
             dir: None,
             repaint,
@@ -292,6 +296,10 @@ impl ExportStep {
         let (tx, rx) = channel();
         self.rx = Some(rx);
         self.results.clear();
+        self.exported = items
+            .iter()
+            .filter_map(|i| i.crown.as_ref().map(|c| (i.tooth, (i.kind, c.clone()))))
+            .collect();
         self.summary = None;
         self.progress = Some("Starting export\u{2026}".to_owned());
         self.dir = Some(dir);
@@ -379,28 +387,41 @@ impl ExportStep {
         ExportCard {
             rows: items
                 .iter()
-                .map(|i| ExportRow {
-                    tooth: i.tooth,
-                    kind: i.kind,
-                    crown: i
-                        .crown
-                        .as_ref()
-                        .map(|c| (c.mesh.triangle_count(), c.report.min_thickness)),
-                    result: self.results.get(&i.tooth).map(|r| {
-                        r.as_ref()
-                            .map(|w| ExportedInfo {
-                                triangles: w.triangles,
-                                bytes: w.bytes,
-                                warning: w.warning.clone(),
-                            })
-                            .map_err(Clone::clone)
-                    }),
-                    anatomy_step: anatomy_step(i.tooth),
+                .map(|i| {
+                    let prior = self.exported.get(&i.tooth);
+                    let matches = prior.is_some_and(|(kind, previous)| {
+                        *kind == i.kind
+                            && i.crown
+                                .as_ref()
+                                .is_some_and(|current| Arc::ptr_eq(previous, current))
+                    });
+                    ExportRow {
+                        tooth: i.tooth,
+                        kind: i.kind,
+                        crown: i
+                            .crown
+                            .as_ref()
+                            .map(|c| (c.mesh.triangle_count(), c.report.min_thickness)),
+                        result: self.results.get(&i.tooth).filter(|_| matches).map(|r| {
+                            r.as_ref()
+                                .map(|w| ExportedInfo {
+                                    triangles: w.triangles,
+                                    bytes: w.bytes,
+                                    warning: w.warning.clone(),
+                                })
+                                .map_err(Clone::clone)
+                        }),
+                        anatomy_step: anatomy_step(i.tooth),
+                        changed_since_export: prior.is_some() && !matches,
+                    }
                 })
                 .collect(),
             simplify: self.simplify,
             busy: self.progress.clone(),
-            summary: self.summary.as_ref().map(Summary::line),
+            summary: self
+                .summary
+                .as_ref()
+                .map(|summary| format!("Last export: {}", summary.line())),
             folder: self.summary.as_ref().map(|s| s.dir.clone()),
         }
     }
@@ -581,6 +602,45 @@ mod tests {
         assert_eq!(row(t(46)).crown, None);
         assert_eq!(row(t(46)).anatomy_step, Some(7));
         assert_eq!(row(t(45)).anatomy_step, None);
+    }
+
+    #[test]
+    fn export_results_are_only_shown_for_the_exported_crown_and_kind() {
+        let tooth = t(36);
+        let crown = Arc::new(Crown {
+            mesh: tetrahedron(),
+            margin_vertices: vec![],
+            report: dentcraft_design::CrownReport {
+                min_thickness: 0.6,
+                thickened_area: 0.0,
+                max_thickening: 0.0,
+            },
+        });
+        let mut step = ExportStep::new(None);
+        step.exported
+            .insert(tooth, (RestorationKind::Crown, crown.clone()));
+        step.results.insert(
+            tooth,
+            Ok(Written {
+                path: PathBuf::from("36.stl"),
+                bytes: 123,
+                triangles: 4,
+                warning: None,
+            }),
+        );
+        let item = |crown, kind| PlanItem { tooth, kind, crown };
+        let current = item(Some(crown.clone()), RestorationKind::Crown);
+        let card = step.card(&[current], |_| None);
+        assert!(!card.rows[0].changed_since_export);
+        assert!(matches!(&card.rows[0].result, Some(Ok(_))));
+        let changed = item(Some(Arc::new((*crown).clone())), RestorationKind::Crown);
+        let missing = item(None, RestorationKind::Crown);
+        let other_kind = item(Some(crown), RestorationKind::Onlay);
+        for item in [changed, missing, other_kind] {
+            let card = step.card(&[item], |_| None);
+            assert!(card.rows[0].changed_since_export);
+            assert!(card.rows[0].result.is_none());
+        }
     }
 
     #[test]

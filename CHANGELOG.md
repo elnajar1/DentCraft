@@ -5,6 +5,8 @@ must be checked by a qualified dental professional before clinical use.
 
 ## Unreleased
 
+- Export rows mark changed or missing crowns after an earlier export, instead of presenting the
+  earlier result as the current design; the summary is labeled as the last export.
 - Export checks the input and simplified surfaces for valid indices, finite STL coordinates,
   nondegenerate triangles, closed edges and consistent winding before writing. If simplification
   fails these checks, the original surface is written with a warning. These checks do not assess

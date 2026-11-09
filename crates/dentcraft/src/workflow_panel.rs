@@ -1249,12 +1249,22 @@ fn export_section(ui: &mut Ui, card: &ExportCard, p: &Palette) -> Option<StepAct
                         let (text, color) = match (&row.result, row.crown) {
                             (Some(Ok(_)), _) => ("Written", p.accent),
                             (Some(Err(_)), _) => ("Failed", p.danger),
+                            (None, Some(_)) if row.changed_since_export => ("Changed", p.danger),
                             (None, Some(_)) => ("Ready", p.text),
                             (None, None) => ("Missing crown", p.text_dim),
                         };
                         ui.label(RichText::new(text).size(SIZE_SMALL).color(color));
                     });
                 });
+                if row.changed_since_export {
+                    ui.label(
+                        RichText::new(
+                            "Changed since last export; export again to update the file.",
+                        )
+                        .size(SIZE_SMALL)
+                        .color(p.text_dim),
+                    );
+                }
                 match row.crown {
                     Some((triangles, thickness)) => {
                         let mut text = format!(
