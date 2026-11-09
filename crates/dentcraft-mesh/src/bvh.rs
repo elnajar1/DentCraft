@@ -102,6 +102,57 @@ impl Bvh {
         &self.order[node.first as usize..(node.first + node.count) as usize]
     }
 
+    /// Finds the first distinct triangle pair whose bounds overlap and for which `accept`
+    /// returns true. Bounds overlap is only a broad-phase candidate, not a triangle intersection.
+    /// The BVH must have been built from this same, unchanged mesh.
+    pub fn find_overlapping_pair(
+        &self,
+        mesh: &TriMesh,
+        mut accept: impl FnMut(u32, u32) -> bool,
+    ) -> Option<(u32, u32)> {
+        fn overlaps(a: Aabb, b: Aabb) -> bool {
+            a.min.cmple(b.max).all() && b.min.cmple(a.max).all()
+        }
+        if self.nodes.is_empty() {
+            return None;
+        }
+        let boxes: Vec<Aabb> = (0..mesh.triangle_count())
+            .map(|i| triangle_bounds(mesh.triangle(i)))
+            .collect();
+        let mut stack = vec![(0_usize, 0_usize)];
+        while let Some((a, b)) = stack.pop() {
+            let left = &self.nodes[a];
+            let right = &self.nodes[b];
+            if !overlaps(left.bounds, right.bounds) {
+                continue;
+            }
+            if left.count > 0 && right.count > 0 {
+                for (i, &x) in self.leaf(left).iter().enumerate() {
+                    let start = if a == b { i + 1 } else { 0 };
+                    for &y in &self.leaf(right)[start..] {
+                        let pair = (x.min(y), x.max(y));
+                        if x != y
+                            && overlaps(boxes[x as usize], boxes[y as usize])
+                            && accept(pair.0, pair.1)
+                        {
+                            return Some(pair);
+                        }
+                    }
+                }
+            } else if a == b {
+                let child = left.first as usize;
+                stack.extend([(child, child), (child, child + 1), (child + 1, child + 1)]);
+            } else if left.count == 0 {
+                let child = left.first as usize;
+                stack.extend([(child, b), (child + 1, b)]);
+            } else {
+                let child = right.first as usize;
+                stack.extend([(a, child), (a, child + 1)]);
+            }
+        }
+        None
+    }
+
     /// Nearest hit of the ray `origin + t·dir`, `t ≥ 0`, on either side of a triangle.
     /// `dir` need not be unit length; a zero direction hits nothing.
     pub fn raycast(&self, mesh: &TriMesh, origin: DVec3, dir: DVec3) -> Option<RayHit> {
@@ -357,6 +408,51 @@ mod tests {
                 self.range(-half, half),
             )
         }
+    }
+
+    #[test]
+    fn overlapping_pair_candidates_match_brute_force_without_duplicates() {
+        use std::collections::BTreeSet;
+        assert_eq!(
+            Bvh::build(&TriMesh::default()).find_overlapping_pair(&TriMesh::default(), |_, _| true),
+            None
+        );
+        let mut rng = Lcg(42);
+        let mut mesh = TriMesh::default();
+        for i in 0..100_u32 {
+            let base = rng.vec(4.0);
+            mesh.positions
+                .extend([base, base + rng.vec(1.0), base + rng.vec(1.0)]);
+            mesh.triangles.push([3 * i, 3 * i + 1, 3 * i + 2]);
+        }
+        // A zero-area triangle and duplicate coordinates must still be considered as bounds.
+        mesh.positions.extend([DVec3::ZERO; 3]);
+        mesh.triangles.push([300, 301, 302]);
+        let bvh = Bvh::build(&mesh);
+        let mut seen = BTreeSet::new();
+        assert_eq!(
+            bvh.find_overlapping_pair(&mesh, |a, b| {
+                assert!(a < b);
+                assert!(seen.insert((a, b)), "candidate reported twice");
+                false
+            }),
+            None
+        );
+        let mut expected = BTreeSet::new();
+        for a in 0..mesh.triangle_count() {
+            let a_box = triangle_bounds(mesh.triangle(a));
+            for b in a + 1..mesh.triangle_count() {
+                let b_box = triangle_bounds(mesh.triangle(b));
+                if a_box.min.cmple(b_box.max).all() && b_box.min.cmple(a_box.max).all() {
+                    expected.insert((a as u32, b as u32));
+                }
+            }
+        }
+        assert_eq!(seen, expected);
+        assert!(
+            bvh.find_overlapping_pair(&mesh, |a, b| expected.contains(&(a, b)))
+                .is_some()
+        );
     }
 
     fn sphere() -> TriMesh {
