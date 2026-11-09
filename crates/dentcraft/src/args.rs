@@ -84,6 +84,10 @@ pub struct Args {
     #[arg(long, value_name = "DIR")]
     pub export: Option<PathBuf>,
 
+    /// Export the original crown without mesh simplification (requires --export).
+    #[arg(long, requires = "export")]
+    pub no_simplify: bool,
+
     /// Folder of a tooth library (STL teeth and library.json) to design crowns from. Falls back
     /// to the DENTCRAFT_TOOTH_LIBRARY environment variable.
     #[arg(long, value_name = "DIR")]
@@ -389,6 +393,18 @@ mod tests {
     #[test]
     fn unknown_view_is_an_error() {
         assert!(Args::try_parse_from(["dentcraft", "--view", "sideways"]).is_err());
+    }
+
+    #[test]
+    fn no_simplify_requires_an_export_directory() {
+        assert!(Args::try_parse_from(["dentcraft", "--no-simplify"]).is_err());
+        let args = Args::try_parse_from(["dentcraft", "--export", "out", "--no-simplify"]).unwrap();
+        assert!(args.no_simplify);
+        assert!(
+            !Args::try_parse_from(["dentcraft", "--export", "out"])
+                .unwrap()
+                .no_simplify
+        );
     }
 
     #[test]

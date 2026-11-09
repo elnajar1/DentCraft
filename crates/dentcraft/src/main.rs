@@ -114,6 +114,7 @@ fn main() -> ExitCode {
         tooth: args.tooth,
         section: args.section,
         export: args.export,
+        no_simplify: args.no_simplify,
         tooth_library,
         recovery,
         recovery_lock: instance.map(|(_, lock)| lock),

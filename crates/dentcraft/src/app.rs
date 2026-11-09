@@ -83,6 +83,8 @@ pub struct StartOptions {
     pub section: bool,
     /// Folder to export every built crown to once the startup steps are done.
     pub export: Option<PathBuf>,
+    /// Disable simplification for automated exports.
+    pub no_simplify: bool,
     /// Folder of the tooth library crowns are designed from.
     pub tooth_library: Option<PathBuf>,
     /// This instance's recovery file; `None` when unsaved work is not kept (screenshot runs).
@@ -360,7 +362,11 @@ impl DentCraftApp {
             parts: Vec::new(),
             contacts: ContactsStep::new(Some(cc.egui_ctx.clone())),
             pending_inner: None,
-            export: ExportStep::new(Some(cc.egui_ctx.clone())),
+            export: {
+                let mut export = ExportStep::new(Some(cc.egui_ctx.clone()));
+                export.simplify = !start.no_simplify;
+                export
+            },
             pending_finish: None,
             frame_crown: false,
             tooth_frame: FrameTrigger::default(),
