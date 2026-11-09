@@ -5,6 +5,8 @@ must be checked by a qualified dental professional before clinical use.
 
 ## Unreleased
 
+- STL export warns when it finds a strict crossing between non-adjacent faces at file precision;
+  this partial check does not certify coplanar overlaps or crossings between adjacent faces.
 - Automated STL export accepts `--no-simplify` to preserve the original crown mesh.
 - Block export of a crown with disconnected shells, even if each shell has closed edges.
 - Export rows mark changed or missing crowns after an earlier export, instead of presenting the

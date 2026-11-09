@@ -1238,6 +1238,13 @@ fn export_section(ui: &mut Ui, card: &ExportCard, p: &Palette) -> Option<StepAct
                         .color(p.text_dim),
                 );
             }
+            let issues = card.rows.iter().filter(|row| matches!(&row.result, Some(Err(_))) || matches!(&row.result, Some(Ok(written)) if written.warning.is_some())).count();
+            if issues > 0 {
+                ui.label(RichText::new(format!("{issues} export(s) need review. See the affected tooth below.")).size(SIZE_SMALL).strong().color(p.danger));
+            }
+            if card.rows.iter().any(|row| row.crown.is_some()) {
+                ui.label(RichText::new("Export checks are partial; review seating, contacts and the crown before use.").size(SIZE_SMALL).color(p.text_dim));
+            }
             for row in &card.rows {
                 ui.horizontal(|ui| {
                     ui.label(

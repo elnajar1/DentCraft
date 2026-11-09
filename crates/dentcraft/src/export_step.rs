@@ -8,7 +8,9 @@ use std::sync::mpsc::{Receiver, channel};
 
 use dentcraft_case::{Fdi, RestorationKind, Unit};
 use dentcraft_design::Crown;
-use dentcraft_mesh::{DecimateOptions, TriMesh, decimate};
+use dentcraft_mesh::{
+    DecimateOptions, NonAdjacentOverlap, TriMesh, decimate, find_strict_nonadjacent_crossing,
+};
 use eframe::egui;
 
 /// Largest distance simplification may move the crown's surface, in millimetres.
@@ -87,7 +89,7 @@ pub struct Written {
     pub path: PathBuf,
     pub bytes: u64,
     pub triangles: usize,
-    /// Why the original surface was written instead of the simplified one.
+    /// Warnings about the written file or its preparation.
     pub warning: Option<String>,
 }
 
@@ -128,6 +130,27 @@ fn check_export_surface(mesh: &TriMesh) -> Result<(), String> {
     Ok(())
 }
 
+/// Screen the geometry at STL precision. This is intentionally a partial
+/// diagnostic: it does not certify adjacent or coplanar face pairs.
+fn crossing_warning(mesh: &TriMesh) -> Option<String> {
+    let stl_mesh = TriMesh::new(
+        mesh.positions
+            .iter()
+            .map(|p| p.as_vec3().as_dvec3())
+            .collect(),
+        mesh.triangles.clone(),
+    );
+    match find_strict_nonadjacent_crossing(&stl_mesh, 0.0001) {
+        NonAdjacentOverlap::Candidate(_, _) => Some(
+            "Crossing detected between non-adjacent faces. Review the crown before use.".into(),
+        ),
+        NonAdjacentOverlap::Invalid => Some(
+            "Crossing check could not assess this surface. Review the crown before use.".into(),
+        ),
+        NonAdjacentOverlap::NoneFound => None,
+    }
+}
+
 /// Simplifies `crown` when asked and writes it to `path` as binary STL.
 pub fn write_crown(crown: &Crown, path: &Path, simplify: bool) -> Result<Written, String> {
     check_export_surface(&crown.mesh).map_err(|e| format!("Export check failed: {e}"))?;
@@ -149,6 +172,12 @@ pub fn write_crown(crown: &Crown, path: &Path, simplify: bool) -> Result<Written
     } else {
         &crown.mesh
     };
+    if let Some(crossing) = crossing_warning(mesh) {
+        warning = Some(match warning {
+            Some(previous) => format!("{previous} {crossing}"),
+            None => crossing,
+        });
+    }
     dentcraft_io::save_mesh(path, mesh).map_err(|e| format!("Write failed: {e}"))?;
     let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     Ok(Written {
@@ -370,6 +399,10 @@ impl ExportStep {
             for (tooth, result) in &self.results {
                 if let Err(e) = result {
                     eprintln!("dentcraft: export of {tooth}: {e}");
+                } else if let Ok(written) = result
+                    && let Some(warning) = &written.warning
+                {
+                    eprintln!("dentcraft: export of {tooth}: {warning}");
                 }
             }
         }
@@ -449,6 +482,35 @@ mod tests {
             vec![DVec3::ZERO, DVec3::X, DVec3::Y, DVec3::Z],
             vec![[0, 2, 1], [0, 1, 3], [1, 2, 3], [2, 0, 3]],
         )
+    }
+
+    #[test]
+    fn crossing_diagnostic_warns_without_claiming_a_complete_check() {
+        use glam::DVec3;
+        assert_eq!(crossing_warning(&tetrahedron()), None);
+        let crossing = TriMesh::new(
+            vec![
+                DVec3::ZERO,
+                DVec3::X * 2.0,
+                DVec3::Y * 2.0,
+                DVec3::new(0.5, 0.5, -1.0),
+                DVec3::new(0.5, 0.5, 1.0),
+                DVec3::new(1.0, 0.7, 0.3),
+            ],
+            vec![[0, 1, 2], [3, 4, 5]],
+        );
+        assert!(
+            crossing_warning(&crossing)
+                .unwrap()
+                .contains("Crossing detected")
+        );
+        let mut invalid = crossing;
+        invalid.triangles[1][0] = 100;
+        assert!(
+            crossing_warning(&invalid)
+                .unwrap()
+                .contains("could not assess")
+        );
     }
 
     #[test]
@@ -691,7 +753,11 @@ mod tests {
         let loaded = loaded.unwrap();
         assert_eq!(written.bytes, 84 + 50 * written.triangles as u64);
         assert_eq!(loaded.triangle_count(), written.triangles);
-        if written.warning.is_some() {
+        if written
+            .warning
+            .as_deref()
+            .is_some_and(|warning| warning.starts_with("Simplification skipped"))
+        {
             assert_eq!(written.triangles, crown.mesh.triangle_count());
         } else {
             assert!(written.triangles < crown.mesh.triangle_count());
