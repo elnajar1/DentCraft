@@ -5,6 +5,7 @@ must be checked by a qualified dental professional before clinical use.
 
 ## Unreleased
 
+- Block export of a crown with disconnected shells, even if each shell has closed edges.
 - Export rows mark changed or missing crowns after an earlier export, instead of presenting the
   earlier result as the current design; the summary is labeled as the last export.
 - Export checks the input and simplified surfaces for valid indices, finite STL coordinates,

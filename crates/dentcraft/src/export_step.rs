@@ -91,7 +91,7 @@ pub struct Written {
     pub warning: Option<String>,
 }
 
-/// Check indexed edge closure, winding, and triangles in STL's f32 precision.
+/// Check indexed edge closure, connectivity, winding, and triangles in STL's f32 precision.
 /// This does not test self-intersections, seating, or clinical suitability.
 fn check_export_surface(mesh: &TriMesh) -> Result<(), String> {
     if mesh.triangles.is_empty() {
@@ -121,6 +121,9 @@ fn check_export_surface(mesh: &TriMesh) -> Result<(), String> {
     }
     if !mesh.is_consistently_oriented() {
         return Err("Surface has inconsistent triangle winding".into());
+    }
+    if mesh.connected_components().len() != 1 {
+        return Err("Surface contains disconnected shells".into());
     }
     Ok(())
 }
@@ -484,6 +487,17 @@ mod tests {
             check_export_surface(&mesh)
                 .unwrap_err()
                 .contains("non-manifold")
+        );
+        let mut mesh = tetrahedron();
+        let mut other = tetrahedron();
+        for point in &mut other.positions {
+            *point += glam::DVec3::splat(3.0);
+        }
+        mesh.merge(&other);
+        assert!(
+            check_export_surface(&mesh)
+                .unwrap_err()
+                .contains("disconnected")
         );
     }
 
