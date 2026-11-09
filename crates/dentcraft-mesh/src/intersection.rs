@@ -5,7 +5,62 @@
 //! not proof of an invalid mesh. See D. Eberly, *Intersection of Convex Objects:
 //! The Method of Separating Axes*, section on triangle-triangle intersection.
 
+use crate::{Bvh, TriMesh};
 use glam::DVec3;
+
+/// Result of a conservative diagnostic. A candidate can be a contact or a
+/// numerical near-contact. `NoneFound` is not a self-intersection certificate:
+/// triangle pairs sharing a vertex are deliberately excluded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NonAdjacentOverlap {
+    NoneFound,
+    Candidate(u32, u32),
+    Invalid,
+}
+
+/// Find a possible overlap between distinct triangles that share no indexed
+/// vertex. The input is checked before building the acceleration structure;
+/// invalid indices, non-finite coordinates and degenerate triangles yield
+/// `Invalid`. Open surfaces can be inspected, but adjacency crossings are not
+/// covered by this diagnostic.
+pub fn find_nonadjacent_overlap(mesh: &TriMesh) -> NonAdjacentOverlap {
+    for triangle in &mesh.triangles {
+        let Some(a) = mesh.positions.get(triangle[0] as usize) else {
+            return NonAdjacentOverlap::Invalid;
+        };
+        let Some(b) = mesh.positions.get(triangle[1] as usize) else {
+            return NonAdjacentOverlap::Invalid;
+        };
+        let Some(c) = mesh.positions.get(triangle[2] as usize) else {
+            return NonAdjacentOverlap::Invalid;
+        };
+        if triangles_may_overlap([*a, *b, *c], [*a, *b, *c]).is_none() {
+            return NonAdjacentOverlap::Invalid;
+        }
+    }
+    let bvh = Bvh::build(mesh);
+    let mut invalid = false;
+    let pair = bvh.find_overlapping_pair(mesh, |a, b| {
+        let (x, y) = (mesh.triangles[a as usize], mesh.triangles[b as usize]);
+        if x.iter().any(|v| y.contains(v)) {
+            return false;
+        }
+        match triangles_may_overlap(mesh.triangle(a as usize), mesh.triangle(b as usize)) {
+            Some(value) => value,
+            None => {
+                invalid = true;
+                true
+            }
+        }
+    });
+    if invalid {
+        NonAdjacentOverlap::Invalid
+    } else if let Some((a, b)) = pair {
+        NonAdjacentOverlap::Candidate(a, b)
+    } else {
+        NonAdjacentOverlap::NoneFound
+    }
+}
 
 /// Returns `None` for non-finite or degenerate triangles; otherwise returns
 /// whether two closed triangles may overlap, including touching. This is a
@@ -71,6 +126,73 @@ pub fn triangles_may_overlap(a: [DVec3; 3], b: [DVec3; 3]) -> Option<bool> {
 mod tests {
     use super::*;
     use glam::DQuat;
+
+    #[test]
+    fn mesh_diagnostic_reports_unrelated_crossings_and_invalid_input() {
+        let cube = crate::tests::cube(2.0);
+        assert_eq!(
+            find_nonadjacent_overlap(&cube),
+            NonAdjacentOverlap::NoneFound
+        );
+        assert_eq!(
+            find_nonadjacent_overlap(&TriMesh::default()),
+            NonAdjacentOverlap::NoneFound
+        );
+        let mesh = TriMesh::new(
+            vec![
+                DVec3::ZERO,
+                DVec3::X * 2.0,
+                DVec3::Y * 2.0,
+                DVec3::new(0.5, 0.5, -1.0),
+                DVec3::new(0.5, 0.5, 1.0),
+                DVec3::new(1.0, 0.5, 0.0),
+            ],
+            vec![[0, 1, 2], [3, 4, 5]],
+        );
+        assert_eq!(
+            find_nonadjacent_overlap(&mesh),
+            NonAdjacentOverlap::Candidate(0, 1)
+        );
+        let mut duplicated = TriMesh::new(
+            vec![
+                DVec3::ZERO,
+                DVec3::X,
+                DVec3::Y,
+                DVec3::ZERO,
+                DVec3::X,
+                DVec3::Y,
+            ],
+            vec![[0, 1, 2], [3, 4, 5]],
+        );
+        assert_eq!(
+            find_nonadjacent_overlap(&duplicated),
+            NonAdjacentOverlap::Candidate(0, 1)
+        );
+        // The diagnostic deliberately excludes even overlapping triangles that share an index.
+        duplicated.triangles[1] = [0, 4, 5];
+        assert_eq!(
+            find_nonadjacent_overlap(&duplicated),
+            NonAdjacentOverlap::NoneFound
+        );
+        let mut invalid = mesh.clone();
+        invalid.triangles[1][2] = 99;
+        assert_eq!(
+            find_nonadjacent_overlap(&invalid),
+            NonAdjacentOverlap::Invalid
+        );
+        invalid = mesh.clone();
+        invalid.positions[3] = DVec3::NAN;
+        assert_eq!(
+            find_nonadjacent_overlap(&invalid),
+            NonAdjacentOverlap::Invalid
+        );
+        invalid = mesh;
+        invalid.triangles[1] = [3, 3, 4];
+        assert_eq!(
+            find_nonadjacent_overlap(&invalid),
+            NonAdjacentOverlap::Invalid
+        );
+    }
 
     #[test]
     fn overlap_handles_skew_coplanar_touching_and_degenerate_triangles() {

@@ -21,7 +21,7 @@ pub use bvh::{Bvh, ClosestPoint, RayHit};
 pub use curvature::PrincipalCurvature;
 pub use decimate::{DecimateError, DecimateOptions, DecimateReport, decimate};
 pub use fill::{FillReport, fill_holes};
-pub use intersection::triangles_may_overlap;
+pub use intersection::{NonAdjacentOverlap, find_nonadjacent_overlap, triangles_may_overlap};
 pub use path::{SurfacePath, path_through, ridge_cost, shortest_path, smooth_polyline_on_surface};
 pub use region::{grow_region, inside_closed_path, region_triangles};
 pub use topology::EdgeMap;
