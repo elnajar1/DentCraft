@@ -1262,11 +1262,11 @@ fn export_section(ui: &mut Ui, card: &ExportCard, p: &Palette) -> Option<StepAct
                             group_thousands(triangles),
                             widgets::fmt_mm(thickness, 2)
                         );
-                        if let Some(Ok((written, bytes))) = &row.result {
+                        if let Some(Ok(written)) = &row.result {
                             text = format!(
                                 "{} triangles written \u{b7} {}",
-                                group_thousands(*written),
-                                format_bytes(*bytes)
+                                group_thousands(written.triangles),
+                                format_bytes(written.bytes)
                             );
                         }
                         ui.label(RichText::new(text).size(SIZE_SMALL).color(p.text_dim));
@@ -1283,6 +1283,11 @@ fn export_section(ui: &mut Ui, card: &ExportCard, p: &Palette) -> Option<StepAct
                 }
                 if let Some(Err(error)) = &row.result {
                     ui.label(RichText::new(error).size(SIZE_SMALL).color(p.danger));
+                }
+                if let Some(Ok(written)) = &row.result
+                    && let Some(warning) = &written.warning
+                {
+                    ui.label(RichText::new(warning).size(SIZE_SMALL).color(p.danger));
                 }
             }
             ui.add_space(2.0);

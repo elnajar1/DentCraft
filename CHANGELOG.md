@@ -5,6 +5,10 @@ must be checked by a qualified dental professional before clinical use.
 
 ## Unreleased
 
+- Export checks the input and simplified surfaces for valid indices, finite STL coordinates,
+  nondegenerate triangles, closed edges and consistent winding before writing. If simplification
+  fails these checks, the original surface is written with a warning. These checks do not assess
+  self-intersection, seating or clinical suitability.
 - Move the crown along its mesial, facial and occlusal axes using viewport handles. The crown
   rebuilds on release, each gesture is undoable, and nearly parallel viewing rays are ignored.
 - Hold Shift while nudging a crown to move it in 0.01 mm increments; the displayed offsets and

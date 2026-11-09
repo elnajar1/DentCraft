@@ -8,7 +8,7 @@ use std::sync::mpsc::{Receiver, channel};
 
 use dentcraft_case::{Fdi, RestorationKind, Unit};
 use dentcraft_design::Crown;
-use dentcraft_mesh::{DecimateOptions, decimate};
+use dentcraft_mesh::{DecimateOptions, TriMesh, decimate};
 use eframe::egui;
 
 /// Largest distance simplification may move the crown's surface, in millimetres.
@@ -87,16 +87,62 @@ pub struct Written {
     pub path: PathBuf,
     pub bytes: u64,
     pub triangles: usize,
+    /// Why the original surface was written instead of the simplified one.
+    pub warning: Option<String>,
+}
+
+/// Check indexed edge closure, winding, and triangles in STL's f32 precision.
+/// This does not test self-intersections, seating, or clinical suitability.
+fn check_export_surface(mesh: &TriMesh) -> Result<(), String> {
+    if mesh.triangles.is_empty() {
+        return Err("Surface has no triangles".into());
+    }
+    for tri in &mesh.triangles {
+        let mut points = [glam::DVec3::ZERO; 3];
+        for (point, &index) in points.iter_mut().zip(tri) {
+            let p = mesh
+                .positions
+                .get(index as usize)
+                .ok_or("Surface has an invalid vertex index")?;
+            if !p.is_finite() || !p.as_vec3().is_finite() {
+                return Err("Surface has coordinates that cannot be stored in STL".into());
+            }
+            *point = p.as_vec3().as_dvec3();
+        }
+        let area = (points[1] - points[0])
+            .cross(points[2] - points[0])
+            .length_squared();
+        if !area.is_finite() || area <= 1e-24 {
+            return Err("Surface has a degenerate triangle at STL precision".into());
+        }
+    }
+    if !mesh.is_closed() {
+        return Err("Surface has open or non-manifold edges".into());
+    }
+    if !mesh.is_consistently_oriented() {
+        return Err("Surface has inconsistent triangle winding".into());
+    }
+    Ok(())
 }
 
 /// Simplifies `crown` when asked and writes it to `path` as binary STL.
 pub fn write_crown(crown: &Crown, path: &Path, simplify: bool) -> Result<Written, String> {
+    check_export_surface(&crown.mesh).map_err(|e| format!("Export check failed: {e}"))?;
     let simplified;
+    let mut warning = None;
     let mesh = if simplify {
         simplified = decimate(&crown.mesh, &simplify_options(crown))
             .map_err(|e| format!("Simplify failed: {e:?}"))?
             .0;
-        &simplified
+        match check_export_surface(&simplified) {
+            Ok(()) => &simplified,
+            Err(reason) => {
+                warning = Some(format!(
+                    "Simplification skipped: {reason}. Original surface written."
+                ));
+                &crown.mesh
+            }
+        }
     } else {
         &crown.mesh
     };
@@ -106,6 +152,7 @@ pub fn write_crown(crown: &Crown, path: &Path, simplify: bool) -> Result<Written
         path: path.to_owned(),
         bytes,
         triangles: mesh.triangle_count(),
+        warning,
     })
 }
 
@@ -166,13 +213,20 @@ impl Summary {
 
 /// One row of the step card.
 #[derive(Clone, Debug, PartialEq)]
+pub struct ExportedInfo {
+    pub triangles: usize,
+    pub bytes: u64,
+    pub warning: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct ExportRow {
     pub tooth: Fdi,
     pub kind: RestorationKind,
     /// Triangles and minimum thickness (mm) of the built crown.
     pub crown: Option<(usize, f64)>,
     /// Outcome of the last export of this tooth: triangles and bytes written, or the error.
-    pub result: Option<Result<(usize, u64), String>>,
+    pub result: Option<Result<ExportedInfo, String>>,
     /// Index of the Anatomy step when it works on this tooth.
     pub anatomy_step: Option<usize>,
 }
@@ -334,7 +388,11 @@ impl ExportStep {
                         .map(|c| (c.mesh.triangle_count(), c.report.min_thickness)),
                     result: self.results.get(&i.tooth).map(|r| {
                         r.as_ref()
-                            .map(|w| (w.triangles, w.bytes))
+                            .map(|w| ExportedInfo {
+                                triangles: w.triangles,
+                                bytes: w.bytes,
+                                warning: w.warning.clone(),
+                            })
                             .map_err(Clone::clone)
                     }),
                     anatomy_step: anatomy_step(i.tooth),
@@ -359,6 +417,74 @@ mod tests {
 
     fn t(code: u8) -> Fdi {
         Fdi::new(code).unwrap()
+    }
+
+    fn tetrahedron() -> TriMesh {
+        use glam::DVec3;
+        TriMesh::new(
+            vec![DVec3::ZERO, DVec3::X, DVec3::Y, DVec3::Z],
+            vec![[0, 2, 1], [0, 1, 3], [1, 2, 3], [2, 0, 3]],
+        )
+    }
+
+    #[test]
+    fn export_surface_checks_reject_invalid_geometry() {
+        assert!(check_export_surface(&tetrahedron()).is_ok());
+        assert!(check_export_surface(&TriMesh::default()).is_err());
+        let mut mesh = tetrahedron();
+        mesh.triangles.pop();
+        assert!(check_export_surface(&mesh).unwrap_err().contains("open"));
+        let mut mesh = tetrahedron();
+        mesh.triangles[0].swap(1, 2);
+        assert!(check_export_surface(&mesh).unwrap_err().contains("winding"));
+        let mut mesh = tetrahedron();
+        mesh.triangles[0][0] = 99;
+        assert!(check_export_surface(&mesh).unwrap_err().contains("index"));
+        let mut mesh = tetrahedron();
+        mesh.positions[0] = mesh.positions[1];
+        assert!(
+            check_export_surface(&mesh)
+                .unwrap_err()
+                .contains("degenerate")
+        );
+        let mut mesh = tetrahedron();
+        mesh.positions[0].x = f64::NAN;
+        assert!(check_export_surface(&mesh).is_err());
+        let mut mesh = tetrahedron();
+        mesh.positions[1].x = 1e-50; // distinct in f64, collapsed by STL's f32 storage
+        assert!(
+            check_export_surface(&mesh)
+                .unwrap_err()
+                .contains("degenerate")
+        );
+        let mut mesh = tetrahedron();
+        mesh.triangles.push(mesh.triangles[0]);
+        assert!(
+            check_export_surface(&mesh)
+                .unwrap_err()
+                .contains("non-manifold")
+        );
+    }
+
+    #[test]
+    fn invalid_surface_does_not_overwrite_existing_export() {
+        let dir = std::env::temp_dir().join(format!("dentcraft-check-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("crown.stl");
+        std::fs::write(&path, b"existing").unwrap();
+        let crown = Crown {
+            mesh: TriMesh::default(),
+            margin_vertices: vec![],
+            report: dentcraft_design::CrownReport {
+                min_thickness: 0.0,
+                thickened_area: 0.0,
+                max_thickening: 0.0,
+            },
+        };
+        assert!(write_crown(&crown, &path, false).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"existing");
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(dir).unwrap();
     }
 
     fn test_crown() -> Crown {
@@ -491,7 +617,11 @@ mod tests {
         let loaded = loaded.unwrap();
         assert_eq!(written.bytes, 84 + 50 * written.triangles as u64);
         assert_eq!(loaded.triangle_count(), written.triangles);
-        assert!(written.triangles < crown.mesh.triangle_count());
+        if written.warning.is_some() {
+            assert_eq!(written.triangles, crown.mesh.triangle_count());
+        } else {
+            assert!(written.triangles < crown.mesh.triangle_count());
+        }
         assert!(loaded.is_closed(), "the written crown is watertight");
         let (a, b) = (crown.mesh.bounds().unwrap(), loaded.bounds().unwrap());
         assert!(a.min.distance(b.min) <= MAX_ERROR_MM, "{a:?} vs {b:?}");
