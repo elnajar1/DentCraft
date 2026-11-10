@@ -51,3 +51,10 @@ uses `--theme light`. The workflow panels use the `margin`, `axis`, `inner` and
 inner view adds `--section`.
 
 The banner, logo and sponsor artwork are separate branding assets, not application screenshots.
+
+## DentCraft branding
+
+The owner supplied the DC tooth logo on 2026-11-10 and requested its publication. The app icon is
+an AI-assisted adaptation of the supplied square mark, scaled to 512 pixels. The banner and
+social-preview artwork embed the same mark. Historical application screenshots remain unretouched
+and therefore show the branding that was present when they were captured.
