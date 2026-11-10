@@ -9,6 +9,7 @@ use dentcraft_render::ViewPreset;
 use dentcraft_workflow::StepId;
 use glam::DVec3;
 
+use crate::i18n::Language;
 use crate::theme::ThemeKind;
 
 /// Default window size, in logical points.
@@ -31,6 +32,11 @@ pub struct Args {
     /// Colour theme (overrides the saved choice).
     #[arg(long, value_enum)]
     pub theme: Option<ThemeArg>,
+
+    /// Interface language (overrides the saved choice). Screenshot runs use English unless
+    /// this is given.
+    #[arg(long, value_enum)]
+    pub lang: Option<LangArg>,
 
     /// Hide scans with this role once loaded: upper, lower, upper-pre-op, lower-pre-op, bite
     /// or other. Repeat to hide several.
@@ -137,6 +143,21 @@ impl From<StepArg> for StepId {
 pub enum ThemeArg {
     Dark,
     Light,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum LangArg {
+    En,
+    Es,
+}
+
+impl From<LangArg> for Language {
+    fn from(arg: LangArg) -> Self {
+        match arg {
+            LangArg::En => Language::English,
+            LangArg::Es => Language::Spanish,
+        }
+    }
 }
 
 impl From<ThemeArg> for ThemeKind {
@@ -287,6 +308,15 @@ mod tests {
         assert!(parse_size("1x2x3").is_err());
         assert!(parse_size("axb").is_err());
         assert!(parse_size("100x100").is_err());
+    }
+
+    #[test]
+    fn language_is_optional_and_takes_a_code() {
+        let none = Args::try_parse_from(["dentcraft"]).unwrap();
+        assert_eq!(none.lang, None);
+        let es = Args::try_parse_from(["dentcraft", "--lang", "es"]).unwrap();
+        assert_eq!(es.lang.map(Language::from), Some(Language::Spanish));
+        assert!(Args::try_parse_from(["dentcraft", "--lang", "fr"]).is_err());
     }
 
     #[test]

@@ -39,15 +39,16 @@ impl Section {
         Self::Step,
     ];
 
-    pub fn title(self) -> &'static str {
-        match self {
-            Self::Case => "Case",
-            Self::Teeth => "Teeth",
-            Self::Material => "Material",
-            Self::Scans => "Scans",
-            Self::Workflow => "Workflow",
-            Self::Step => "Step",
-        }
+    /// Shown title, in the interface language.
+    pub fn title(self) -> String {
+        crate::i18n::message(match self {
+            Self::Case => "section-case",
+            Self::Teeth => "section-teeth",
+            Self::Material => "section-material",
+            Self::Scans => "section-scans",
+            Self::Workflow => "section-workflow",
+            Self::Step => "section-step",
+        })
     }
 
     fn key(self) -> &'static str {

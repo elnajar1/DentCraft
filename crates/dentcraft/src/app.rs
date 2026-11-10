@@ -26,6 +26,7 @@ use crate::design_objects::{self, DesignObjects, DesignPart, PartGeometry, PartK
 use crate::document::{self, Document};
 use crate::export_step::{self, ExportStep, PlanItem};
 use crate::history::History;
+use crate::i18n::{self, Language, tr};
 use crate::inner_step::{self, INNER, InnerStep};
 use crate::loader::Loader;
 use crate::margin_step::{self, MARGIN, MarginStep, StepFrame};
@@ -44,6 +45,7 @@ use crate::widgets::{Icon, icon_button, paint_icon, small_button};
 use crate::workflow_panel::{self, StepAction, WorkflowView};
 
 const THEME_KEY: &str = "theme";
+const LANGUAGE_KEY: &str = "language";
 /// A screenshot run of a full real case designs every step of the tooth: a large preparation takes
 /// about a minute on its own.
 const SCREENSHOT_TIMEOUT: Duration = Duration::from_secs(180);
@@ -58,6 +60,8 @@ pub struct StartOptions {
     pub case: Option<PathBuf>,
     pub view: Option<ViewPreset>,
     pub theme: Option<ThemeKind>,
+    /// Interface language; overrides the saved choice.
+    pub language: Option<Language>,
     /// Roles of the startup scans to hide.
     pub hide: Vec<ScanRole>,
     /// Show the workspace menu open, for screenshots.
@@ -181,6 +185,8 @@ fn asks_before_close(dirty: bool, screenshot: bool) -> bool {
 
 pub struct DentCraftApp {
     theme: ThemeKind,
+    /// Interface language, saved with the other app settings.
+    language: Language,
     case: Case,
     objects: Vec<SceneObject>,
     next_id: u64,
@@ -311,6 +317,11 @@ impl DentCraftApp {
             .unwrap_or_default();
         let theme = start.theme.or(stored).unwrap_or_default();
         theme::install(&cc.egui_ctx, theme);
+        let stored_language = storage
+            .and_then(|s| s.get_string(LANGUAGE_KEY))
+            .and_then(|k| Language::from_key(&k));
+        let language = start.language.or(stored_language).unwrap_or_default();
+        i18n::set_language(language);
 
         let initial_view = start.view.unwrap_or(ViewPreset::Occlusal);
         let case = Case::new(UNTITLED);
@@ -322,6 +333,7 @@ impl DentCraftApp {
         let restore_file = start.restore.filter(|_| recovery_prompt.is_some());
         let mut app = Self {
             theme,
+            language,
             session: Session::for_case(&case),
             workflow_error: None,
             expert_mode: start.expert_open,
@@ -1541,6 +1553,8 @@ impl DentCraftApp {
                     self.theme = self.theme.toggled();
                     ui.ctx().set_theme(self.theme.egui_theme());
                 }
+                ui.add_space(2.0);
+                self.language_picker(ui);
                 ui.add_space(6.0);
                 let mut chosen = None;
                 let current = self.viewport.preset.map_or("Custom", |v| v.label());
@@ -1813,6 +1827,32 @@ impl DentCraftApp {
         }
     }
 
+    /// Compact interface-language selector of the app bar: the two-letter code, with each
+    /// language listed under its own name.
+    fn language_picker(&mut self, ui: &mut egui::Ui) {
+        let mut chosen = None;
+        egui::ComboBox::from_id_salt("language")
+            .selected_text(self.language.short())
+            .width(44.0)
+            .show_ui(ui, |ui| {
+                for language in Language::ALL {
+                    if ui
+                        .selectable_label(language == self.language, language.native_name())
+                        .clicked()
+                    {
+                        chosen = Some(language);
+                    }
+                }
+            })
+            .response
+            .on_hover_text(tr!("language-tip"));
+        if let Some(language) = chosen {
+            self.language = language;
+            i18n::set_language(language);
+            ui.ctx().request_repaint();
+        }
+    }
+
     /// The case setup screen, centred over the window: the case name and tooth chart at the
     /// left, material and scans at the right, and "Start design" to go to the design.
     fn case_setup_modal(&mut self, ctx: &egui::Context) {
@@ -1834,14 +1874,15 @@ impl DentCraftApp {
             )
             .show(ctx, |ui| {
                 ui.set_width(width);
-                ui.label(RichText::new("Case setup").heading().color(p.text));
                 ui.label(
-                    RichText::new(
-                        "Choose the teeth and their restorations, the material, and the role \
-                         of each scan.",
-                    )
-                    .size(SIZE_SMALL)
-                    .color(p.text_dim),
+                    RichText::new(tr!("case-setup-title"))
+                        .heading()
+                        .color(p.text),
+                );
+                ui.label(
+                    RichText::new(tr!("case-setup-intro"))
+                        .size(SIZE_SMALL)
+                        .color(p.text_dim),
                 );
                 ui.add_space(10.0);
                 let column = (width - 16.0) * 0.5;
@@ -1871,7 +1912,11 @@ impl DentCraftApp {
                 ui.add_space(12.0);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let start = !self.case.units.is_empty();
-                    let label = if start { "Start design" } else { "Close" };
+                    let label = tr!(if start {
+                        "case-setup-start"
+                    } else {
+                        "case-setup-close"
+                    });
                     let button = egui::Button::new(RichText::new(label).color(if start {
                         egui::Color32::WHITE
                     } else {
@@ -1879,11 +1924,11 @@ impl DentCraftApp {
                     }))
                     .min_size(vec2(120.0, 30.0));
                     let button = if start { button.fill(p.accent) } else { button };
-                    let tip = if start {
-                        "Go to the design"
+                    let tip = tr!(if start {
+                        "case-setup-start-tip"
                     } else {
-                        "Close the case setup; the toolbar opens it again"
-                    };
+                        "case-setup-close-tip"
+                    });
                     if ui.add(button).on_hover_text(tip).clicked() {
                         close = true;
                     }
@@ -1910,7 +1955,7 @@ impl DentCraftApp {
             browser::body(ui, |ui| {
                 ui.add(
                     egui::TextEdit::singleline(&mut self.case.name)
-                        .hint_text("Case name")
+                        .hint_text(tr!("case-name-hint"))
                         .desired_width(f32::INFINITY)
                         .margin(Margin::symmetric(10, 6)),
                 );
@@ -1925,7 +1970,7 @@ impl DentCraftApp {
             self.sections.open_mut(Section::Teeth),
             |ui| {
                 if n > 0 {
-                    ui.label(small(format!("{n} unit{}", if n == 1 { "" } else { "s" })));
+                    ui.label(small(tr!("teeth-units", count = n)));
                 }
             },
         );
@@ -1948,7 +1993,7 @@ impl DentCraftApp {
                 let edit = chart::tooth_chart(ui, &self.case);
                 chart::legend(ui);
                 if self.case.units.is_empty() {
-                    ui.label(small("Click a tooth to add a restoration.".to_owned()));
+                    ui.label(small(tr!("teeth-empty-hint")));
                 }
                 let issues = self.case.validate();
                 if !issues.is_empty() {
@@ -1986,7 +2031,7 @@ impl DentCraftApp {
             self.sections.open_mut(Section::Scans),
             |ui| {
                 import = icon_button(ui, Icon::Plus, 20.0)
-                    .on_hover_text("Import scans…")
+                    .on_hover_text(tr!("scans-import-tip"))
                     .clicked();
                 if count > 0 {
                     ui.label(small(count.to_string()));
@@ -2004,7 +2049,7 @@ impl DentCraftApp {
     fn scan_list(&mut self, ui: &mut egui::Ui, p: &Palette) {
         if self.objects.is_empty() {
             ui.label(
-                RichText::new("No scans yet. Import or drop STL, PLY or OBJ files.")
+                RichText::new(tr!("scans-empty"))
                     .size(SIZE_SMALL)
                     .color(p.text_dim),
             );
@@ -2100,12 +2145,15 @@ impl DentCraftApp {
     fn material_picker(&mut self, ui: &mut egui::Ui, p: &Palette) {
         let mut chosen = None;
         egui::ComboBox::from_id_salt("material")
-            .selected_text(&self.case.material.name)
+            .selected_text(i18n::material_name(&self.case.material))
             .width(ui.available_width() - 8.0)
             .show_ui(ui, |ui| {
                 for preset in Material::presets() {
                     let on = preset == self.case.material;
-                    if ui.selectable_label(on, &preset.name).clicked() {
+                    if ui
+                        .selectable_label(on, i18n::material_name(&preset))
+                        .clicked()
+                    {
                         chosen = Some(preset);
                     }
                 }
@@ -2115,13 +2163,22 @@ impl DentCraftApp {
         }
         let m = &self.case.material;
         let values = [
-            ("Cement gap", format!("{:.2} mm", m.cement_gap)),
             (
-                "Min occlusal",
+                tr!("material-cement-gap"),
+                format!("{:.2} mm", m.cement_gap),
+            ),
+            (
+                tr!("material-min-occlusal"),
                 format!("{:.1} mm", m.min_occlusal_thickness),
             ),
-            ("Min wall", format!("{:.1} mm", m.min_wall_thickness)),
-            ("Min connector", format!("{:.0} mm²", m.min_connector_area)),
+            (
+                tr!("material-min-wall"),
+                format!("{:.1} mm", m.min_wall_thickness),
+            ),
+            (
+                tr!("material-min-connector"),
+                format!("{:.0} mm²", m.min_connector_area),
+            ),
         ];
         ui.add_space(4.0);
         let width = (ui.available_width() - 6.0) * 0.5;
@@ -2138,7 +2195,7 @@ impl DentCraftApp {
                             ui.vertical(|ui| {
                                 ui.spacing_mut().item_spacing.y = 1.0;
                                 ui.label(
-                                    RichText::new(*label)
+                                    RichText::new(label.as_str())
                                         .size(SIZE_SMALL - 1.0)
                                         .color(p.text_dim),
                                 );
@@ -2738,19 +2795,24 @@ fn object_row(ui: &mut egui::Ui, obj: &mut SceneObject, hovered: bool, p: &Palet
         if loading {
             ui.add(egui::Spinner::new().size(18.0).color(p.accent));
         } else {
-            egui::color_picker::color_edit_button_srgb(ui, &mut obj.color).on_hover_text("Colour");
+            egui::color_picker::color_edit_button_srgb(ui, &mut obj.color)
+                .on_hover_text(tr!("scan-colour"));
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if hovered
                 && icon_button(ui, Icon::Close, 24.0)
-                    .on_hover_text("Remove from the scene")
+                    .on_hover_text(tr!("scan-remove"))
                     .clicked()
             {
                 remove = true;
             }
             if !loading {
                 let icon = if obj.visible { Icon::Eye } else { Icon::EyeOff };
-                let tip = if obj.visible { "Hide" } else { "Show" };
+                let tip = tr!(if obj.visible {
+                    "scan-hide"
+                } else {
+                    "scan-show"
+                });
                 if icon_button(ui, icon, 24.0).on_hover_text(tip).clicked() {
                     obj.visible = !obj.visible;
                 }
@@ -2764,21 +2826,25 @@ fn object_row(ui: &mut egui::Ui, obj: &mut SceneObject, hovered: bool, p: &Palet
         });
     });
     if loading {
-        ui.label(RichText::new("Loading…").size(SIZE_SMALL).color(p.text_dim));
+        ui.label(
+            RichText::new(tr!("scan-loading"))
+                .size(SIZE_SMALL)
+                .color(p.text_dim),
+        );
         return remove;
     }
     ui.horizontal(|ui| {
         egui::ComboBox::from_id_salt(("role", obj.id.0))
-            .selected_text(obj.role.label())
+            .selected_text(i18n::scan_role(obj.role))
             .width(150.0)
             .show_ui(ui, |ui| {
                 for role in ScanRole::ALL {
-                    ui.selectable_value(&mut obj.role, role, role.label());
+                    ui.selectable_value(&mut obj.role, role, i18n::scan_role(role));
                 }
             });
         ui.spacing_mut().slider_width = (ui.available_width() - 44.0).max(40.0);
         ui.add(egui::Slider::new(&mut obj.opacity, 0.0..=1.0).show_value(false))
-            .on_hover_text("Opacity");
+            .on_hover_text(tr!("scan-opacity"));
         ui.label(
             RichText::new(format!("{:.0}%", obj.opacity * 100.0))
                 .size(SIZE_SMALL)
@@ -2786,9 +2852,9 @@ fn object_row(ui: &mut egui::Ui, obj: &mut SceneObject, hovered: bool, p: &Palet
         );
     });
     ui.label(
-        RichText::new(format!(
-            "{} triangles",
-            group_thousands(obj.triangle_count())
+        RichText::new(tr!(
+            "scan-triangles",
+            count = group_thousands(obj.triangle_count())
         ))
         .size(SIZE_SMALL)
         .color(p.text_dim),
@@ -2832,7 +2898,7 @@ fn issues_box(ui: &mut egui::Ui, issues: &[dentcraft_case::CaseIssue], p: &Palet
                     );
                     ui.add(
                         egui::Label::new(
-                            RichText::new(capitalize(&issue.to_string()))
+                            RichText::new(i18n::case_issue(issue))
                                 .size(SIZE_SMALL)
                                 .color(p.text),
                         )
@@ -2922,6 +2988,7 @@ impl eframe::App for DentCraftApp {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         if self.screenshot.is_none() {
             storage.set_string(THEME_KEY, self.theme.key().to_owned());
+            storage.set_string(LANGUAGE_KEY, self.language.key().to_owned());
             storage.set_string(SECTIONS_KEY, self.sections.to_key());
         }
     }
