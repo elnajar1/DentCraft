@@ -6,6 +6,7 @@ use eframe::egui::{
     Stroke, Ui, Vec2, emath::Rot2, pos2, vec2,
 };
 
+use crate::i18n::{self, tr};
 use crate::theme::{Palette, SIZE_SMALL};
 use crate::widgets::{self, Icon, paint_icon};
 
@@ -177,21 +178,19 @@ pub enum ChartEdit {
     Connect(Fdi, Fdi, bool),
 }
 
-/// "Upper right molar" and the like.
+/// "Upper right molar" and the like, in the interface language.
 pub fn describe(tooth: Fdi) -> String {
-    let place = match tooth.quadrant() {
-        1 => "Upper right",
-        2 => "Upper left",
-        3 => "Lower left",
-        _ => "Lower right",
-    };
     let kind = match tooth.tooth_type() {
         ToothType::Incisor => "incisor",
         ToothType::Canine => "canine",
         ToothType::Premolar => "premolar",
         ToothType::Molar => "molar",
     };
-    format!("{place} {kind}")
+    tr!(
+        "tooth-description",
+        quadrant = tooth.quadrant(),
+        tooth_type = kind
+    )
 }
 
 /// Crown silhouette of a tooth in local coordinates, occlusal edge towards +y, clockwise.
@@ -257,14 +256,14 @@ pub fn tooth_chart(ui: &mut Ui, case: &Case) -> Option<ChartEdit> {
     painter.text(
         pos2(mid - 9.0, band_y),
         Align2::CENTER_CENTER,
-        "R",
+        tr!("chart-side-right"),
         side_font.clone(),
         p.text_dim,
     );
     painter.text(
         pos2(mid + 9.0, band_y),
         Align2::CENTER_CENTER,
-        "L",
+        tr!("chart-side-left"),
         side_font,
         p.text_dim,
     );
@@ -327,8 +326,12 @@ pub fn tooth_chart(ui: &mut Ui, case: &Case) -> Option<ChartEdit> {
             ink,
         );
         if !selected {
-            let label = kind.map_or("No restoration", |k| k.label());
-            response.on_hover_text(format!("{tooth} · {label}"));
+            let label = kind.map_or_else(|| tr!("restoration-none"), i18n::restoration);
+            response.on_hover_text(tr!(
+                "chart-tooth-hover",
+                tooth = tooth.to_string(),
+                kind = label
+            ));
         }
     }
 
@@ -375,11 +378,15 @@ pub fn tooth_chart(ui: &mut Ui, case: &Case) -> Option<ChartEdit> {
                     egui::StrokeKind::Middle,
                 );
             }
-            let tip = if connected {
-                format!("Disconnect {a}–{b}")
-            } else {
-                format!("Connect {a}–{b} into a bridge")
-            };
+            let tip = tr!(
+                if connected {
+                    "chart-disconnect"
+                } else {
+                    "chart-connect"
+                },
+                a = a.to_string(),
+                b = b.to_string()
+            );
             if response.on_hover_text(tip).clicked() {
                 edit = Some(ChartEdit::Connect(a, b, !connected));
             }
@@ -401,7 +408,7 @@ fn tooth_menu(
 ) -> Option<ChartEdit> {
     ui.spacing_mut().item_spacing.y = 2.0;
     ui.label(
-        RichText::new(format!("Tooth {tooth}"))
+        RichText::new(tr!("tooth-menu-title", tooth = tooth.to_string()))
             .strong()
             .color(p.text),
     );
@@ -416,7 +423,7 @@ fn tooth_menu(
         if menu_row(
             ui,
             Some(kind_color(kind)),
-            kind.label(),
+            &i18n::restoration(kind),
             current == Some(kind),
             p,
         )
@@ -426,7 +433,7 @@ fn tooth_menu(
         }
     }
     ui.separator();
-    if menu_row(ui, None, "No restoration", current.is_none(), p).clicked() {
+    if menu_row(ui, None, &tr!("restoration-none"), current.is_none(), p).clicked() {
         edit = Some(ChartEdit::Set(tooth, None));
     }
     if edit.is_some() {
@@ -475,11 +482,11 @@ pub fn legend(ui: &mut Ui) {
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = vec2(10.0, 4.0);
         for kind in RestorationKind::ALL {
-            legend_item(ui, kind.label(), &p, |painter, r| {
+            legend_item(ui, &i18n::restoration(kind), &p, |painter, r| {
                 painter.rect_filled(r, CornerRadius::same(3), kind_color(kind));
             });
         }
-        legend_item(ui, "Bridge", &p, |painter, r| {
+        legend_item(ui, &tr!("chart-bridge"), &p, |painter, r| {
             let y = r.center().y;
             painter.line_segment(
                 [pos2(r.left() - 2.0, y), pos2(r.right() + 2.0, y)],

@@ -9,6 +9,10 @@ developers are all welcome.
   if you can share it, an anonymised scan. Never attach patient data.
 - **Describe your workflow.** Tell us how you design a case today and where it costs you time.
   Use the *Workflow request* issue form.
+- **Translate the interface.** Text lives in `crates/dentcraft/locales/` as
+  [Fluent](https://projectfluent.org) files. English (`en.ftl`) is the source and the fallback:
+  add new messages there first. Keep dental terms consistent with the language's glossary in
+  `docs/i18n/`.
 - **Write code.** Pick an issue labelled `good first issue` or `help wanted`, or one from the
   [roadmap](ROADMAP.md), and say in the issue that you are working on it.
 

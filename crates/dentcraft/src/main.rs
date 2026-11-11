@@ -12,6 +12,7 @@ mod design_objects;
 mod document;
 mod export_step;
 mod history;
+mod i18n;
 mod icon_svg;
 mod inner_step;
 mod loader;
@@ -101,6 +102,7 @@ fn main() -> ExitCode {
         case: args.case,
         view: args.view,
         theme: args.theme.map(Into::into),
+        language: args.lang.map(Into::into),
         hide: args.hide,
         workspace_menu_open: args.open == Some(OpenArg::WorkspaceMenu),
         case_setup_open: args.open == Some(OpenArg::CaseSetup),
